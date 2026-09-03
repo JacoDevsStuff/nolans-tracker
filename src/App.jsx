@@ -1,8 +1,3 @@
-bash
-
-cat /home/claude/nolans-tracker/src/App.jsx
-Output
-
 import React, { useState, useEffect, useCallback, useRef } from "react"
 import { supabase, loadAll, fetchProject, upsertProject, removeProject } from "./supabase.js"
 import {
@@ -1413,3 +1408,4 @@ function EmptyState({ canCreate, onCreate, hasAny }) {
     </div>
   );
 }
+
