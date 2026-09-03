@@ -1,9 +1,14 @@
+bash
+
+cat /home/claude/nolans-tracker/src/App.jsx
+Output
+
 import React, { useState, useEffect, useCallback, useRef } from "react"
 import { supabase, loadAll, fetchProject, upsertProject, removeProject } from "./supabase.js"
 import {
   Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
   MapPin, User, Package, Calendar, AlertTriangle, ChevronRight, ChevronLeft,
-  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote,
+  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer,
 } from "lucide-react";
 
 /* ============================================================
@@ -131,6 +136,16 @@ function dayLoad(entry) {
 /** how many days a job needs at full capacity */
 const daysNeeded = (hours) => Math.max(1, Math.ceil((hours || DAY_CAPACITY) / DAY_CAPACITY));
 
+/** Monday of the week containing iso */
+function startOfWeek(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const dow = (d.getDay() + 6) % 7; // 0 = Monday
+  return addDays(iso, -dow);
+}
+/** does [aStart,aEnd] overlap [bStart,bEnd] (all inclusive ISO strings) */
+const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && aEnd >= bStart;
+const fmtDayLabel = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
+
 /* ============================================================
    MAIN
    ============================================================ */
@@ -250,10 +265,11 @@ export default function App() {
           )}
         </div>
         {/* View tabs */}
-        <div className="max-w-5xl mx-auto px-4 flex gap-1">
+        <div className="max-w-5xl mx-auto px-4 flex gap-1 overflow-x-auto">
           {[
             { key: "projects", label: "Projects", icon: ClipboardList, count: active.length },
             { key: "calendar", label: "Calendar", icon: CalendarDays },
+            { key: "reports", label: "Reports", icon: FileText },
             { key: "history", label: "History", icon: Archive, count: history.length },
           ].map((t) => (
             <button key={t.key} onClick={() => setView(t.key)}
@@ -270,6 +286,8 @@ export default function App() {
         {view === "calendar" ? (
           <CalendarView index={active} level={level} onOpen={(id) => setOpenId(id)}
             onSchedule={scheduleProject} />
+        ) : view === "reports" ? (
+          <ReportsView index={index} />
         ) : view === "history" ? (
           <HistoryView history={history} onOpen={(id) => setOpenId(id)} />
         ) : (
@@ -1055,6 +1073,133 @@ function HistoryView({ history, onOpen }) {
 }
 
 /* ============================================================
+   REPORTS VIEW — printable daily / weekly install schedule
+   ============================================================ */
+function ReportsView({ index }) {
+  const [mode, setMode] = useState("daily");
+  const [date, setDate] = useState(todayISO());
+
+  const start = mode === "daily" ? date : startOfWeek(date);
+  const end = mode === "daily" ? date : addDays(start, 6);
+
+  // Build one group per day in the period; a job appears on each day it's on site.
+  const dayList = dateRange(start, end);
+  const groups = dayList.map((day) => {
+    const jobs = index
+      .filter((e) => e.installDate && rangesOverlap(e.installDate, e.installEndDate || e.installDate, day, day))
+      .map((e) => {
+        const span = dateRange(e.installDate, e.installEndDate);
+        const dayNo = span.indexOf(day) + 1;
+        return { ...e, dayNo, dayCount: span.length };
+      })
+      .sort((a, b) => (a.installTime || "99").localeCompare(b.installTime || "99") || (a.clientName || "").localeCompare(b.clientName || ""));
+    return { day, jobs };
+  }).filter((g) => g.jobs.length);
+
+  const totalJobs = groups.reduce((a, g) => a + g.jobs.length, 0);
+  const periodLabel = mode === "daily" ? fmtDate(date) : `${fmtDate(start)} – ${fmtDate(end)}`;
+
+  return (
+    <div>
+      {/* Print styling — only #install-report shows on paper */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #install-report, #install-report * { visibility: visible !important; }
+          #install-report { position: absolute; left: 0; top: 0; width: 100%; padding: 0 12px; }
+          .no-print { display: none !important; }
+          #install-report table { font-size: 11px; }
+          #install-report thead { display: table-header-group; }
+          #install-report tr { page-break-inside: avoid; }
+        }
+      `}</style>
+
+      {/* Controls */}
+      <div className="no-print flex flex-wrap items-center gap-2 mb-4">
+        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden">
+          {["daily", "weekly"].map((m) => (
+            <button key={m} onClick={() => setMode(m)}
+              className={`px-3 py-2 text-sm font-medium capitalize ${mode === m ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
+              {m}
+            </button>
+          ))}
+        </div>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+          className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300" />
+        <div className="flex gap-1">
+          <button onClick={() => setDate(addDays(date, mode === "daily" ? -1 : -7))} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronLeft size={16} /></button>
+          <button onClick={() => setDate(todayISO())} className="px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50">Today</button>
+          <button onClick={() => setDate(addDays(date, mode === "daily" ? 1 : 7))} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronRight size={16} /></button>
+        </div>
+        <button onClick={() => window.print()}
+          className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+          <Printer size={15} /> Print / Save PDF
+        </button>
+      </div>
+
+      {/* Report body */}
+      <div id="install-report">
+        <div className="mb-4">
+          <h2 className="text-lg font-bold text-slate-900">{COMPANY_NAME} — Installation schedule</h2>
+          <p className="text-sm text-slate-500">
+            {mode === "daily" ? "Daily" : "Weekly"} report · {periodLabel} · {totalJobs} installation{totalJobs === 1 ? "" : "s"}
+          </p>
+        </div>
+
+        {groups.length === 0 ? (
+          <p className="text-sm text-slate-400 py-10 text-center no-print">No installations booked for this {mode === "daily" ? "day" : "week"}.</p>
+        ) : (
+          <div className="space-y-5">
+            {groups.map((g) => (
+              <div key={g.day}>
+                <h3 className="text-sm font-semibold text-slate-700 mb-2 pb-1 border-b border-slate-200">
+                  {fmtDayLabel(g.day)} <span className="text-slate-400 font-normal">· {g.jobs.length} job{g.jobs.length === 1 ? "" : "s"}</span>
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm border-collapse">
+                    <thead>
+                      <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
+                        <th className="py-1.5 pr-3 font-semibold">Time</th>
+                        <th className="py-1.5 pr-3 font-semibold">Client</th>
+                        <th className="py-1.5 pr-3 font-semibold">Contact</th>
+                        <th className="py-1.5 pr-3 font-semibold">Address</th>
+                        <th className="py-1.5 pr-3 font-semibold">Product</th>
+                        <th className="py-1.5 pr-3 font-semibold">Consultant</th>
+                        <th className="py-1.5 pr-3 font-semibold">Team</th>
+                        <th className="py-1.5 pr-3 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.jobs.map((j) => (
+                        <tr key={j.id} className="border-t border-slate-100 align-top">
+                          <td className="py-2 pr-3 whitespace-nowrap">
+                            {j.installTime || "—"}
+                            {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
+                          </td>
+                          <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
+                          <td className="py-2 pr-3">{j.address || "—"}</td>
+                          <td className="py-2 pr-3">{j.product || "—"}</td>
+                          <td className="py-2 pr-3">{j.consultant || "—"}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
+                          <td className="py-2 pr-3">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${statusMeta(j.status).badge}`}>{statusMeta(j.status).label}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    MENU DRAWER
    ============================================================ */
 function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
@@ -1084,6 +1229,7 @@ function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, 
         <nav className="p-2 flex-1 overflow-y-auto">
           <MenuItem icon={ClipboardList} label="Projects" active={view === "projects"} onClick={() => onView("projects")} />
           <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
+          <MenuItem icon={FileText} label="Reports" active={view === "reports"} onClick={() => onView("reports")} />
           <MenuItem icon={Archive} label="History" active={view === "history"} badge={historyCount} onClick={() => onView("history")} />
 
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">Quick filters</p>
@@ -1247,9 +1393,9 @@ function Input({ label, value, onChange, autoFocus }) {
 }
 function Modal({ children, onClose, wide }) {
   return (
-    <div className="fixed inset-0 z-40 bg-black/40 flex items-start sm:items-center justify-center p-0 sm:p-4 overflow-y-auto" onClick={onClose}>
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-start sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()}
-        className={`bg-white w-full ${wide ? "max-w-2xl" : "max-w-md"} sm:rounded-2xl rounded-none min-h-screen sm:min-h-0 shadow-xl`}>
+        className={`bg-white w-full ${wide ? "max-w-2xl" : "max-w-md"} sm:rounded-2xl rounded-none min-h-screen sm:min-h-0 sm:max-h-[calc(100vh-2rem)] overflow-y-auto shadow-xl`}>
         {children}
       </div>
     </div>
@@ -1267,4 +1413,3 @@ function EmptyState({ canCreate, onCreate, hasAny }) {
     </div>
   );
 }
-
