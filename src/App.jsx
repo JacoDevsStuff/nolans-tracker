@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react"
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { supabase, loadAll, fetchProject, upsertProject, removeProject } from "./supabase.js"
 import {
   Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
@@ -1213,52 +1213,46 @@ function ReportsView({ index }) {
    ============================================================ */
 function AvailabilityView({ index }) {
   const today = todayISO();
-  const end = addDays(today, 90);
 
   // Build load map
-  const loadByDate = {};
-  index.forEach((e) => {
-    if (!e.installDate) return;
-    dateRange(e.installDate, e.installEndDate).forEach((d) => {
-      loadByDate[d] = (loadByDate[d] || 0) + dayLoad(e, d);
+  const loadByDate = useMemo(() => {
+    const map = {};
+    index.forEach((e) => {
+      if (!e.installDate) return;
+      dateRange(e.installDate, e.installEndDate).forEach((d) => {
+        map[d] = (map[d] || 0) + dayLoad(e, d);
+      });
     });
-  });
+    return map;
+  }, [index]);
 
-  // Build list of weekdays only
-  const days = [];
-  let cur = today;
-  while (cur <= end) {
-    if (!isWeekend(cur)) days.push(cur);
-    cur = addDays(cur, 1);
-  }
+  // Safe counter-based loop — no string comparison, guaranteed to finish
+  const days = useMemo(() => {
+    const result = [];
+    for (let i = 0; i <= 90; i++) {
+      const d = addDays(today, i);
+      if (!isWeekend(d)) result.push(d);
+    }
+    return result;
+  }, [today]);
 
-  // Group by week (Monday)
-  const weeks = {};
-  days.forEach((d) => {
-    const wk = startOfWeek(d);
-    (weeks[wk] = weeks[wk] || []).push(d);
-  });
-  const weekKeys = Object.keys(weeks).sort();
+  // Group by week
+  const weekGroups = useMemo(() => {
+    const weeks = {};
+    days.forEach((d) => {
+      const wk = startOfWeek(d);
+      (weeks[wk] = weeks[wk] || []).push(d);
+    });
+    return Object.keys(weeks).sort().map((wk) => ({ wk, days: weeks[wk] }));
+  }, [days]);
 
   const freeHours = (d) => Math.max(0, dayCapacity(d) - (loadByDate[d] || 0));
   const isFull = (d) => freeHours(d) === 0;
   const isLimited = (d) => !isFull(d) && freeHours(d) < dayCapacity(d) / 2;
-
-  const dotColor = (d) =>
-    isFull(d) ? "bg-red-500" :
-    isLimited(d) ? "bg-amber-400" : "bg-emerald-500";
-
-  const cardColor = (d) =>
-    isFull(d) ? "bg-red-50 border-red-100" :
-    isLimited(d) ? "bg-amber-50 border-amber-100" : "bg-emerald-50 border-emerald-100";
-
-  const textColor = (d) =>
-    isFull(d) ? "text-red-700" :
-    isLimited(d) ? "text-amber-800" : "text-emerald-800";
-
+  const dotColor = (d) => isFull(d) ? "bg-red-500" : isLimited(d) ? "bg-amber-400" : "bg-emerald-500";
+  const cardColor = (d) => isFull(d) ? "bg-red-50 border-red-100" : isLimited(d) ? "bg-amber-50 border-amber-100" : "bg-emerald-50 border-emerald-100";
+  const textColor = (d) => isFull(d) ? "text-red-700" : isLimited(d) ? "text-amber-800" : "text-emerald-800";
   const isFriday = (d) => new Date(d + "T00:00:00").getDay() === 5;
-
-  // Next fully free day
   const nextFree = days.find((d) => freeHours(d) === dayCapacity(d));
 
   return (
@@ -1276,7 +1270,6 @@ function AvailabilityView({ index }) {
         )}
       </div>
 
-      {/* Legend */}
       <div className="flex gap-3 mb-4 text-xs text-slate-600">
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Available</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Limited (&lt;50% free)</span>
@@ -1284,8 +1277,7 @@ function AvailabilityView({ index }) {
       </div>
 
       <div className="space-y-4">
-        {weekKeys.map((wk) => {
-          const wkDays = weeks[wk];
+        {weekGroups.map(({ wk, days: wkDays }) => {
           const allFull = wkDays.every(isFull);
           return (
             <div key={wk}>
@@ -1303,7 +1295,7 @@ function AvailabilityView({ index }) {
                     <div key={d} className={`rounded-xl border p-3 ${cardColor(d)} ${isToday ? "ring-2 ring-slate-900" : ""}`}>
                       <div className="flex items-center justify-between mb-1.5">
                         <span className={`text-xs font-semibold ${textColor(d)}`}>
-                          {fmtDayLabel(d)}{isFriday(d) ? " (Fri)" : ""}
+                          {fmtDayLabel(d)}{isFriday(d) ? " ·Fri" : ""}
                           {isToday && <span className="ml-1 text-slate-900">· Today</span>}
                         </span>
                         <span className={`h-2 w-2 rounded-full shrink-0 ${dotColor(d)}`} />
