@@ -3,7 +3,7 @@ import { supabase, loadAll, fetchProject, upsertProject, removeProject } from ".
 import {
   Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
   MapPin, User, Package, Calendar, AlertTriangle, ChevronRight, ChevronLeft,
-  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer,
+  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck,
 } from "lucide-react";
 
 /* ============================================================
@@ -122,14 +122,22 @@ function fmtRange(start, end) {
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
-/** hours this job consumes on each day it occupies. Unset estimate = a full day. */
-function dayLoad(entry) {
+/** hours this job consumes on each day it occupies */
+function dayLoad(entry, forDate) {
   const days = dateRange(entry.installDate, entry.installEndDate).length || 1;
-  const total = entry.estHours || DAY_CAPACITY * days;
+  const cap = forDate ? dayCapacity(forDate) : DAY_CAPACITY;
+  const total = entry.estHours || cap * days;
   return total / days;
 }
 /** how many days a job needs at full capacity */
 const daysNeeded = (hours) => Math.max(1, Math.ceil((hours || DAY_CAPACITY) / DAY_CAPACITY));
+
+/** Capacity for a given ISO date — Fridays 7h (09:00–16:00), all others 8h */
+function dayCapacity(iso) {
+  const dow = new Date(iso + "T00:00:00").getDay(); // 0=Sun,5=Fri,6=Sat
+  return dow === 5 ? 7 : DAY_CAPACITY;
+}
+const isWeekend = (iso) => { const d = new Date(iso + "T00:00:00").getDay(); return d === 0 || d === 6; };
 
 /** Monday of the week containing iso */
 function startOfWeek(iso) {
@@ -265,6 +273,7 @@ export default function App() {
             { key: "projects", label: "Projects", icon: ClipboardList, count: active.length },
             { key: "calendar", label: "Calendar", icon: CalendarDays },
             { key: "reports", label: "Reports", icon: FileText },
+            ...(level >= 2 ? [{ key: "availability", label: "Availability", icon: CalendarCheck }] : []),
             { key: "history", label: "History", icon: Archive, count: history.length },
           ].map((t) => (
             <button key={t.key} onClick={() => setView(t.key)}
@@ -283,6 +292,8 @@ export default function App() {
             onSchedule={scheduleProject} />
         ) : view === "reports" ? (
           <ReportsView index={index} />
+        ) : view === "availability" && level >= 2 ? (
+          <AvailabilityView index={active} />
         ) : view === "history" ? (
           <HistoryView history={history} onOpen={(id) => setOpenId(id)} />
         ) : (
@@ -749,8 +760,8 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
     }
     if (e.installDate) {
       const days = dateRange(e.installDate, e.installEndDate);
-      const load = dayLoad(e);
       days.forEach((d, i) => {
+        const load = dayLoad(e, d);
         loadByDate[d] = (loadByDate[d] || 0) + load;
         if (show.install) push(d, {
           type: "install", id: e.id,
@@ -876,8 +887,9 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
           {cells.map((c, i) => {
             const events = c ? (byDate[c.iso] || []) : [];
             const booked = c ? (loadByDate[c.iso] || 0) : 0;
-            const free = Math.max(0, DAY_CAPACITY - booked);
-            const over = booked > DAY_CAPACITY;
+            const cap = c ? dayCapacity(c.iso) : DAY_CAPACITY;
+            const free = Math.max(0, cap - booked);
+            const over = booked > cap;
             const isToday = c && c.iso === today;
             const weekend = i % 7 >= 5;
             const isTarget = c && dropTarget === c.iso;
@@ -900,14 +912,14 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
                       {booked > 0 && (
                         <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${
                           over ? "bg-red-100 text-red-700" : free === 0 ? "bg-slate-200 text-slate-600" : "bg-emerald-100 text-emerald-700"}`}>
-                          {over ? `+${fmtHours(booked - DAY_CAPACITY)}` : free === 0 ? "Full" : `${fmtHours(free)} left`}
+                          {over ? `+${fmtHours(booked - cap)}` : free === 0 ? "Full" : `${fmtHours(free)} left`}
                         </span>
                       )}
                     </div>
                     {booked > 0 && (
                       <div className="h-1 rounded-full bg-slate-100 mb-1 overflow-hidden">
-                        <div className={`h-full ${over ? "bg-red-500" : booked >= DAY_CAPACITY ? "bg-slate-400" : "bg-blue-500"}`}
-                          style={{ width: `${Math.min(100, (booked / DAY_CAPACITY) * 100)}%` }} />
+                        <div className={`h-full ${over ? "bg-red-500" : booked >= cap ? "bg-slate-400" : "bg-blue-500"}`}
+                          style={{ width: `${Math.min(100, (booked / cap) * 100)}%` }} />
                       </div>
                     )}
                     <div className="space-y-1">
@@ -1195,6 +1207,130 @@ function ReportsView({ index }) {
 }
 
 /* ============================================================
+   AVAILABILITY VIEW — co-ordinator only
+   Shows next 3 months of weekdays (Mon–Fri) with free hours.
+   Fridays cap at 7h (09:00–16:00), all other days 8h.
+   ============================================================ */
+function AvailabilityView({ index }) {
+  const today = todayISO();
+  const end = addDays(today, 90);
+
+  // Build load map
+  const loadByDate = {};
+  index.forEach((e) => {
+    if (!e.installDate) return;
+    dateRange(e.installDate, e.installEndDate).forEach((d) => {
+      loadByDate[d] = (loadByDate[d] || 0) + dayLoad(e, d);
+    });
+  });
+
+  // Build list of weekdays only
+  const days = [];
+  let cur = today;
+  while (cur <= end) {
+    if (!isWeekend(cur)) days.push(cur);
+    cur = addDays(cur, 1);
+  }
+
+  // Group by week (Monday)
+  const weeks = {};
+  days.forEach((d) => {
+    const wk = startOfWeek(d);
+    (weeks[wk] = weeks[wk] || []).push(d);
+  });
+  const weekKeys = Object.keys(weeks).sort();
+
+  const freeHours = (d) => Math.max(0, dayCapacity(d) - (loadByDate[d] || 0));
+  const isFull = (d) => freeHours(d) === 0;
+  const isLimited = (d) => !isFull(d) && freeHours(d) < dayCapacity(d) / 2;
+
+  const dotColor = (d) =>
+    isFull(d) ? "bg-red-500" :
+    isLimited(d) ? "bg-amber-400" : "bg-emerald-500";
+
+  const cardColor = (d) =>
+    isFull(d) ? "bg-red-50 border-red-100" :
+    isLimited(d) ? "bg-amber-50 border-amber-100" : "bg-emerald-50 border-emerald-100";
+
+  const textColor = (d) =>
+    isFull(d) ? "text-red-700" :
+    isLimited(d) ? "text-amber-800" : "text-emerald-800";
+
+  const isFriday = (d) => new Date(d + "T00:00:00").getDay() === 5;
+
+  // Next fully free day
+  const nextFree = days.find((d) => freeHours(d) === dayCapacity(d));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="font-semibold text-slate-900">Availability — next 3 months</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Weekdays only · Mon–Thu 8h · Fri 7h (09:00–16:00)</p>
+        </div>
+        {nextFree && (
+          <div className="text-right">
+            <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold">Next fully free day</p>
+            <p className="text-sm font-semibold text-emerald-700">{fmtDayLabel(nextFree)}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-3 mb-4 text-xs text-slate-600">
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Available</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Limited (&lt;50% free)</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Full</span>
+      </div>
+
+      <div className="space-y-4">
+        {weekKeys.map((wk) => {
+          const wkDays = weeks[wk];
+          const allFull = wkDays.every(isFull);
+          return (
+            <div key={wk}>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+                Week of {fmtDate(wk)}
+                {allFull && <span className="ml-2 text-red-500">· Fully booked</span>}
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                {wkDays.map((d) => {
+                  const free = freeHours(d);
+                  const cap = dayCapacity(d);
+                  const pct = Math.min(100, ((cap - free) / cap) * 100);
+                  const isToday = d === today;
+                  return (
+                    <div key={d} className={`rounded-xl border p-3 ${cardColor(d)} ${isToday ? "ring-2 ring-slate-900" : ""}`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className={`text-xs font-semibold ${textColor(d)}`}>
+                          {fmtDayLabel(d)}{isFriday(d) ? " (Fri)" : ""}
+                          {isToday && <span className="ml-1 text-slate-900">· Today</span>}
+                        </span>
+                        <span className={`h-2 w-2 rounded-full shrink-0 ${dotColor(d)}`} />
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/60 overflow-hidden mb-1.5">
+                        <div className={`h-full ${isFull(d) ? "bg-red-400" : isLimited(d) ? "bg-amber-400" : "bg-emerald-400"}`}
+                          style={{ width: `${pct}%` }} />
+                      </div>
+                      <p className={`text-[11px] font-medium ${textColor(d)}`}>
+                        {isFull(d) ? "Full" : `${fmtHours(free)} of ${fmtHours(cap)} free`}
+                      </p>
+                      {(loadByDate[d] || 0) > 0 && !isFull(d) && (
+                        <p className="text-[10px] text-slate-500 mt-0.5">{fmtHours(loadByDate[d])} booked</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    MENU DRAWER
    ============================================================ */
 function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
@@ -1225,6 +1361,7 @@ function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, 
           <MenuItem icon={ClipboardList} label="Projects" active={view === "projects"} onClick={() => onView("projects")} />
           <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
           <MenuItem icon={FileText} label="Reports" active={view === "reports"} onClick={() => onView("reports")} />
+          {level >= 2 && <MenuItem icon={CalendarCheck} label="Availability" active={view === "availability"} onClick={() => onView("availability")} />}
           <MenuItem icon={Archive} label="History" active={view === "history"} badge={historyCount} onClick={() => onView("history")} />
 
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">Quick filters</p>
