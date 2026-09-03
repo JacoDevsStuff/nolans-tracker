@@ -385,7 +385,7 @@ export default function App() {
       {openId && (
         <Detail
           id={openId} level={level} user={user}
-          onClose={() => { setOpenId(null); loadIndex(); }}
+          onClose={() => { setOpenId(null); loadAll_(); }}
           onSave={saveProject} onDelete={deleteProject}
         />
       )}
