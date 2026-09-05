@@ -3,7 +3,7 @@ import { supabase, loadAll, fetchProject, upsertProject, removeProject } from ".
 import {
   Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
   MapPin, User, Package, Calendar, AlertTriangle, ChevronRight, ChevronLeft,
-  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck,
+  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck, Flag,
 } from "lucide-react";
 
 /* ============================================================
@@ -45,6 +45,7 @@ const TIME_SLOTS = (() => {
 })();
 /* Estimated job durations the co-ordinator can pick from */
 const DURATIONS = [1, 1.5, 2, 3, 4, 5, 6, 8, 12, 16, 24];
+const SNAG_HOURS = 2; // capacity a snag return visit consumes by default
 const fmtHours = (h) => (h % 1 === 0 ? `${h}h` : `${Math.floor(h)}h30`);
 
 /* ---------- Status pipeline ---------- */
@@ -64,6 +65,19 @@ const TEAMS = [
   { key: "team2", label: "Team 2 — To be confirmed" },
 ];
 const teamLabel = (k) => (TEAMS.find((t) => t.key === k) || {}).label || "Unassigned";
+
+/* ---------- Consultants (edit here to add/rename) ---------- */
+const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Luciano", "Marco"];
+
+/* ---------- Product type options ---------- */
+const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Axminster", "Rug", "Other"];
+
+/* Short one-line product summary from the split fields (with legacy fallback) */
+function productSummary(e) {
+  const parts = [e.type, e.range, e.colour].filter(Boolean);
+  if (parts.length) return parts.join(" · ") + (e.sqm ? ` · ${e.sqm}m²` : "");
+  return e.product || ""; // legacy single-field fallback
+}
 
 
 /* ---------- Image compression (keeps storage small) ---------- */
@@ -224,14 +238,23 @@ export default function App() {
 
 
   const active = index.filter((e) => e.status !== "complete");
-  const history = index.filter((e) => e.status === "complete");
+  const openSnagJobs = index.filter((e) => (e.openSnags || 0) > 0);
+  const history = index.filter((e) => e.status === "complete" && !(e.openSnags > 0));
+
+  /** Schedule a snag return visit onto a day */
+  const scheduleSnagVisit = async (id, iso) => {
+    const p = await fetchProject(id);
+    if (!p) return;
+    p.snagVisitDate = iso;
+    await saveProject(p);
+  };
 
   const filtered = active.filter((e) => {
     if (filter === "snags" && !e.openSnags) return false;
     if (filter !== "all" && filter !== "snags" && e.status !== filter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      return [e.clientName, e.address, e.consultant, e.product, e.po].filter(Boolean).some((x) => x.toLowerCase().includes(q));
+      return [e.clientName, e.address, e.consultant, e.type, e.range, e.colour, e.product, e.po].filter(Boolean).some((x) => String(x).toLowerCase().includes(q));
     }
     return true;
   });
@@ -272,6 +295,7 @@ export default function App() {
           {[
             { key: "projects", label: "Projects", icon: ClipboardList, count: active.length },
             { key: "calendar", label: "Calendar", icon: CalendarDays },
+            { key: "snags", label: "Snags", icon: Flag, count: openSnagJobs.length, danger: true },
             { key: "reports", label: "Reports", icon: FileText },
             ...(level >= 2 ? [{ key: "availability", label: "Availability", icon: CalendarCheck }] : []),
             { key: "history", label: "History", icon: Archive, count: history.length },
@@ -280,7 +304,7 @@ export default function App() {
               className={`flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 -mb-px transition ${
                 view === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <t.icon size={15} /> {t.label}
-              {t.count > 0 && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">{t.count}</span>}
+              {t.count > 0 && <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${t.danger ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>{t.count}</span>}
             </button>
           ))}
         </div>
@@ -289,7 +313,9 @@ export default function App() {
       <main className="max-w-5xl mx-auto px-4 py-5">
         {view === "calendar" ? (
           <CalendarView index={active} level={level} onOpen={(id) => setOpenId(id)}
-            onSchedule={scheduleProject} />
+            onSchedule={scheduleProject} onScheduleSnag={scheduleSnagVisit} snagJobs={openSnagJobs} />
+        ) : view === "snags" ? (
+          <SnagsView snagJobs={openSnagJobs} onOpen={(id) => setOpenId(id)} />
         ) : view === "reports" ? (
           <ReportsView index={index} />
         ) : view === "availability" && level >= 2 ? (
@@ -344,7 +370,7 @@ export default function App() {
       {/* Menu drawer */}
       {menuOpen && (
         <MenuDrawer
-          user={user} level={level} index={active} historyCount={history.length} view={view}
+          user={user} level={level} index={active} historyCount={history.length} snagTotal={openSnagJobs.length} view={view}
           onView={(v) => { setView(v); setMenuOpen(false); }}
           onSignIn={() => { setMenuOpen(false); setPinOpen(true); }}
           onSignOut={() => { setUser(null); setMenuOpen(false); }}
@@ -406,14 +432,17 @@ function Card({ entry, onClick }) {
     <button onClick={onClick} className="text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-slate-300 hover:shadow-sm transition">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0">
-          <div className="font-semibold truncate">{entry.clientName || "Unnamed client"}</div>
+          <div className="font-semibold truncate flex items-center gap-2">
+            {entry.clientName || "Unnamed client"}
+            {entry.reserved && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-dashed border-slate-300">RESERVED</span>}
+          </div>
           <div className="text-sm text-slate-500 flex items-center gap-1 truncate"><MapPin size={13} className="shrink-0" /> {entry.address || "No address"}</div>
         </div>
         <span className={`text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 ${meta.badge}`}>{meta.label}</span>
       </div>
       <div className="flex items-center gap-3 text-xs text-slate-500 mb-3 flex-wrap">
         {entry.po && <span className="flex items-center gap-1"><Hash size={12} /> {entry.po}</span>}
-        {entry.product && <span className="flex items-center gap-1"><Package size={12} /> {entry.product}</span>}
+        {productSummary(entry) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(entry)}</span>}
         {entry.consultant && <span className="flex items-center gap-1"><User size={12} /> {entry.consultant}</span>}
         {entry.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(entry.team)}</span>}
         <span className="flex items-center gap-1">
@@ -488,10 +517,14 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
   };
 
   const toggleSnag = async (sid) => {
-    await persist({ ...p, snags: p.snags.map((s) => (s.id === sid ? { ...s, resolved: !s.resolved } : s)) });
+    const snags = p.snags.map((s) => (s.id === sid ? { ...s, resolved: !s.resolved } : s));
+    const stillOpen = snags.some((s) => !s.resolved);
+    await persist({ ...p, snags, snagVisitDate: stillOpen ? p.snagVisitDate : "" });
   };
   const removeSnag = async (sid) => {
-    await persist({ ...p, snags: p.snags.filter((s) => s.id !== sid) });
+    const snags = p.snags.filter((s) => s.id !== sid);
+    const stillOpen = snags.some((s) => !s.resolved);
+    await persist({ ...p, snags, snagVisitDate: stillOpen ? p.snagVisitDate : "" });
   };
 
   const addNote = async () => {
@@ -560,6 +593,14 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
               <Undo2 size={12} /> Unbook (send back to the tray)
             </button>
           )}
+          {canOperate && (
+            <label className="mt-3 flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={!!p.reserved} onChange={(e) => persist({ ...p, reserved: e.target.checked })} className="h-4 w-4 rounded border-slate-300" />
+              <span className="text-xs text-slate-600">
+                <b>Reserved</b> — pencilled in, material not yet arrived (shows as unconfirmed on the calendar)
+              </span>
+            </label>
+          )}
         </section>
 
         {/* Details */}
@@ -569,8 +610,30 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
             <Field icon={Phone} label="Client contact" value={p.contact} editMode={canInternal} onChange={(v) => patch({ contact: v })} onBlur={() => onSave(p)} />
             <Field icon={MapPin} label="Address" value={p.address} editMode={canInternal} onChange={(v) => patch({ address: v })} onBlur={() => onSave(p)} />
             <Field icon={Hash} label="Internal PO number" value={p.po} editMode={canInternal} onChange={(v) => patch({ po: v })} onBlur={() => onSave(p)} />
-            <Field icon={Package} label="Product / carpet" value={p.product} editMode={canInternal} onChange={(v) => patch({ product: v })} onBlur={() => onSave(p)} />
-            <Field icon={User} label="Consultant" value={p.consultant} editMode={canInternal} onChange={(v) => patch({ consultant: v })} onBlur={() => onSave(p)} />
+            <div>
+              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Package size={12} /> Type</label>
+              {canInternal ? (
+                <select value={p.type || ""} onChange={(e) => persist({ ...p, type: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                  <option value="">Select…</option>
+                  {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              ) : <p className="text-sm text-slate-800">{p.type || p.product || "—"}</p>}
+            </div>
+            <Field icon={Package} label="Range" value={p.range} editMode={canInternal} onChange={(v) => patch({ range: v })} onBlur={() => onSave(p)} />
+            <Field icon={Package} label="Colour" value={p.colour} editMode={canInternal} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
+            <Field icon={Hash} label="Square meters (m²)" value={p.sqm} editMode={canInternal} onChange={(v) => patch({ sqm: v })} onBlur={() => onSave(p)} />
+            <div>
+              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><User size={12} /> Consultant</label>
+              {canInternal ? (
+                <select value={p.consultant || ""} onChange={(e) => persist({ ...p, consultant: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                  <option value="">Select…</option>
+                  {CONSULTANTS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {p.consultant && !CONSULTANTS.includes(p.consultant) && <option value={p.consultant}>{p.consultant}</option>}
+                </select>
+              ) : <p className="text-sm text-slate-800">{p.consultant || "—"}</p>}
+            </div>
             <div>
               <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Users size={12} /> Installation team</label>
               {canOperate ? (
@@ -655,6 +718,19 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
             <SectionTitle noMargin>Snags {openSnags > 0 && <span className="text-red-600">({openSnags} open)</span>}</SectionTitle>
           </div>
 
+          {openSnags > 0 && (
+            <div className="mb-3 p-3 rounded-lg bg-red-50 border border-red-100">
+              <label className="text-xs text-red-800 mb-1 flex items-center gap-1 font-medium"><Flag size={12} /> Snag return visit</label>
+              {canOperate ? (
+                <>
+                  <input type="date" value={p.snagVisitDate || ""} onChange={(e) => persist({ ...p, snagVisitDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300" />
+                  <p className="text-[11px] text-red-700/80 mt-1">Or drag this job from the Snags tray onto a day in the Calendar. Counts {fmtHours(SNAG_HOURS)} against that day.</p>
+                </>
+              ) : <p className="text-sm text-slate-800">{p.snagVisitDate ? fmtDate(p.snagVisitDate) : "Not scheduled"}</p>}
+            </div>
+          )}
+
           {canOperate && (
             <div className="bg-slate-50 rounded-lg p-3 mb-3">
               <input value={snagNote} onChange={(e) => setSnagNote(e.target.value)} placeholder="Describe the snag…"
@@ -737,18 +813,22 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
    tray; the co-ordinator drags one onto a day to book it. Each day
    shows how much of the working day is still free.
    ============================================================ */
-function CalendarView({ index, level, onOpen, onSchedule }) {
+function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJobs = [] }) {
   const now = new Date();
   const [cursor, setCursor] = useState({ y: now.getFullYear(), m: now.getMonth() });
-  const [show, setShow] = useState({ eta: true, install: true });
+  const [show, setShow] = useState({ eta: true, install: true, reserved: true, snag: true });
   const [dragId, setDragId] = useState(null);   // HTML5 drag
+  const [dragKind, setDragKind] = useState(null); // "install" | "snag"
   const [pendingId, setPendingId] = useState(null); // tap-to-place (touch friendly)
+  const [pendingKind, setPendingKind] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
 
   const canOperate = level >= 2;
 
   // Unbooked jobs whose material has landed → sticky notes
   const tray = index.filter((e) => e.status === "material_received" && !e.installDate);
+  // Jobs with open snags not yet given a return-visit date → red snag notes
+  const snagTray = snagJobs.filter((e) => !e.snagVisitDate);
 
   // Lookup: ISO date -> events, plus hours booked per day
   const byDate = {};
@@ -756,21 +836,31 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
   const push = (iso, ev) => { if (!iso) return; (byDate[iso] = byDate[iso] || []).push(ev); };
   index.forEach((e) => {
     if (show.eta && e.materialEta && e.status === "ordered") {
-      push(e.materialEta, { type: "eta", id: e.id, label: e.clientName || "Unnamed", sub: e.product || "" });
+      push(e.materialEta, { type: "eta", id: e.id, label: e.clientName || "Unnamed", sub: productSummary(e) });
     }
     if (e.installDate) {
       const days = dateRange(e.installDate, e.installEndDate);
       days.forEach((d, i) => {
         const load = dayLoad(e, d);
-        loadByDate[d] = (loadByDate[d] || 0) + load;
-        if (show.install) push(d, {
-          type: "install", id: e.id,
+        loadByDate[d] = (loadByDate[d] || 0) + load; // reserved still counts toward capacity
+        const showIt = e.reserved ? show.reserved : show.install;
+        if (showIt) push(d, {
+          type: e.reserved ? "reserved" : "install", id: e.id,
           label: e.clientName || "Unnamed",
           sub: days.length > 1 ? `Day ${i + 1}/${days.length}` : (e.installTime || ""),
           hours: load, team: e.team, first: i === 0, span: days.length > 1,
         });
       });
     }
+  });
+  // Snag return visits (from all jobs with open snags)
+  snagJobs.forEach((e) => {
+    if (!e.snagVisitDate) return;
+    loadByDate[e.snagVisitDate] = (loadByDate[e.snagVisitDate] || 0) + SNAG_HOURS;
+    if (show.snag) push(e.snagVisitDate, {
+      type: "snag", id: e.id, label: e.clientName || "Unnamed",
+      sub: "Snag return", hours: SNAG_HOURS, first: true,
+    });
   });
 
   // Month grid, Monday-first
@@ -790,10 +880,11 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
   };
   const today = todayISO();
 
-  const place = (id, iso) => {
+  const place = (id, iso, kind) => {
     if (!canOperate || !id) return;
-    onSchedule(id, iso);
-    setDragId(null); setPendingId(null); setDropTarget(null);
+    if (kind === "snag") onScheduleSnag(id, iso);
+    else onSchedule(id, iso);
+    setDragId(null); setDragKind(null); setPendingId(null); setPendingKind(null); setDropTarget(null);
   };
 
   const horizon = addDays(today, 30);
@@ -804,8 +895,8 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
 
   return (
     <div>
-      {/* Sticky note tray */}
-      {(tray.length > 0 || pendingId) && (
+      {/* Sticky note tray — material in, awaiting booking */}
+      {(tray.length > 0 || (pendingId && pendingKind === "install")) && (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-800 flex items-center gap-1.5">
@@ -813,7 +904,7 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
             </h3>
             {canOperate && (
               <span className="text-[11px] text-amber-700">
-                {pendingId ? "Now tap a day to book it" : "Drag a note onto a day, or tap it"}
+                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a note onto a day, or tap it"}
               </span>
             )}
           </div>
@@ -823,19 +914,19 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
             <div className="flex gap-2 overflow-x-auto pb-1">
               {tray.map((e) => {
                 const hrs = e.estHours || DAY_CAPACITY;
-                const picked = pendingId === e.id;
+                const picked = pendingId === e.id && pendingKind === "install";
                 return (
                   <div key={e.id}
                     draggable={canOperate}
-                    onDragStart={() => setDragId(e.id)}
-                    onDragEnd={() => { setDragId(null); setDropTarget(null); }}
-                    onClick={() => canOperate && setPendingId(picked ? null : e.id)}
+                    onDragStart={() => { setDragId(e.id); setDragKind("install"); }}
+                    onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
+                    onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("install")))}
                     className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
                       canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
                       picked ? "bg-amber-200 border-amber-500 ring-2 ring-amber-400" : "bg-amber-100 border-amber-300 hover:shadow"}`}
                     style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
                     <p className="text-sm font-semibold text-amber-950 truncate">{e.clientName || "Unnamed"}</p>
-                    {e.product && <p className="text-[11px] text-amber-800 truncate">{e.product}</p>}
+                    {productSummary(e) && <p className="text-[11px] text-amber-800 truncate">{productSummary(e)}</p>}
                     <div className="flex items-center gap-2 mt-1.5 text-[11px] text-amber-800">
                       <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(hrs)}</span>
                       {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
@@ -847,6 +938,48 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Snag tray — open snags awaiting a return-visit date */}
+      {snagTray.length > 0 && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50/60 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-red-800 flex items-center gap-1.5">
+              <Flag size={13} /> Snags to schedule ({snagTray.length})
+            </h3>
+            {canOperate && (
+              <span className="text-[11px] text-red-700">
+                {pendingId && pendingKind === "snag" ? "Now tap a day for the return visit" : "Drag onto a day, or tap it"}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {snagTray.map((e) => {
+              const picked = pendingId === e.id && pendingKind === "snag";
+              const openN = (e.snags || []).filter((s) => !s.resolved).length;
+              return (
+                <div key={e.id}
+                  draggable={canOperate}
+                  onDragStart={() => { setDragId(e.id); setDragKind("snag"); }}
+                  onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
+                  onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("snag")))}
+                  className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
+                    canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
+                    picked ? "bg-red-200 border-red-500 ring-2 ring-red-400" : "bg-red-100 border-red-300 hover:shadow"}`}
+                  style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
+                  <p className="text-sm font-semibold text-red-950 truncate flex items-center gap-1"><Flag size={11} /> {e.clientName || "Unnamed"}</p>
+                  <p className="text-[11px] text-red-800 truncate">{openN} open snag{openN > 1 ? "s" : ""}{e.address ? ` · ${e.address}` : ""}</p>
+                  <div className="flex items-center gap-2 mt-1.5 text-[11px] text-red-800">
+                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(SNAG_HOURS)}</span>
+                    {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
+                  </div>
+                  <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
+                    className="mt-1.5 text-[11px] font-medium text-red-900 underline underline-offset-2">Open</button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -873,6 +1006,16 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
             show.install ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-white text-slate-400 border-slate-200"}`}>
           <span className="h-2 w-2 rounded-full bg-blue-500" /> Installation
         </button>
+        <button onClick={() => setShow((s) => ({ ...s, reserved: !s.reserved }))}
+          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+            show.reserved ? "bg-slate-50 text-slate-700 border-slate-300" : "bg-white text-slate-400 border-slate-200"}`}>
+          <span className="h-2 w-2 rounded-full border border-dashed border-slate-400" /> Reserved
+        </button>
+        <button onClick={() => setShow((s) => ({ ...s, snag: !s.snag }))}
+          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+            show.snag ? "bg-red-50 text-red-800 border-red-200" : "bg-white text-slate-400 border-slate-200"}`}>
+          <span className="h-2 w-2 rounded-full bg-red-500" /> Snag visit
+        </button>
         <span className="flex items-center gap-1.5 text-xs text-slate-400 px-2 py-1.5">
           Working day: {DAY_CAPACITY}h ({String(DAY_START).padStart(2,"0")}:00–{DAY_END}:00)
         </span>
@@ -898,8 +1041,8 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
               <div key={i}
                 onDragOver={(e) => { if (c && canOperate) { e.preventDefault(); setDropTarget(c.iso); } }}
                 onDragLeave={() => setDropTarget((t) => (c && t === c.iso ? null : t))}
-                onDrop={(e) => { e.preventDefault(); if (c) place(dragId, c.iso); }}
-                onClick={() => { if (c && pendingId) place(pendingId, c.iso); }}
+                onDrop={(e) => { e.preventDefault(); if (c) place(dragId, c.iso, dragKind); }}
+                onClick={() => { if (c && pendingId) place(pendingId, c.iso, pendingKind); }}
                 className={`min-h-[104px] border-b border-r border-slate-100 p-1.5 transition ${
                   weekend ? "bg-slate-50/60" : ""} ${!c ? "bg-slate-50/40" : ""} ${
                   isTarget ? "bg-blue-50 ring-2 ring-inset ring-blue-400" : ""} ${
@@ -923,18 +1066,28 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
                       </div>
                     )}
                     <div className="space-y-1">
-                      {events.slice(0, 3).map((ev, j) => (
-                        <button key={j} onClick={(e) => { e.stopPropagation(); onOpen(ev.id); }}
-                          draggable={canOperate && ev.type === "install" && ev.first}
-                          onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); }}
-                          className={`w-full text-left text-[10px] leading-tight px-1.5 py-1 rounded truncate transition hover:opacity-80 ${
-                            ev.type === "eta" ? "bg-amber-100 text-amber-900"
-                              : `bg-blue-100 text-blue-900 ${ev.span && !ev.first ? "opacity-70" : ""}`}`}
-                          title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
-                          <span className="font-medium">{ev.type === "eta" ? "ETA" : fmtHours(ev.hours)}</span> {ev.label}
-                          {ev.sub && <span className="block opacity-70 truncate">{ev.sub}</span>}
-                        </button>
-                      ))}
+                      {events.slice(0, 3).map((ev, j) => {
+                        const style =
+                          ev.type === "eta" ? "bg-amber-100 text-amber-900"
+                          : ev.type === "snag" ? "bg-red-100 text-red-800 border border-red-300"
+                          : ev.type === "reserved" ? "bg-white text-slate-500 border border-dashed border-slate-400 opacity-80"
+                          : `bg-blue-100 text-blue-900 ${ev.span && !ev.first ? "opacity-70" : ""}`;
+                        const lead =
+                          ev.type === "eta" ? "ETA"
+                          : ev.type === "snag" ? "⚑ Snag"
+                          : ev.type === "reserved" ? "◌ Resv"
+                          : fmtHours(ev.hours);
+                        return (
+                          <button key={j} onClick={(e) => { e.stopPropagation(); onOpen(ev.id); }}
+                            draggable={canOperate && (ev.type === "install" || ev.type === "reserved") && ev.first}
+                            onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); setDragKind("install"); }}
+                            className={`w-full text-left text-[10px] leading-tight px-1.5 py-1 rounded truncate transition hover:opacity-80 ${style}`}
+                            title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
+                            <span className="font-medium">{lead}</span> {ev.label}
+                            {ev.sub && <span className="block opacity-70 truncate">{ev.sub}</span>}
+                          </button>
+                        );
+                      })}
                       {events.length > 3 && <div className="text-[10px] text-slate-400 pl-1">+{events.length - 3} more</div>}
                     </div>
                   </>
@@ -987,6 +1140,82 @@ function CalendarView({ index, level, onOpen, onSchedule }) {
 }
 
 /* ============================================================
+   SNAGS VIEW — every job with open snags, in one place
+   ============================================================ */
+function SnagsView({ snagJobs, onOpen }) {
+  const [q, setQ] = useState("");
+  const list = snagJobs.filter((e) => {
+    if (!q.trim()) return true;
+    const s = q.toLowerCase();
+    return [e.clientName, e.address, e.consultant, e.po, e.range, e.colour].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
+  });
+
+  return (
+    <div>
+      <div className="relative mb-4">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="Search snags by client, PO, address…"
+          className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
+      </div>
+
+      {snagJobs.length === 0 ? (
+        <div className="text-center py-16 px-4">
+          <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-3 text-emerald-500"><Check size={26} /></div>
+          <p className="font-medium text-slate-700">No open snags</p>
+          <p className="text-sm text-slate-400">Everything's clear. Snags logged on any job show up here until resolved.</p>
+        </div>
+      ) : list.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
+      ) : (
+        <div className="grid gap-3">
+          {list.map((e) => {
+            const open = (e.snags || []).filter((s) => !s.resolved);
+            const wasCompleted = e.status === "complete";
+            return (
+              <button key={e.id} onClick={() => onOpen(e.id)}
+                className="text-left bg-red-50 rounded-xl border border-red-200 p-4 hover:border-red-300 hover:shadow-sm transition">
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate flex items-center gap-2 text-slate-900">
+                      <Flag size={15} className="text-red-500 shrink-0" />
+                      {e.clientName || "Unnamed client"}
+                    </div>
+                    <div className="text-sm text-slate-500 flex items-center gap-1 truncate mt-0.5"><MapPin size={13} className="shrink-0" /> {e.address || "No address"}</div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-red-100 text-red-700 border border-red-200">
+                      {open.length} open snag{open.length > 1 ? "s" : ""}
+                    </span>
+                    {wasCompleted && <span className="text-[10px] text-slate-500">was completed</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-slate-500 mb-2 flex-wrap">
+                  {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
+                  {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
+                  {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
+                  {e.snagVisitDate
+                    ? <span className="flex items-center gap-1 text-red-600 font-medium"><Calendar size={12} /> Return visit {fmtDate(e.snagVisitDate)}</span>
+                    : <span className="flex items-center gap-1 text-amber-600 font-medium"><Calendar size={12} /> Not yet scheduled</span>}
+                </div>
+                <div className="space-y-1">
+                  {open.slice(0, 2).map((s) => (
+                    <p key={s.id} className="text-sm text-slate-700 flex items-start gap-1.5">
+                      <span className="text-red-400 mt-0.5">•</span> {s.note || "(no description)"}
+                    </p>
+                  ))}
+                  {open.length > 2 && <p className="text-xs text-slate-400">+{open.length - 2} more…</p>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    HISTORY VIEW — completed installations
    ============================================================ */
 function HistoryView({ history, onOpen }) {
@@ -994,7 +1223,7 @@ function HistoryView({ history, onOpen }) {
   const filtered = history.filter((e) => {
     if (!q.trim()) return true;
     const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.product, e.po].filter(Boolean).some((x) => x.toLowerCase().includes(s));
+    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
   });
 
   // Group by completion month (falls back to installed date, then last update)
@@ -1053,7 +1282,7 @@ function HistoryView({ history, onOpen }) {
                         </div>
                         <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
                           {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-                          {e.product && <span className="flex items-center gap-1"><Package size={12} /> {e.product}</span>}
+                          {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
                           {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
                           {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
                           <span className="flex items-center gap-1">
@@ -1186,7 +1415,7 @@ function ReportsView({ index }) {
                           <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
                           <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
                           <td className="py-2 pr-3">{j.address || "—"}</td>
-                          <td className="py-2 pr-3">{j.product || "—"}</td>
+                          <td className="py-2 pr-3">{productSummary(j) || "—"}</td>
                           <td className="py-2 pr-3">{j.consultant || "—"}</td>
                           <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
                           <td className="py-2 pr-3">
@@ -1325,7 +1554,7 @@ function AvailabilityView({ index }) {
 /* ============================================================
    MENU DRAWER
    ============================================================ */
-function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
+function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
   const today = todayISO();
   const week = addDays(today, 7);
   const dueSoon = index.filter((e) => e.materialEta && e.materialEta >= today && e.materialEta <= week && e.status === "ordered").length;
@@ -1352,6 +1581,7 @@ function MenuDrawer({ user, level, index, historyCount, view, onView, onSignIn, 
         <nav className="p-2 flex-1 overflow-y-auto">
           <MenuItem icon={ClipboardList} label="Projects" active={view === "projects"} onClick={() => onView("projects")} />
           <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
+          <MenuItem icon={Flag} label="Snags" active={view === "snags"} badge={snagTotal} danger onClick={() => onView("snags")} />
           <MenuItem icon={FileText} label="Reports" active={view === "reports"} onClick={() => onView("reports")} />
           {level >= 2 && <MenuItem icon={CalendarCheck} label="Availability" active={view === "availability"} onClick={() => onView("availability")} />}
           <MenuItem icon={Archive} label="History" active={view === "history"} badge={historyCount} onClick={() => onView("history")} />
@@ -1409,11 +1639,19 @@ function MenuItem({ icon: Icon, label, active, badge, danger, onClick }) {
    NEW PROJECT FORM
    ============================================================ */
 function ProjectForm({ onClose, onSave }) {
-  const [f, setF] = useState({ clientName: "", contact: "", address: "", po: "", product: "", consultant: "", team: "", orderDate: todayISO(), materialEta: "" });
+  const [f, setF] = useState({
+    clientName: "", contact: "", address: "", po: "",
+    type: "", range: "", colour: "", sqm: "",
+    consultant: "", team: "", orderDate: todayISO(), materialEta: "", reserved: false,
+  });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const submit = () => {
     if (!f.clientName.trim()) return;
-    onSave({ id: uid(), ...f, status: "ordered", snags: [], log: [], installTime: "", installDate: "", installEndDate: "", estHours: "", completedAt: null, createdAt: Date.now(), updatedAt: Date.now() });
+    onSave({
+      id: uid(), ...f, status: "ordered", snags: [], log: [],
+      installTime: "", installDate: "", installEndDate: "", estHours: "",
+      snagVisitDate: "", completedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
+    });
   };
   return (
     <Modal onClose={onClose}>
@@ -1427,8 +1665,31 @@ function ProjectForm({ onClose, onSave }) {
           <Input label="Client contact (phone / email)" value={f.contact} onChange={(v) => set("contact", v)} />
           <Input label="Address" value={f.address} onChange={(v) => set("address", v)} />
           <Input label="Internal PO number" value={f.po} onChange={(v) => set("po", v)} />
-          <Input label="Product / carpet" value={f.product} onChange={(v) => set("product", v)} />
-          <Input label="Consultant" value={f.consultant} onChange={(v) => set("consultant", v)} />
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-slate-500 mb-1 block">Type</label>
+              <select value={f.type} onChange={(e) => set("type", e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                <option value="">Select…</option>
+                {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <Input label="Square meters (m²)" value={f.sqm} onChange={(v) => set("sqm", v)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Range" value={f.range} onChange={(v) => set("range", v)} />
+            <Input label="Colour" value={f.colour} onChange={(v) => set("colour", v)} />
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">Consultant</label>
+            <select value={f.consultant} onChange={(e) => set("consultant", e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+              <option value="">Select…</option>
+              {CONSULTANTS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
           <div>
             <label className="text-xs text-slate-500 mb-1 block">Installation team</label>
             <select value={f.team} onChange={(e) => set("team", e.target.value)}
@@ -1443,6 +1704,11 @@ function ProjectForm({ onClose, onSave }) {
             <div><label className="text-xs text-slate-500 mb-1 block">Material ETA</label>
               <input type="date" value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
           </div>
+
+          <label className="flex items-center gap-2 pt-1 cursor-pointer">
+            <input type="checkbox" checked={f.reserved} onChange={(e) => set("reserved", e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
+            <span className="text-sm text-slate-700">Pencil in as <b>Reserved</b> (material not yet arrived — shows as unconfirmed on the calendar)</span>
+          </label>
         </div>
         <button onClick={submit} disabled={!f.clientName.trim()}
           className="w-full mt-5 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-40">Create project</button>
