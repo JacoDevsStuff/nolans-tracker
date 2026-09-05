@@ -87,7 +87,6 @@ function productSummary(e) {
 }
 const isRepairJob = (e) => e && e.kind === "repair";
 
-
 /* ---------- Image compression (keeps storage small) ---------- */
 function compressImage(file, maxDim = 1200, quality = 0.6) {
   return new Promise((resolve, reject) => {
@@ -248,18 +247,18 @@ export default function App() {
     return saved;
   };
 
-  /** Soft delete — keeps the record so it still shows in History, tagged with who & when */
-  const deleteProject = async (id) => {
+  /** Soft delete — keeps the record so it still shows in History, tagged with who, when, and why */
+  const deleteProject = async (id, reason) => {
     const p = await fetchProject(id);
     if (!p) return;
-    await saveProject({ ...p, deleted: true, deletedAt: Date.now(), deletedBy: user ? user.name : "Unknown" });
+    await saveProject({ ...p, deleted: true, deletedAt: Date.now(), deletedBy: user ? user.name : "Unknown", deleteReason: (reason || "").trim() });
     setOpenId(null);
   };
   /** Bring a deleted project back to life */
   const restoreProject = async (id) => {
     const p = await fetchProject(id);
     if (!p) return;
-    await saveProject({ ...p, deleted: false, deletedAt: null, deletedBy: null });
+    await saveProject({ ...p, deleted: false, deletedAt: null, deletedBy: null, deleteReason: "" });
   };
   /** Permanently wipe (developer only) */
   const purgeProject = async (id) => {
@@ -530,6 +529,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
   const [snagBusy, setSnagBusy] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const fileRef = useRef(null);
@@ -628,6 +628,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
         {p.deleted && (
           <div className="rounded-lg bg-orange-50 border border-orange-200 p-3 text-sm text-orange-800">
             This project was deleted{p.deletedBy ? ` by ${p.deletedBy}` : ""}{p.deletedAt ? ` on ${fmtWhen(p.deletedAt)}` : ""}. It stays in History for the record.
+            {p.deleteReason && <span className="block mt-1"><b>Reason:</b> {p.deleteReason}</span>}
           </div>
         )}
 
@@ -898,10 +899,20 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
                 )}
               </div>
             ) : confirmDel ? (
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex flex-col gap-2">
                 <span className="text-sm text-slate-600">Delete this project? It stays in History, marked deleted.</span>
-                <button onClick={() => onDelete(p.id)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, delete</button>
-                <button onClick={() => setConfirmDel(false)} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
+                <input
+                  autoFocus
+                  value={deleteReason}
+                  onChange={(e) => setDeleteReason(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && onDelete(p.id, deleteReason)}
+                  placeholder="Reason for deleting (optional)…"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
+                />
+                <div className="flex items-center gap-2">
+                  <button onClick={() => onDelete(p.id, deleteReason)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, delete</button>
+                  <button onClick={() => { setConfirmDel(false); setDeleteReason(""); }} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
+                </div>
               </div>
             ) : (
               <button onClick={() => setConfirmDel(true)} className="flex items-center gap-1.5 text-sm text-red-600 hover:underline"><Trash2 size={14} /> Delete project</button>
@@ -1400,29 +1411,98 @@ function SnagsView({ snagJobs, level, onOpen }) {
 }
 
 /* ============================================================
-   HISTORY VIEW — completed installations + deleted projects
-   Deleted projects show in orange, tagged with who & when.
+   HISTORY VIEW — completed installations, and (separately) deleted
+   projects. Deleted projects only ever appear in their own section
+   at the bottom, and only when at least one exists.
    ============================================================ */
 function HistoryView({ history, onOpen }) {
   const [q, setQ] = useState("");
   const filtered = history.filter((e) => {
     if (!q.trim()) return true;
     const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po, e.repairType, e.deletedBy].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
+    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po, e.repairType, e.deletedBy, e.deleteReason].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
   });
 
-  // Group by month (deleted → deletion month; else completion / installed / update month)
-  const groups = {};
-  filtered.forEach((e) => {
-    const when = e.deleted
-      ? (e.deletedAt ? new Date(e.deletedAt).toISOString().slice(0, 10) : todayISO())
-      : (e.installedDate || (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : null)
-        || (e.updatedAt ? new Date(e.updatedAt).toISOString().slice(0, 10) : todayISO()));
+  const completed = filtered.filter((e) => !e.deleted);
+  const deleted = filtered.filter((e) => e.deleted);
+
+  // Group completed jobs by month (installed / completed / updated date)
+  const completedGroups = {};
+  completed.forEach((e) => {
+    const when = e.installedDate || (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : null)
+      || (e.updatedAt ? new Date(e.updatedAt).toISOString().slice(0, 10) : todayISO());
     const key = when.slice(0, 7);
-    (groups[key] = groups[key] || []).push({ ...e, when });
+    (completedGroups[key] = completedGroups[key] || []).push({ ...e, when });
   });
-  const keys = Object.keys(groups).sort().reverse();
-  keys.forEach((k) => groups[k].sort((a, b) => b.when.localeCompare(a.when)));
+  const completedKeys = Object.keys(completedGroups).sort().reverse();
+  completedKeys.forEach((k) => completedGroups[k].sort((a, b) => b.when.localeCompare(a.when)));
+
+  // Group deleted projects by month of deletion
+  const deletedGroups = {};
+  deleted.forEach((e) => {
+    const when = e.deletedAt ? new Date(e.deletedAt).toISOString().slice(0, 10) : todayISO();
+    const key = when.slice(0, 7);
+    (deletedGroups[key] = deletedGroups[key] || []).push({ ...e, when });
+  });
+  const deletedKeys = Object.keys(deletedGroups).sort().reverse();
+  deletedKeys.forEach((k) => deletedGroups[k].sort((a, b) => b.when.localeCompare(a.when)));
+
+  const renderCard = (e) => {
+    const days = dateRange(e.installDate, e.installEndDate).length;
+    const del = e.deleted;
+    const repair = isRepairJob(e);
+    return (
+      <button key={e.id} onClick={() => onOpen(e.id)}
+        className={`text-left rounded-xl border p-3.5 hover:shadow-sm transition ${
+          del ? "bg-orange-50 border-orange-200 hover:border-orange-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+        <div className="flex items-start justify-between gap-3 mb-1.5">
+          <div className="min-w-0">
+            <div className="font-semibold truncate flex items-center gap-2">
+              {e.clientName || "Unnamed client"}
+              {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
+            </div>
+            <div className="text-sm text-slate-500 flex items-center gap-1 truncate">
+              <MapPin size={13} className="shrink-0" /> {e.address || "No address"}
+            </div>
+          </div>
+          {del ? (
+            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-orange-100 text-orange-800 border-orange-300">
+              <Trash2 size={11} className="inline -mt-0.5 mr-0.5" /> Deleted
+            </span>
+          ) : (
+            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-emerald-100 text-emerald-800 border-emerald-200">
+              <Check size={11} className="inline -mt-0.5 mr-0.5" /> Complete
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
+          {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
+          {repair
+            ? (e.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {e.repairType}</span>)
+            : (productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>)}
+          {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
+          {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
+          {e.installDate && (
+            <span className="flex items-center gap-1">
+              <Calendar size={12} /> {repair ? "Repaired" : "Installed"} {fmtRange(e.installDate, e.installEndDate)}
+              {days > 1 ? ` (${days} days)` : ""}
+            </span>
+          )}
+          {!del && e.openSnags > 0 && (
+            <span className="flex items-center gap-1 text-amber-700 font-medium">
+              <AlertTriangle size={12} /> closed with {e.openSnags} open snag{e.openSnags > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+        {del && (
+          <p className="mt-2 text-xs text-orange-700 flex items-center gap-1">
+            <Trash2 size={12} /> Deleted{e.deletedBy ? ` by ${e.deletedBy}` : ""}{e.deletedAt ? ` · ${fmtWhen(e.deletedAt)}` : ""}
+            {e.deleteReason ? ` · Reason: ${e.deleteReason}` : ""}
+          </p>
+        )}
+      </button>
+    );
+  };
 
   return (
     <div>
@@ -1442,74 +1522,49 @@ function HistoryView({ history, onOpen }) {
       ) : filtered.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
       ) : (
-        <div className="space-y-5">
-          {keys.map((k) => {
-            const [y, m] = k.split("-");
-            return (
-              <div key={k}>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
-                  {MONTHS[Number(m) - 1]} {y} <span className="text-slate-300">· {groups[k].length}</span>
-                </h3>
-                <div className="grid gap-2">
-                  {groups[k].map((e) => {
-                    const days = dateRange(e.installDate, e.installEndDate).length;
-                    const del = e.deleted;
-                    const repair = isRepairJob(e);
-                    return (
-                      <button key={e.id} onClick={() => onOpen(e.id)}
-                        className={`text-left rounded-xl border p-3.5 hover:shadow-sm transition ${
-                          del ? "bg-orange-50 border-orange-200 hover:border-orange-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                        <div className="flex items-start justify-between gap-3 mb-1.5">
-                          <div className="min-w-0">
-                            <div className="font-semibold truncate flex items-center gap-2">
-                              {e.clientName || "Unnamed client"}
-                              {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
-                            </div>
-                            <div className="text-sm text-slate-500 flex items-center gap-1 truncate">
-                              <MapPin size={13} className="shrink-0" /> {e.address || "No address"}
-                            </div>
-                          </div>
-                          {del ? (
-                            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-orange-100 text-orange-800 border-orange-300">
-                              <Trash2 size={11} className="inline -mt-0.5 mr-0.5" /> Deleted
-                            </span>
-                          ) : (
-                            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-emerald-100 text-emerald-800 border-emerald-200">
-                              <Check size={11} className="inline -mt-0.5 mr-0.5" /> Complete
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-                          {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-                          {repair
-                            ? (e.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {e.repairType}</span>)
-                            : (productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>)}
-                          {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
-                          {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
-                          {e.installDate && (
-                            <span className="flex items-center gap-1">
-                              <Calendar size={12} /> {repair ? "Repaired" : "Installed"} {fmtRange(e.installDate, e.installEndDate)}
-                              {days > 1 ? ` (${days} days)` : ""}
-                            </span>
-                          )}
-                          {!del && e.openSnags > 0 && (
-                            <span className="flex items-center gap-1 text-amber-700 font-medium">
-                              <AlertTriangle size={12} /> closed with {e.openSnags} open snag{e.openSnags > 1 ? "s" : ""}
-                            </span>
-                          )}
-                        </div>
-                        {del && (
-                          <p className="mt-2 text-xs text-orange-700 flex items-center gap-1">
-                            <Trash2 size={12} /> Deleted{e.deletedBy ? ` by ${e.deletedBy}` : ""}{e.deletedAt ? ` · ${fmtWhen(e.deletedAt)}` : ""}
-                          </p>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+        <div className="space-y-8">
+          {/* Completed jobs */}
+          {completedKeys.length > 0 && (
+            <div className="space-y-5">
+              {completedKeys.map((k) => {
+                const [y, m] = k.split("-");
+                return (
+                  <div key={k}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+                      {MONTHS[Number(m) - 1]} {y} <span className="text-slate-300">· {completedGroups[k].length}</span>
+                    </h3>
+                    <div className="grid gap-2">
+                      {completedGroups[k].map(renderCard)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Deleted projects — own section, only when any exist */}
+          {deletedKeys.length > 0 && (
+            <div>
+              <h2 className="text-sm font-semibold text-orange-800 mb-3 pb-1.5 border-b border-orange-200 flex items-center gap-1.5">
+                <Trash2 size={14} /> Deleted projects
+              </h2>
+              <div className="space-y-5">
+                {deletedKeys.map((k) => {
+                  const [y, m] = k.split("-");
+                  return (
+                    <div key={k}>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-orange-400 mb-2">
+                        {MONTHS[Number(m) - 1]} {y} <span className="text-orange-300">· {deletedGroups[k].length}</span>
+                      </h3>
+                      <div className="grid gap-2">
+                        {deletedGroups[k].map(renderCard)}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          )}
         </div>
       )}
     </div>
