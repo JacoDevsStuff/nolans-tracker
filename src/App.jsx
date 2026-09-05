@@ -171,6 +171,22 @@ function startOfWeek(iso) {
 const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && aEnd >= bStart;
 const fmtDayLabel = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
 
+/* ---------- New-snag notification (co-ordinator+) ----------
+   Tracked client-side in localStorage: when a co-ordinator/developer opens
+   a project, we stamp "now" against that project's id. Any open snag added
+   after that stamp counts as unseen until the project is opened again. */
+const SNAG_SEEN_PREFIX = "nolans_snag_seen_";
+function getSnagSeen(id) {
+  try { return Number(localStorage.getItem(SNAG_SEEN_PREFIX + id) || 0); } catch { return 0; }
+}
+function markSnagSeen(id) {
+  try { localStorage.setItem(SNAG_SEEN_PREFIX + id, String(Date.now())); } catch { /* ignore */ }
+}
+function hasNewSnag(e) {
+  const seen = getSnagSeen(e.id);
+  return (e.snags || []).some((s) => !s.resolved && (s.createdAt || 0) > seen);
+}
+
 /* Date a completed job counts against for invoicing (installed → completed → install end) */
 const invoiceDate = (e) =>
   e.installedDate ||
@@ -292,6 +308,7 @@ export default function App() {
 
   const counts = STATUSES.reduce((a, s) => ({ ...a, [s.key]: live.filter((e) => e.status === s.key).length }), {});
   const snagCount = active.reduce((a, e) => a + (e.openSnags || 0), 0);
+  const hasNewSnags = level >= 2 && openSnagJobs.some(hasNewSnag);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -335,6 +352,9 @@ export default function App() {
               className={`flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 -mb-px transition ${
                 view === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               <t.icon size={15} /> {t.label}
+              {t.key === "snags" && hasNewSnags && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white animate-pulse">NEW</span>
+              )}
               {t.count > 0 && <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${t.danger ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>{t.count}</span>}
             </button>
           ))}
@@ -346,7 +366,7 @@ export default function App() {
           <CalendarView index={active} level={level} onOpen={(id) => setOpenId(id)}
             onSchedule={scheduleProject} onScheduleSnag={scheduleSnagVisit} snagJobs={openSnagJobs} />
         ) : view === "snags" ? (
-          <SnagsView snagJobs={openSnagJobs} onOpen={(id) => setOpenId(id)} />
+          <SnagsView snagJobs={openSnagJobs} level={level} onOpen={(id) => setOpenId(id)} />
         ) : view === "reports" ? (
           <ReportsView index={live} level={level} />
         ) : view === "availability" && level >= 2 ? (
@@ -525,8 +545,9 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
         proj.log = proj.notes ? [{ id: uid(), text: proj.notes, role: 0, createdAt: proj.createdAt || Date.now() }] : [];
       }
       setP(proj);
+      if (proj && level >= 2) markSnagSeen(id); // clears the "NEW" flag for this project
     })();
-  }, [id]);
+  }, [id, level]);
 
   const patch = (fields) => setP((prev) => ({ ...prev, ...fields }));
 
@@ -542,7 +563,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
   };
 
   const addSnag = async (photo) => {
-    const snag = { id: uid(), note: snagNote.trim(), photo: photo || null, resolved: false, createdAt: Date.now() };
+    const snag = { id: uid(), note: snagNote.trim(), photo: photo || null, resolved: false, createdAt: Date.now(), author: user ? user.name : "" };
     const next = { ...p, snags: [snag, ...(p.snags || [])] };
     setSnagNote("");
     await persist(next);
@@ -809,7 +830,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
             </div>
           )}
 
-          {canOperate && (
+          {canNote && (
             <div className="bg-slate-50 rounded-lg p-3 mb-3">
               <input value={snagNote} onChange={(e) => setSnagNote(e.target.value)} placeholder="Describe the snag…"
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
@@ -841,7 +862,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
                   )}
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm ${s.resolved ? "line-through text-slate-400" : "text-slate-800"}`}>{s.note || "(no description)"}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{fmtWhen(s.createdAt)}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{s.author ? `${s.author} · ` : ""}{fmtWhen(s.createdAt)}</p>
                     {canOperate && (
                       <div className="flex gap-3 mt-1.5">
                         <button onClick={() => toggleSnag(s.id)} className="text-xs font-medium text-emerald-700 hover:underline">
@@ -1228,10 +1249,11 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
                           : ev.type === "repair" ? `🔧 ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
                           : ev.type === "reserved" ? `◌ ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
                           : (ev.first ? (ev.time || "TBC") : fmtHours(ev.hours));
+                        const draggableEvent = canOperate && ev.first && (ev.type === "install" || ev.type === "reserved" || ev.type === "repair" || ev.type === "snag");
                         return (
                           <button key={j} onClick={(e) => { e.stopPropagation(); onOpen(ev.id); }}
-                            draggable={canOperate && (ev.type === "install" || ev.type === "reserved" || ev.type === "repair") && ev.first}
-                            onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); setDragKind("install"); }}
+                            draggable={draggableEvent}
+                            onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); setDragKind(ev.type === "snag" ? "snag" : "install"); }}
                             className={`w-full text-left text-[10px] leading-tight px-1.5 py-1 rounded truncate transition hover:opacity-80 ${style}`}
                             title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.time ? " · " + ev.time : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
                             <span className="font-medium">{lead}</span> {ev.label}
@@ -1301,8 +1323,9 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
 /* ============================================================
    SNAGS VIEW — every job with open snags, in one place
    ============================================================ */
-function SnagsView({ snagJobs, onOpen }) {
+function SnagsView({ snagJobs, level, onOpen }) {
   const [q, setQ] = useState("");
+  const canSeeNew = level >= 2;
   const list = snagJobs.filter((e) => {
     if (!q.trim()) return true;
     const s = q.toLowerCase();
@@ -1331,14 +1354,16 @@ function SnagsView({ snagJobs, onOpen }) {
           {list.map((e) => {
             const open = (e.snags || []).filter((s) => !s.resolved);
             const wasCompleted = e.status === "complete";
+            const isNew = canSeeNew && hasNewSnag(e);
             return (
               <button key={e.id} onClick={() => onOpen(e.id)}
-                className="text-left bg-red-50 rounded-xl border border-red-200 p-4 hover:border-red-300 hover:shadow-sm transition">
+                className={`text-left bg-red-50 rounded-xl border p-4 hover:shadow-sm transition ${isNew ? "border-red-400 ring-1 ring-red-300" : "border-red-200 hover:border-red-300"}`}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div className="min-w-0">
                     <div className="font-semibold truncate flex items-center gap-2 text-slate-900">
                       <Flag size={15} className="text-red-500 shrink-0" />
                       {e.clientName || "Unnamed client"}
+                      {isNew && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">NEW</span>}
                     </div>
                     <div className="text-sm text-slate-500 flex items-center gap-1 truncate mt-0.5"><MapPin size={13} className="shrink-0" /> {e.address || "No address"}</div>
                   </div>
