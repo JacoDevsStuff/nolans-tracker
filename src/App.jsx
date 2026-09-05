@@ -3,7 +3,7 @@ import { supabase, loadAll, fetchProject, upsertProject, removeProject } from ".
 import {
   Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
   MapPin, User, Package, Calendar, AlertTriangle, ChevronRight, ChevronLeft,
-  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck, Flag,
+  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck, Flag, Wrench, Receipt, RotateCcw,
 } from "lucide-react";
 
 /* ============================================================
@@ -12,8 +12,10 @@ import {
    its own extras. Add or change people here (or just ask me).
      Consultants → view + post notes
      Coordinator → the above + dates, status, material received,
-                    install time, team, snags & photos
-     Developer   → the above + client/order fields, create/delete
+                    install time, team, snags & photos,
+                    CREATE projects
+     Developer   → the above + edit client/order fields,
+                    delete / restore / permanently remove
    ============================================================ */
 const USERS = {
   "0001": { name: "Jaco",        level: 1 },
@@ -45,8 +47,11 @@ const TIME_SLOTS = (() => {
 })();
 /* Estimated job durations the co-ordinator can pick from */
 const DURATIONS = [1, 1.5, 2, 3, 4, 5, 6, 8, 12, 16, 24];
-const SNAG_HOURS = 2; // capacity a snag return visit consumes by default
+const SNAG_HOURS = 2; // default capacity a snag return visit consumes (now editable per job)
+const SNAG_DURATIONS = [1, 1.5, 2, 3, 4, 6, 8];
 const fmtHours = (h) => (h % 1 === 0 ? `${h}h` : `${Math.floor(h)}h30`);
+/* Hours a snag return visit consumes on the day (per-job override, falls back to default) */
+const snagHoursOf = (e) => (e && e.snagHours != null && e.snagHours !== "" ? Number(e.snagHours) : SNAG_HOURS);
 
 /* ---------- Status pipeline ---------- */
 const STATUSES = [
@@ -68,9 +73,11 @@ const teamLabel = (k) => (TEAMS.find((t) => t.key === k) || {}).label || "Unassi
 
 /* ---------- Consultants (edit here to add/rename) ---------- */
 const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Luciano", "Marco"];
+/* Repairs can also be logged by the front office (receptionist / walk-in) */
+const REPAIR_CONSULTANTS = [...CONSULTANTS, "Office"];
 
 /* ---------- Product type options ---------- */
-const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Axminster", "Rug", "Other"];
+const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Turf", "Novillon", "Rug", "Other"];
 
 /* Short one-line product summary from the split fields (with legacy fallback) */
 function productSummary(e) {
@@ -78,6 +85,7 @@ function productSummary(e) {
   if (parts.length) return parts.join(" · ") + (e.sqm ? ` · ${e.sqm}m²` : "");
   return e.product || ""; // legacy single-field fallback
 }
+const isRepairJob = (e) => e && e.kind === "repair";
 
 
 /* ---------- Image compression (keeps storage small) ---------- */
@@ -163,6 +171,12 @@ function startOfWeek(iso) {
 const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && aEnd >= bStart;
 const fmtDayLabel = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
 
+/* Date a completed job counts against for invoicing (installed → completed → install end) */
+const invoiceDate = (e) =>
+  e.installedDate ||
+  (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : "") ||
+  e.installEndDate || e.installDate || "";
+
 /* ============================================================
    MAIN
    ============================================================ */
@@ -182,7 +196,8 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
 
   const level = user ? user.level : 0;
-  const canInternal = level >= 3;
+  const canCreate = level >= 2;   // co-ordinator can now create projects
+  const canInternal = level >= 3; // developer — edit locked fields, delete/restore
 
   const loadAll_ = useCallback(async () => {
     const list = await loadAll();
@@ -217,7 +232,21 @@ export default function App() {
     return saved;
   };
 
+  /** Soft delete — keeps the record so it still shows in History, tagged with who & when */
   const deleteProject = async (id) => {
+    const p = await fetchProject(id);
+    if (!p) return;
+    await saveProject({ ...p, deleted: true, deletedAt: Date.now(), deletedBy: user ? user.name : "Unknown" });
+    setOpenId(null);
+  };
+  /** Bring a deleted project back to life */
+  const restoreProject = async (id) => {
+    const p = await fetchProject(id);
+    if (!p) return;
+    await saveProject({ ...p, deleted: false, deletedAt: null, deletedBy: null });
+  };
+  /** Permanently wipe (developer only) */
+  const purgeProject = async (id) => {
     await removeProject(id);
     setIndex((prev) => prev.filter((e) => e.id !== id));
     setOpenId(null);
@@ -236,10 +265,12 @@ export default function App() {
     await saveProject(p);
   };
 
-
-  const active = index.filter((e) => e.status !== "complete");
-  const openSnagJobs = index.filter((e) => (e.openSnags || 0) > 0);
-  const history = index.filter((e) => e.status === "complete" && !(e.openSnags > 0));
+  // Live (non-deleted) records feed every working view
+  const live = index.filter((e) => !e.deleted);
+  const active = live.filter((e) => e.status !== "complete");
+  const openSnagJobs = live.filter((e) => (e.openSnags || 0) > 0);
+  // History = completed jobs with no open snags, PLUS anything that's been deleted
+  const history = index.filter((e) => e.deleted || (e.status === "complete" && !(e.openSnags > 0)));
 
   /** Schedule a snag return visit onto a day */
   const scheduleSnagVisit = async (id, iso) => {
@@ -254,12 +285,12 @@ export default function App() {
     if (filter !== "all" && filter !== "snags" && e.status !== filter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
-      return [e.clientName, e.address, e.consultant, e.type, e.range, e.colour, e.product, e.po].filter(Boolean).some((x) => String(x).toLowerCase().includes(q));
+      return [e.clientName, e.address, e.consultant, e.type, e.range, e.colour, e.product, e.po, e.repairType].filter(Boolean).some((x) => String(x).toLowerCase().includes(q));
     }
     return true;
   });
 
-  const counts = STATUSES.reduce((a, s) => ({ ...a, [s.key]: index.filter((e) => e.status === s.key).length }), {});
+  const counts = STATUSES.reduce((a, s) => ({ ...a, [s.key]: live.filter((e) => e.status === s.key).length }), {});
   const snagCount = active.reduce((a, e) => a + (e.openSnags || 0), 0);
 
   return (
@@ -273,7 +304,7 @@ export default function App() {
           <div className="flex items-center gap-2 flex-1 min-w-0">
             <div className="min-w-0">
               <h1 className="font-semibold leading-tight truncate">{COMPANY_NAME}</h1>
-              <p className="text-xs text-slate-500 leading-tight">{active.length} active · {history.length} completed</p>
+              <p className="text-xs text-slate-500 leading-tight">{active.length} active · {history.length} in history</p>
             </div>
           </div>
           <button onClick={manualRefresh} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" title="Refresh">
@@ -317,7 +348,7 @@ export default function App() {
         ) : view === "snags" ? (
           <SnagsView snagJobs={openSnagJobs} onOpen={(id) => setOpenId(id)} />
         ) : view === "reports" ? (
-          <ReportsView index={index} />
+          <ReportsView index={live} level={level} />
         ) : view === "availability" && level >= 2 ? (
           <AvailabilityView index={active} />
         ) : view === "history" ? (
@@ -334,7 +365,7 @@ export default function App() {
               className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
             />
           </div>
-          {canInternal && (
+          {canCreate && (
             <button onClick={() => setCreating(true)} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
               <Plus size={16} /> New Project
             </button>
@@ -357,7 +388,7 @@ export default function App() {
         {loading ? (
           <div className="text-center py-20 text-slate-400 text-sm">Loading…</div>
         ) : filtered.length === 0 ? (
-          <EmptyState canCreate={canInternal} onCreate={() => setCreating(true)} hasAny={active.length > 0} />
+          <EmptyState canCreate={canCreate} onCreate={() => setCreating(true)} hasAny={active.length > 0} />
         ) : (
           <div className="grid gap-3">
             {filtered.map((e) => <Card key={e.id} entry={e} onClick={() => setOpenId(e.id)} />)}
@@ -413,6 +444,7 @@ export default function App() {
           id={openId} level={level} user={user}
           onClose={() => { setOpenId(null); loadAll_(); }}
           onSave={saveProject} onDelete={deleteProject}
+          onRestore={restoreProject} onPurge={purgeProject}
         />
       )}
     </div>
@@ -428,12 +460,14 @@ function Card({ entry, onClick }) {
   const pct = (stage / (STATUSES.length - 1)) * 100;
   const scheduled = entry.status !== "ordered" && entry.status !== "material_received";
   const multiDay = entry.installEndDate && entry.installDate && entry.installEndDate > entry.installDate;
+  const repair = isRepairJob(entry);
   return (
     <button onClick={onClick} className="text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-slate-300 hover:shadow-sm transition">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0">
           <div className="font-semibold truncate flex items-center gap-2">
             {entry.clientName || "Unnamed client"}
+            {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
             {entry.reserved && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-dashed border-slate-300">RESERVED</span>}
           </div>
           <div className="text-sm text-slate-500 flex items-center gap-1 truncate"><MapPin size={13} className="shrink-0" /> {entry.address || "No address"}</div>
@@ -442,14 +476,19 @@ function Card({ entry, onClick }) {
       </div>
       <div className="flex items-center gap-3 text-xs text-slate-500 mb-3 flex-wrap">
         {entry.po && <span className="flex items-center gap-1"><Hash size={12} /> {entry.po}</span>}
-        {productSummary(entry) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(entry)}</span>}
+        {repair
+          ? (entry.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {entry.repairType}</span>)
+          : (productSummary(entry) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(entry)}</span>)}
+        {repair && entry.type && <span className="flex items-center gap-1"><Package size={12} /> {entry.type}</span>}
         {entry.consultant && <span className="flex items-center gap-1"><User size={12} /> {entry.consultant}</span>}
         {entry.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(entry.team)}</span>}
         <span className="flex items-center gap-1">
           <Calendar size={12} />
           {scheduled
             ? <>Install: {fmtRange(entry.installDate, entry.installEndDate)}{entry.installTime ? ` · ${entry.installTime}` : ""}{multiDay ? ` · ${daysBetween(entry.installDate, entry.installEndDate) + 1} days` : ""}</>
-            : <>Material ETA: {fmtDate(entry.materialEta)}</>}
+            : repair
+              ? <>Repair · awaiting scheduling</>
+              : <>Material ETA: {fmtDate(entry.materialEta)}</>}
         </span>
         {entry.openSnags > 0 && (
           <span className="flex items-center gap-1 text-red-600 font-medium"><AlertTriangle size={12} /> {entry.openSnags} snag{entry.openSnags > 1 ? "s" : ""}</span>
@@ -465,18 +504,19 @@ function Card({ entry, onClick }) {
 /* ============================================================
    DETAIL
    ============================================================ */
-function Detail({ id, level, user, onClose, onSave, onDelete }) {
+function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge }) {
   const [p, setP] = useState(null);
   const [snagNote, setSnagNote] = useState("");
   const [snagBusy, setSnagBusy] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmPurge, setConfirmPurge] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const fileRef = useRef(null);
 
   const canNote = level >= 1;      // consultant+
   const canOperate = level >= 2;   // coordinator+  (dates, status, material, install time, snags, team)
-  const canInternal = level >= 3;  // developer+    (client/order fields, delete project)
+  const canInternal = level >= 3;  // developer+    (client/order fields, delete/restore/purge)
 
   useEffect(() => {
     (async () => {
@@ -542,6 +582,8 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
   const meta = statusMeta(p.status);
   const curIdx = statusIndex(p.status);
   const openSnags = (p.snags || []).filter((s) => !s.resolved).length;
+  const repair = isRepairJob(p);
+  const consultantOptions = repair ? REPAIR_CONSULTANTS : CONSULTANTS;
 
   return (
     <Modal onClose={onClose} wide>
@@ -552,19 +594,29 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
             <input value={p.clientName || ""} onChange={(e) => patch({ clientName: e.target.value })} onBlur={() => onSave(p)}
               className="font-semibold text-lg w-full focus:outline-none border-b border-transparent focus:border-slate-300" placeholder="Client name" />
           ) : <h2 className="font-semibold text-lg truncate">{p.clientName || "Unnamed client"}</h2>}
-          <span className={`inline-block mt-1 text-xs font-medium px-2.5 py-1 rounded-full border ${meta.badge}`}>{meta.label}</span>
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${meta.badge}`}>{meta.label}</span>
+            {repair && <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full border bg-yellow-100 text-yellow-800 border-yellow-300"><Wrench size={11} /> Repair</span>}
+            {p.deleted && <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full border bg-orange-100 text-orange-800 border-orange-300">Deleted</span>}
+          </div>
         </div>
         <button onClick={onClose} className="p-2 -m-1 rounded-lg text-slate-400 hover:bg-slate-100"><X size={20} /></button>
       </div>
 
       <div className="p-5 space-y-6">
+        {p.deleted && (
+          <div className="rounded-lg bg-orange-50 border border-orange-200 p-3 text-sm text-orange-800">
+            This project was deleted{p.deletedBy ? ` by ${p.deletedBy}` : ""}{p.deletedAt ? ` on ${fmtWhen(p.deletedAt)}` : ""}. It stays in History for the record.
+          </div>
+        )}
+
         {/* Status stepper */}
         <section>
           <SectionTitle>Status</SectionTitle>
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {STATUSES.map((s, i) => {
               const done = i <= curIdx;
-              const clickable = canOperate;
+              const clickable = canOperate && !p.deleted;
               return (
                 <React.Fragment key={s.key}>
                   <button
@@ -585,15 +637,15 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
           {canOperate && p.status === "complete" && openSnags > 0 && (
             <p className="mt-2 text-xs text-amber-700 flex items-center gap-1"><AlertTriangle size={12} /> Marked complete with {openSnags} open snag{openSnags > 1 ? "s" : ""}.</p>
           )}
-          {canOperate && p.installDate && (
+          {canOperate && !p.deleted && p.installDate && (
             <button onClick={async () => {
               await persist({ ...p, installDate: "", installEndDate: "", installTime: "",
-                status: p.status === "scheduled" ? "material_received" : p.status });
+                status: p.status === "scheduled" ? (repair ? "ordered" : "material_received") : p.status });
             }} className="mt-2 text-xs font-medium text-slate-500 hover:text-slate-800 hover:underline flex items-center gap-1">
               <Undo2 size={12} /> Unbook (send back to the tray)
             </button>
           )}
-          {canOperate && (
+          {canOperate && !p.deleted && !repair && (
             <label className="mt-3 flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={!!p.reserved} onChange={(e) => persist({ ...p, reserved: e.target.checked })} className="h-4 w-4 rounded border-slate-300" />
               <span className="text-xs text-slate-600">
@@ -617,20 +669,34 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
                   <option value="">Select…</option>
                   {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  {p.type && !PRODUCT_TYPES.includes(p.type) && <option value={p.type}>{p.type}</option>}
                 </select>
               ) : <p className="text-sm text-slate-800">{p.type || p.product || "—"}</p>}
             </div>
-            <Field icon={Package} label="Range" value={p.range} editMode={canInternal} onChange={(v) => patch({ range: v })} onBlur={() => onSave(p)} />
-            <Field icon={Package} label="Colour" value={p.colour} editMode={canInternal} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
-            <Field icon={Hash} label="Square meters (m²)" value={p.sqm} editMode={canInternal} onChange={(v) => patch({ sqm: v })} onBlur={() => onSave(p)} />
+            {repair ? (
+              <div className="sm:col-span-2">
+                <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Wrench size={12} /> Repair type</label>
+                {canInternal ? (
+                  <input value={p.repairType || ""} onChange={(e) => patch({ repairType: e.target.value })} onBlur={() => onSave(p)}
+                    placeholder="e.g. re-stretch lounge, patch burn near hearth…"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
+                ) : <p className="text-sm text-slate-800">{p.repairType || "—"}</p>}
+              </div>
+            ) : (
+              <>
+                <Field icon={Package} label="Range" value={p.range} editMode={canInternal} onChange={(v) => patch({ range: v })} onBlur={() => onSave(p)} />
+                <Field icon={Package} label="Colour" value={p.colour} editMode={canInternal} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
+                <Field icon={Hash} label="Square meters (m²)" value={p.sqm} editMode={canInternal} onChange={(v) => patch({ sqm: v })} onBlur={() => onSave(p)} />
+              </>
+            )}
             <div>
               <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><User size={12} /> Consultant</label>
               {canInternal ? (
                 <select value={p.consultant || ""} onChange={(e) => persist({ ...p, consultant: e.target.value })}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
                   <option value="">Select…</option>
-                  {CONSULTANTS.map((c) => <option key={c} value={c}>{c}</option>)}
-                  {p.consultant && !CONSULTANTS.includes(p.consultant) && <option value={p.consultant}>{p.consultant}</option>}
+                  {consultantOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {p.consultant && !consultantOptions.includes(p.consultant) && <option value={p.consultant}>{p.consultant}</option>}
                 </select>
               ) : <p className="text-sm text-slate-800">{p.consultant || "—"}</p>}
             </div>
@@ -645,13 +711,13 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
               ) : <p className="text-sm text-slate-800">{p.team ? teamLabel(p.team) : "—"}</p>}
             </div>
             <DateField label="Order date" value={p.orderDate} editMode={canOperate} onChange={(v) => persist({ ...p, orderDate: v })} />
-            <DateField label="Material ETA" value={p.materialEta} editMode={canOperate} onChange={(v) => persist({ ...p, materialEta: v })} />
-            <DateField label="Material received" value={p.materialReceivedDate} editMode={canOperate} onChange={(v) => persist({ ...p, materialReceivedDate: v })} />
-            <DateField label="Install start date" value={p.installDate} editMode={canOperate} onChange={(v) => persist({ ...p, installDate: v })} />
-            <DateField label="Install end date (multi-day)" value={p.installEndDate} editMode={canOperate} min={p.installDate}
+            {!repair && <DateField label="Material ETA" value={p.materialEta} editMode={canOperate} onChange={(v) => persist({ ...p, materialEta: v })} />}
+            {!repair && <DateField label="Material received" value={p.materialReceivedDate} editMode={canOperate} onChange={(v) => persist({ ...p, materialReceivedDate: v })} />}
+            <DateField label={repair ? "Repair start date" : "Install start date"} value={p.installDate} editMode={canOperate} onChange={(v) => persist({ ...p, installDate: v })} />
+            <DateField label={repair ? "Repair end date (multi-day)" : "Install end date (multi-day)"} value={p.installEndDate} editMode={canOperate} min={p.installDate}
               hint={p.installDate && p.installEndDate && p.installEndDate > p.installDate ? `${daysBetween(p.installDate, p.installEndDate) + 1} days on site` : "Leave blank for a single day"}
               onChange={(v) => persist({ ...p, installEndDate: v })} />
-            <TimeField label="Install start time" value={p.installTime} editMode={canOperate} onChange={(v) => persist({ ...p, installTime: v })} />
+            <TimeField label={repair ? "Repair start time" : "Install start time"} value={p.installTime} editMode={canOperate} onChange={(v) => persist({ ...p, installTime: v })} />
             <div>
               <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Clock size={12} /> Estimated duration</label>
               {canOperate ? (
@@ -723,11 +789,23 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
               <label className="text-xs text-red-800 mb-1 flex items-center gap-1 font-medium"><Flag size={12} /> Snag return visit</label>
               {canOperate ? (
                 <>
-                  <input type="date" value={p.snagVisitDate || ""} onChange={(e) => persist({ ...p, snagVisitDate: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300" />
-                  <p className="text-[11px] text-red-700/80 mt-1">Or drag this job from the Snags tray onto a day in the Calendar. Counts {fmtHours(SNAG_HOURS)} against that day.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <span className="text-[11px] text-red-700/80">Return date</span>
+                      <input type="date" value={p.snagVisitDate || ""} onChange={(e) => persist({ ...p, snagVisitDate: e.target.value })}
+                        className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300" />
+                    </div>
+                    <div>
+                      <span className="text-[11px] text-red-700/80">Visit duration</span>
+                      <select value={p.snagHours ?? SNAG_HOURS} onChange={(e) => persist({ ...p, snagHours: Number(e.target.value) })}
+                        className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300">
+                        {SNAG_DURATIONS.map((h) => <option key={h} value={h}>{fmtHours(h)}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-red-700/80 mt-1">Or drag this job from the Snags tray onto a day in the Calendar. Counts {fmtHours(snagHoursOf(p))} against that day.</p>
                 </>
-              ) : <p className="text-sm text-slate-800">{p.snagVisitDate ? fmtDate(p.snagVisitDate) : "Not scheduled"}</p>}
+              ) : <p className="text-sm text-slate-800">{p.snagVisitDate ? `${fmtDate(p.snagVisitDate)} · ${fmtHours(snagHoursOf(p))}` : "Not scheduled"}</p>}
             </div>
           )}
 
@@ -783,9 +861,24 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
         {/* Danger zone */}
         {canInternal && (
           <section className="pt-2 border-t border-slate-100">
-            {confirmDel ? (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-600">Delete this project permanently?</span>
+            {p.deleted ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => { onRestore(p.id); onClose(); }} className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
+                  <RotateCcw size={14} /> Restore project
+                </button>
+                {confirmPurge ? (
+                  <>
+                    <span className="text-sm text-slate-600">Permanently remove? This can't be undone.</span>
+                    <button onClick={() => onPurge(p.id)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, wipe it</button>
+                    <button onClick={() => setConfirmPurge(false)} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
+                  </>
+                ) : (
+                  <button onClick={() => setConfirmPurge(true)} className="flex items-center gap-1.5 text-sm text-red-600 hover:underline"><Trash2 size={14} /> Delete permanently</button>
+                )}
+              </div>
+            ) : confirmDel ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-slate-600">Delete this project? It stays in History, marked deleted.</span>
                 <button onClick={() => onDelete(p.id)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, delete</button>
                 <button onClick={() => setConfirmDel(false)} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
               </div>
@@ -810,13 +903,15 @@ function Detail({ id, level, user, onClose, onSave, onDelete }) {
    CALENDAR VIEW
    Material ETAs (amber) and installation days (blue). Jobs whose
    material has arrived but aren't booked yet sit in the sticky-note
-   tray; the co-ordinator drags one onto a day to book it. Each day
-   shows how much of the working day is still free.
+   tray as "stickers"; the co-ordinator drags one onto a day to book
+   it. Received-material stickers carry a red "R". Repairs sit in
+   their own yellow tray and land as wrench entries. Each day shows
+   how much of the working day is still free.
    ============================================================ */
 function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJobs = [] }) {
   const now = new Date();
   const [cursor, setCursor] = useState({ y: now.getFullYear(), m: now.getMonth() });
-  const [show, setShow] = useState({ eta: true, install: true, reserved: true, snag: true });
+  const [show, setShow] = useState({ eta: true, install: true, reserved: true, snag: true, repair: true });
   const [dragId, setDragId] = useState(null);   // HTML5 drag
   const [dragKind, setDragKind] = useState(null); // "install" | "snag"
   const [pendingId, setPendingId] = useState(null); // tap-to-place (touch friendly)
@@ -825,9 +920,11 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
 
   const canOperate = level >= 2;
 
-  // Unbooked jobs whose material has landed → sticky notes
-  const tray = index.filter((e) => e.status === "material_received" && !e.installDate);
-  // Jobs with open snags not yet given a return-visit date → red snag notes
+  // Stickers whose material has landed but aren't booked yet
+  const tray = index.filter((e) => !isRepairJob(e) && e.status === "material_received" && !e.installDate);
+  // Repair stickers awaiting a booking
+  const repairTray = index.filter((e) => isRepairJob(e) && !e.installDate);
+  // Jobs with open snags not yet given a return-visit date → red snag stickers
   const snagTray = snagJobs.filter((e) => !e.snagVisitDate);
 
   // Lookup: ISO date -> events, plus hours booked per day
@@ -835,19 +932,22 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
   const loadByDate = {};
   const push = (iso, ev) => { if (!iso) return; (byDate[iso] = byDate[iso] || []).push(ev); };
   index.forEach((e) => {
-    if (show.eta && e.materialEta && e.status === "ordered") {
+    if (show.eta && e.materialEta && e.status === "ordered" && !isRepairJob(e)) {
       push(e.materialEta, { type: "eta", id: e.id, label: e.clientName || "Unnamed", sub: productSummary(e) });
     }
     if (e.installDate) {
+      const repair = isRepairJob(e);
       const days = dateRange(e.installDate, e.installEndDate);
       days.forEach((d, i) => {
         const load = dayLoad(e, d);
         loadByDate[d] = (loadByDate[d] || 0) + load; // reserved still counts toward capacity
-        const showIt = e.reserved ? show.reserved : show.install;
+        const evType = e.reserved ? "reserved" : repair ? "repair" : "install";
+        const showIt = e.reserved ? show.reserved : repair ? show.repair : show.install;
         if (showIt) push(d, {
-          type: e.reserved ? "reserved" : "install", id: e.id,
+          type: evType, id: e.id,
           label: e.clientName || "Unnamed",
-          sub: days.length > 1 ? `Day ${i + 1}/${days.length}` : (e.installTime || ""),
+          sub: days.length > 1 ? `Day ${i + 1}/${days.length}` : (repair ? (e.repairType || "") : ""),
+          time: e.installTime || "",
           hours: load, team: e.team, first: i === 0, span: days.length > 1,
         });
       });
@@ -856,10 +956,11 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
   // Snag return visits (from all jobs with open snags)
   snagJobs.forEach((e) => {
     if (!e.snagVisitDate) return;
-    loadByDate[e.snagVisitDate] = (loadByDate[e.snagVisitDate] || 0) + SNAG_HOURS;
+    const h = snagHoursOf(e);
+    loadByDate[e.snagVisitDate] = (loadByDate[e.snagVisitDate] || 0) + h;
     if (show.snag) push(e.snagVisitDate, {
       type: "snag", id: e.id, label: e.clientName || "Unnamed",
-      sub: "Snag return", hours: SNAG_HOURS, first: true,
+      sub: "Snag return", hours: h, first: true,
     });
   });
 
@@ -895,7 +996,7 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
 
   return (
     <div>
-      {/* Sticky note tray — material in, awaiting booking */}
+      {/* Sticker tray — material in, awaiting booking (each carries a red R) */}
       {(tray.length > 0 || (pendingId && pendingKind === "install")) && (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
           <div className="flex items-center justify-between mb-2">
@@ -904,7 +1005,7 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
             </h3>
             {canOperate && (
               <span className="text-[11px] text-amber-700">
-                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a note onto a day, or tap it"}
+                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a sticker onto a day, or tap it"}
               </span>
             )}
           </div>
@@ -921,11 +1022,12 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
                     onDragStart={() => { setDragId(e.id); setDragKind("install"); }}
                     onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
                     onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("install")))}
-                    className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
+                    className={`relative shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
                       canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
                       picked ? "bg-amber-200 border-amber-500 ring-2 ring-amber-400" : "bg-amber-100 border-amber-300 hover:shadow"}`}
                     style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
-                    <p className="text-sm font-semibold text-amber-950 truncate">{e.clientName || "Unnamed"}</p>
+                    <span className="absolute top-1 right-1 h-5 w-5 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center justify-center shadow-sm" title="Material received">R</span>
+                    <p className="text-sm font-semibold text-amber-950 truncate pr-5">{e.clientName || "Unnamed"}</p>
                     {productSummary(e) && <p className="text-[11px] text-amber-800 truncate">{productSummary(e)}</p>}
                     <div className="flex items-center gap-2 mt-1.5 text-[11px] text-amber-800">
                       <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(hrs)}</span>
@@ -938,6 +1040,48 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Repair tray — repairs awaiting a booking (yellow, wrench) */}
+      {repairTray.length > 0 && (
+        <div className="mb-4 rounded-xl border border-yellow-300 bg-yellow-50/70 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-yellow-800 flex items-center gap-1.5">
+              <Wrench size={13} /> Repairs to schedule ({repairTray.length})
+            </h3>
+            {canOperate && (
+              <span className="text-[11px] text-yellow-700">
+                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a sticker onto a day, or tap it"}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {repairTray.map((e) => {
+              const hrs = e.estHours || DAY_CAPACITY;
+              const picked = pendingId === e.id && pendingKind === "install";
+              return (
+                <div key={e.id}
+                  draggable={canOperate}
+                  onDragStart={() => { setDragId(e.id); setDragKind("install"); }}
+                  onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
+                  onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("install")))}
+                  className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
+                    canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
+                    picked ? "bg-yellow-200 border-yellow-500 ring-2 ring-yellow-400" : "bg-yellow-100 border-yellow-300 hover:shadow"}`}
+                  style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
+                  <p className="text-sm font-semibold text-yellow-900 truncate flex items-center gap-1"><Wrench size={11} /> {e.clientName || "Unnamed"}</p>
+                  {e.repairType && <p className="text-[11px] text-yellow-800 truncate">{e.repairType}</p>}
+                  <div className="flex items-center gap-2 mt-1.5 text-[11px] text-yellow-800">
+                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(hrs)}</span>
+                    {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
+                  </div>
+                  <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
+                    className="mt-1.5 text-[11px] font-medium text-yellow-900 underline underline-offset-2">Open</button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -971,7 +1115,7 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
                   <p className="text-sm font-semibold text-red-950 truncate flex items-center gap-1"><Flag size={11} /> {e.clientName || "Unnamed"}</p>
                   <p className="text-[11px] text-red-800 truncate">{openN} open snag{openN > 1 ? "s" : ""}{e.address ? ` · ${e.address}` : ""}</p>
                   <div className="flex items-center gap-2 mt-1.5 text-[11px] text-red-800">
-                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(SNAG_HOURS)}</span>
+                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(snagHoursOf(e))}</span>
                     {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
                   </div>
                   <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
@@ -1005,6 +1149,11 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
           className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
             show.install ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-white text-slate-400 border-slate-200"}`}>
           <span className="h-2 w-2 rounded-full bg-blue-500" /> Installation
+        </button>
+        <button onClick={() => setShow((s) => ({ ...s, repair: !s.repair }))}
+          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+            show.repair ? "bg-yellow-50 text-yellow-800 border-yellow-300" : "bg-white text-slate-400 border-slate-200"}`}>
+          <Wrench size={11} /> Repair
         </button>
         <button onClick={() => setShow((s) => ({ ...s, reserved: !s.reserved }))}
           className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
@@ -1070,19 +1219,21 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
                         const style =
                           ev.type === "eta" ? "bg-amber-100 text-amber-900"
                           : ev.type === "snag" ? "bg-red-100 text-red-800 border border-red-300"
+                          : ev.type === "repair" ? "bg-yellow-100 text-yellow-900 border border-yellow-400"
                           : ev.type === "reserved" ? "bg-white text-slate-500 border border-dashed border-slate-400 opacity-80"
                           : `bg-blue-100 text-blue-900 ${ev.span && !ev.first ? "opacity-70" : ""}`;
                         const lead =
                           ev.type === "eta" ? "ETA"
                           : ev.type === "snag" ? "⚑ Snag"
-                          : ev.type === "reserved" ? "◌ Resv"
-                          : fmtHours(ev.hours);
+                          : ev.type === "repair" ? `🔧 ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
+                          : ev.type === "reserved" ? `◌ ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
+                          : (ev.first ? (ev.time || "TBC") : fmtHours(ev.hours));
                         return (
                           <button key={j} onClick={(e) => { e.stopPropagation(); onOpen(ev.id); }}
-                            draggable={canOperate && (ev.type === "install" || ev.type === "reserved") && ev.first}
+                            draggable={canOperate && (ev.type === "install" || ev.type === "reserved" || ev.type === "repair") && ev.first}
                             onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); setDragKind("install"); }}
                             className={`w-full text-left text-[10px] leading-tight px-1.5 py-1 rounded truncate transition hover:opacity-80 ${style}`}
-                            title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
+                            title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.time ? " · " + ev.time : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
                             <span className="font-medium">{lead}</span> {ev.label}
                             {ev.sub && <span className="block opacity-70 truncate">{ev.sub}</span>}
                           </button>
@@ -1100,7 +1251,7 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
 
       {canOperate && (
         <p className="text-[11px] text-slate-400 mt-2">
-          Drag a booked installation to another day to move it. Open a job to unbook it.
+          Drag a booked job to another day to move it. Open a job to unbook it.
         </p>
       )}
 
@@ -1122,10 +1273,18 @@ function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJo
                 <div className="grid gap-1.5">
                   {g.events.map((ev, j) => (
                     <button key={j} onClick={() => onOpen(ev.id)} className="flex items-center gap-2 text-left hover:underline">
-                      <span className={`h-2 w-2 rounded-full shrink-0 ${ev.type === "eta" ? "bg-amber-500" : "bg-blue-500"}`} />
+                      <span className={`h-2 w-2 rounded-full shrink-0 ${
+                        ev.type === "eta" ? "bg-amber-500" :
+                        ev.type === "snag" ? "bg-red-500" :
+                        ev.type === "repair" ? "bg-yellow-400" :
+                        ev.type === "reserved" ? "bg-slate-300" : "bg-blue-500"}`} />
                       <span className="text-sm text-slate-800 truncate">{ev.label}</span>
                       <span className="text-xs text-slate-400 truncate">
-                        {ev.type === "eta" ? "material ETA" : `installation${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}{ev.sub ? ` · ${ev.sub}` : ""}
+                        {ev.type === "eta" ? "material ETA"
+                          : ev.type === "snag" ? "snag return"
+                          : ev.type === "repair" ? `repair${ev.time ? " · " + ev.time : ""}`
+                          : ev.type === "reserved" ? `reserved${ev.time ? " · " + ev.time : ""}`
+                          : `installation${ev.time ? " · " + ev.time : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}{ev.sub ? ` · ${ev.sub}` : ""}
                       </span>
                     </button>
                   ))}
@@ -1195,7 +1354,7 @@ function SnagsView({ snagJobs, onOpen }) {
                   {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
                   {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
                   {e.snagVisitDate
-                    ? <span className="flex items-center gap-1 text-red-600 font-medium"><Calendar size={12} /> Return visit {fmtDate(e.snagVisitDate)}</span>
+                    ? <span className="flex items-center gap-1 text-red-600 font-medium"><Calendar size={12} /> Return visit {fmtDate(e.snagVisitDate)} · {fmtHours(snagHoursOf(e))}</span>
                     : <span className="flex items-center gap-1 text-amber-600 font-medium"><Calendar size={12} /> Not yet scheduled</span>}
                 </div>
                 <div className="space-y-1">
@@ -1216,21 +1375,24 @@ function SnagsView({ snagJobs, onOpen }) {
 }
 
 /* ============================================================
-   HISTORY VIEW — completed installations
+   HISTORY VIEW — completed installations + deleted projects
+   Deleted projects show in orange, tagged with who & when.
    ============================================================ */
 function HistoryView({ history, onOpen }) {
   const [q, setQ] = useState("");
   const filtered = history.filter((e) => {
     if (!q.trim()) return true;
     const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
+    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po, e.repairType, e.deletedBy].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
   });
 
-  // Group by completion month (falls back to installed date, then last update)
+  // Group by month (deleted → deletion month; else completion / installed / update month)
   const groups = {};
   filtered.forEach((e) => {
-    const when = e.installedDate || (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : null)
-      || (e.updatedAt ? new Date(e.updatedAt).toISOString().slice(0, 10) : todayISO());
+    const when = e.deleted
+      ? (e.deletedAt ? new Date(e.deletedAt).toISOString().slice(0, 10) : todayISO())
+      : (e.installedDate || (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : null)
+        || (e.updatedAt ? new Date(e.updatedAt).toISOString().slice(0, 10) : todayISO()));
     const key = when.slice(0, 7);
     (groups[key] = groups[key] || []).push({ ...e, when });
   });
@@ -1242,15 +1404,15 @@ function HistoryView({ history, onOpen }) {
       <div className="relative mb-4">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
         <input value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search completed jobs by client, PO, address…"
+          placeholder="Search history by client, PO, address…"
           className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
       </div>
 
       {history.length === 0 ? (
         <div className="text-center py-16 px-4">
           <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400"><Archive size={26} /></div>
-          <p className="font-medium text-slate-700">No completed installations yet</p>
-          <p className="text-sm text-slate-400">Jobs move here once the co-ordinator marks them Complete.</p>
+          <p className="font-medium text-slate-700">Nothing in history yet</p>
+          <p className="text-sm text-slate-400">Jobs move here once the co-ordinator marks them Complete. Deleted projects are kept here too.</p>
         </div>
       ) : filtered.length === 0 ? (
         <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
@@ -1266,35 +1428,56 @@ function HistoryView({ history, onOpen }) {
                 <div className="grid gap-2">
                   {groups[k].map((e) => {
                     const days = dateRange(e.installDate, e.installEndDate).length;
+                    const del = e.deleted;
+                    const repair = isRepairJob(e);
                     return (
                       <button key={e.id} onClick={() => onOpen(e.id)}
-                        className="text-left bg-white rounded-xl border border-slate-200 p-3.5 hover:border-slate-300 hover:shadow-sm transition">
+                        className={`text-left rounded-xl border p-3.5 hover:shadow-sm transition ${
+                          del ? "bg-orange-50 border-orange-200 hover:border-orange-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
                         <div className="flex items-start justify-between gap-3 mb-1.5">
                           <div className="min-w-0">
-                            <div className="font-semibold truncate">{e.clientName || "Unnamed client"}</div>
+                            <div className="font-semibold truncate flex items-center gap-2">
+                              {e.clientName || "Unnamed client"}
+                              {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
+                            </div>
                             <div className="text-sm text-slate-500 flex items-center gap-1 truncate">
                               <MapPin size={13} className="shrink-0" /> {e.address || "No address"}
                             </div>
                           </div>
-                          <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-emerald-100 text-emerald-800 border-emerald-200">
-                            <Check size={11} className="inline -mt-0.5 mr-0.5" /> Complete
-                          </span>
+                          {del ? (
+                            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-orange-100 text-orange-800 border-orange-300">
+                              <Trash2 size={11} className="inline -mt-0.5 mr-0.5" /> Deleted
+                            </span>
+                          ) : (
+                            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-emerald-100 text-emerald-800 border-emerald-200">
+                              <Check size={11} className="inline -mt-0.5 mr-0.5" /> Complete
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
                           {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-                          {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
+                          {repair
+                            ? (e.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {e.repairType}</span>)
+                            : (productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>)}
                           {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
                           {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
-                          <span className="flex items-center gap-1">
-                            <Calendar size={12} /> Installed {fmtRange(e.installDate, e.installEndDate)}
-                            {days > 1 ? ` (${days} days)` : ""}
-                          </span>
-                          {e.openSnags > 0 && (
+                          {e.installDate && (
+                            <span className="flex items-center gap-1">
+                              <Calendar size={12} /> {repair ? "Repaired" : "Installed"} {fmtRange(e.installDate, e.installEndDate)}
+                              {days > 1 ? ` (${days} days)` : ""}
+                            </span>
+                          )}
+                          {!del && e.openSnags > 0 && (
                             <span className="flex items-center gap-1 text-amber-700 font-medium">
                               <AlertTriangle size={12} /> closed with {e.openSnags} open snag{e.openSnags > 1 ? "s" : ""}
                             </span>
                           )}
                         </div>
+                        {del && (
+                          <p className="mt-2 text-xs text-orange-700 flex items-center gap-1">
+                            <Trash2 size={12} /> Deleted{e.deletedBy ? ` by ${e.deletedBy}` : ""}{e.deletedAt ? ` · ${fmtWhen(e.deletedAt)}` : ""}
+                          </p>
+                        )}
                       </button>
                     );
                   })}
@@ -1309,31 +1492,45 @@ function HistoryView({ history, onOpen }) {
 }
 
 /* ============================================================
-   REPORTS VIEW — printable daily / weekly install schedule
+   REPORTS VIEW — printable daily / weekly schedule + invoicing
    ============================================================ */
-function ReportsView({ index }) {
+function ReportsView({ index, level }) {
   const [mode, setMode] = useState("daily");
   const [date, setDate] = useState(todayISO());
+  const canInvoice = level >= 2;
 
-  const start = mode === "daily" ? date : startOfWeek(date);
-  const end = mode === "daily" ? date : addDays(start, 6);
+  const isWeekMode = mode === "weekly" || mode === "invoicing";
+  const start = isWeekMode ? startOfWeek(date) : date;
+  const end = isWeekMode ? addDays(start, 6) : date;
+  const periodLabel = mode === "daily" ? fmtDate(date) : `${fmtDate(start)} – ${fmtDate(end)}`;
 
-  // Build one group per day in the period; a job appears on each day it's on site.
+  const stepBack = () => setDate(addDays(date, isWeekMode ? -7 : -1));
+  const stepFwd = () => setDate(addDays(date, isWeekMode ? 7 : 1));
+
+  // ---- Schedule report (daily / weekly): installs + snag return visits ----
   const dayList = dateRange(start, end);
-  const groups = dayList.map((day) => {
-    const jobs = index
+  const scheduleGroups = dayList.map((day) => {
+    const installs = index
       .filter((e) => e.installDate && rangesOverlap(e.installDate, e.installEndDate || e.installDate, day, day))
       .map((e) => {
         const span = dateRange(e.installDate, e.installEndDate);
-        const dayNo = span.indexOf(day) + 1;
-        return { ...e, dayNo, dayCount: span.length };
-      })
+        return { ...e, dayNo: span.indexOf(day) + 1, dayCount: span.length, _row: "install" };
+      });
+    const snags = index
+      .filter((e) => e.snagVisitDate === day && (e.snags || []).some((s) => !s.resolved))
+      .map((e) => ({ ...e, dayNo: 1, dayCount: 1, _row: "snag", _isSnag: true }));
+    const jobs = [...installs, ...snags]
       .sort((a, b) => (a.installTime || "99").localeCompare(b.installTime || "99") || (a.clientName || "").localeCompare(b.clientName || ""));
     return { day, jobs };
   }).filter((g) => g.jobs.length);
+  const totalJobs = scheduleGroups.reduce((a, g) => a + g.jobs.length, 0);
 
-  const totalJobs = groups.reduce((a, g) => a + g.jobs.length, 0);
-  const periodLabel = mode === "daily" ? fmtDate(date) : `${fmtDate(start)} – ${fmtDate(end)}`;
+  // ---- Invoicing report: completed jobs in the selected week ----
+  const invoiceJobs = index
+    .filter((e) => e.status === "complete" && !e.deleted)
+    .map((e) => ({ ...e, _inv: invoiceDate(e) }))
+    .filter((e) => e._inv && e._inv >= start && e._inv <= end)
+    .sort((a, b) => a._inv.localeCompare(b._inv) || (a.clientName || "").localeCompare(b.clientName || ""));
 
   return (
     <div>
@@ -1353,7 +1550,7 @@ function ReportsView({ index }) {
       {/* Controls */}
       <div className="no-print flex flex-wrap items-center gap-2 mb-4">
         <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden">
-          {["daily", "weekly"].map((m) => (
+          {["daily", "weekly", ...(canInvoice ? ["invoicing"] : [])].map((m) => (
             <button key={m} onClick={() => setMode(m)}
               className={`px-3 py-2 text-sm font-medium capitalize ${mode === m ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
               {m}
@@ -1363,9 +1560,9 @@ function ReportsView({ index }) {
         <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
           className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300" />
         <div className="flex gap-1">
-          <button onClick={() => setDate(addDays(date, mode === "daily" ? -1 : -7))} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronLeft size={16} /></button>
+          <button onClick={stepBack} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronLeft size={16} /></button>
           <button onClick={() => setDate(todayISO())} className="px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50">Today</button>
-          <button onClick={() => setDate(addDays(date, mode === "daily" ? 1 : 7))} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronRight size={16} /></button>
+          <button onClick={stepFwd} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronRight size={16} /></button>
         </div>
         <button onClick={() => window.print()}
           className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
@@ -1375,64 +1572,129 @@ function ReportsView({ index }) {
 
       {/* Report body */}
       <div id="install-report">
-        <div className="mb-4">
-          <h2 className="text-lg font-bold text-slate-900">{COMPANY_NAME} — Installation schedule</h2>
-          <p className="text-sm text-slate-500">
-            {mode === "daily" ? "Daily" : "Weekly"} report · {periodLabel} · {totalJobs} installation{totalJobs === 1 ? "" : "s"}
-          </p>
-        </div>
-
-        {groups.length === 0 ? (
-          <p className="text-sm text-slate-400 py-10 text-center no-print">No installations booked for this {mode === "daily" ? "day" : "week"}.</p>
-        ) : (
-          <div className="space-y-5">
-            {groups.map((g) => (
-              <div key={g.day}>
-                <h3 className="text-sm font-semibold text-slate-700 mb-2 pb-1 border-b border-slate-200">
-                  {fmtDayLabel(g.day)} <span className="text-slate-400 font-normal">· {g.jobs.length} job{g.jobs.length === 1 ? "" : "s"}</span>
-                </h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead>
-                      <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
-                        <th className="py-1.5 pr-3 font-semibold">Time</th>
-                        <th className="py-1.5 pr-3 font-semibold">Client</th>
-                        <th className="py-1.5 pr-3 font-semibold">Contact</th>
-                        <th className="py-1.5 pr-3 font-semibold">Address</th>
-                        <th className="py-1.5 pr-3 font-semibold">Product</th>
-                        <th className="py-1.5 pr-3 font-semibold">Consultant</th>
-                        <th className="py-1.5 pr-3 font-semibold">Team</th>
-                        <th className="py-1.5 pr-3 font-semibold">Status</th>
+        {mode === "invoicing" ? (
+          <>
+            <div className="mb-4">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Receipt size={18} /> {COMPANY_NAME} — Invoicing</h2>
+              <p className="text-sm text-slate-500">
+                Completed installations ready for invoicing · Week of {periodLabel} · {invoiceJobs.length} job{invoiceJobs.length === 1 ? "" : "s"}
+              </p>
+            </div>
+            {invoiceJobs.length === 0 ? (
+              <p className="text-sm text-slate-400 py-10 text-center no-print">Nothing completed in this week.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-200">
+                      <th className="py-1.5 pr-3 font-semibold">PO</th>
+                      <th className="py-1.5 pr-3 font-semibold">Client</th>
+                      <th className="py-1.5 pr-3 font-semibold">Product</th>
+                      <th className="py-1.5 pr-3 font-semibold">Consultant</th>
+                      <th className="py-1.5 pr-3 font-semibold">Completed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoiceJobs.map((j) => (
+                      <tr key={j.id} className="border-t border-slate-100 align-top">
+                        <td className="py-2 pr-3 whitespace-nowrap font-medium text-slate-800">{j.po || "—"}</td>
+                        <td className="py-2 pr-3">
+                          {j.clientName || "—"}
+                          {isRepairJob(j) && <span className="ml-1.5 text-[10px] font-semibold px-1 py-0.5 rounded bg-yellow-100 text-yellow-800 border border-yellow-300">Repair</span>}
+                        </td>
+                        <td className="py-2 pr-3">
+                          {isRepairJob(j)
+                            ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[11px] text-slate-400">{j.type}</span> : null}</>
+                            : (productSummary(j) || "—")}
+                        </td>
+                        <td className="py-2 pr-3">{j.consultant || "—"}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap text-slate-500">{fmtDate(j._inv)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {g.jobs.map((j) => (
-                        <tr key={j.id} className="border-t border-slate-100 align-top">
-                          <td className="py-2 pr-3 whitespace-nowrap">
-                            {j.installTime || "—"}
-                            {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
-                          </td>
-                          <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
-                          <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
-                          <td className="py-2 pr-3">{j.address || "—"}</td>
-                          <td className="py-2 pr-3">{productSummary(j) || "—"}</td>
-                          <td className="py-2 pr-3">{j.consultant || "—"}</td>
-                          <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
-                          <td className="py-2 pr-3">
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${statusMeta(j.status).badge}`}>{statusMeta(j.status).label}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
-          </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="mb-4">
+              <h2 className="text-lg font-bold text-slate-900">{COMPANY_NAME} — Installation schedule</h2>
+              <p className="text-sm text-slate-500">
+                {mode === "daily" ? "Daily" : "Weekly"} report · {periodLabel} · {totalJobs} job{totalJobs === 1 ? "" : "s"}
+              </p>
+            </div>
+
+            {scheduleGroups.length === 0 ? (
+              <p className="text-sm text-slate-400 py-10 text-center no-print">Nothing booked for this {mode === "daily" ? "day" : "week"}.</p>
+            ) : (
+              <div className="space-y-5">
+                {scheduleGroups.map((g) => (
+                  <div key={g.day}>
+                    <h3 className="text-sm font-semibold text-slate-700 mb-2 pb-1 border-b border-slate-200">
+                      {fmtDayLabel(g.day)} <span className="text-slate-400 font-normal">· {g.jobs.length} job{g.jobs.length === 1 ? "" : "s"}</span>
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
+                            <th className="py-1.5 pr-3 font-semibold">Time</th>
+                            <th className="py-1.5 pr-3 font-semibold">Client</th>
+                            <th className="py-1.5 pr-3 font-semibold">Contact</th>
+                            <th className="py-1.5 pr-3 font-semibold">Address</th>
+                            <th className="py-1.5 pr-3 font-semibold">Product</th>
+                            <th className="py-1.5 pr-3 font-semibold">Consultant</th>
+                            <th className="py-1.5 pr-3 font-semibold">Team</th>
+                            <th className="py-1.5 pr-3 font-semibold">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {g.jobs.map((j) => {
+                            const st = reportStatus(j);
+                            return (
+                              <tr key={`${j.id}-${j._row}`} className="border-t border-slate-100 align-top">
+                                <td className="py-2 pr-3 whitespace-nowrap">
+                                  {j._isSnag ? (j.snagVisitDate ? "—" : "—") : (j.installTime || "TBC")}
+                                  {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
+                                </td>
+                                <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
+                                <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
+                                <td className="py-2 pr-3">{j.address || "—"}</td>
+                                <td className="py-2 pr-3">
+                                  {j._isSnag
+                                    ? <span className="text-red-700">Snag return · {fmtHours(snagHoursOf(j))}</span>
+                                    : isRepairJob(j)
+                                      ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[10px] text-slate-400">{j.type}</span> : null}</>
+                                      : (productSummary(j) || "—")}
+                                </td>
+                                <td className="py-2 pr-3">{j.consultant || "—"}</td>
+                                <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
+                                <td className="py-2 pr-3">
+                                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
   );
+}
+
+/* Status label shown on the daily/weekly report */
+function reportStatus(j) {
+  if (j._isSnag) return { label: "Snag", cls: "bg-red-100 text-red-800 border-red-200" };
+  if (isRepairJob(j)) return { label: "Repair", cls: "bg-yellow-100 text-yellow-800 border-yellow-300" };
+  if (j.reserved && !j.materialReceivedDate) return { label: "Reserved", cls: "bg-white text-slate-500 border-dashed border-slate-300" };
+  return { label: "Installation", cls: "bg-blue-100 text-blue-800 border-blue-200" };
 }
 
 /* ============================================================
@@ -1443,14 +1705,18 @@ function ReportsView({ index }) {
 function AvailabilityView({ index }) {
   const today = todayISO();
 
-  // Build load map
+  // Build load map (installs + snag return visits)
   const loadByDate = useMemo(() => {
     const map = {};
     index.forEach((e) => {
-      if (!e.installDate) return;
-      dateRange(e.installDate, e.installEndDate).forEach((d) => {
-        map[d] = (map[d] || 0) + dayLoad(e, d);
-      });
+      if (e.installDate) {
+        dateRange(e.installDate, e.installEndDate).forEach((d) => {
+          map[d] = (map[d] || 0) + dayLoad(e, d);
+        });
+      }
+      if (e.snagVisitDate && (e.snags || []).some((s) => !s.resolved)) {
+        map[e.snagVisitDate] = (map[e.snagVisitDate] || 0) + snagHoursOf(e);
+      }
     });
     return map;
   }, [index]);
@@ -1561,6 +1827,7 @@ function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView,
   const installsSoon = index.filter((e) => e.installDate && e.installDate >= today && e.installDate <= week).length;
   const awaitingBooking = index.filter((e) => e.status === "material_received" && !e.installDate).length;
   const snagCount = index.reduce((a, e) => a + (e.openSnags || 0), 0);
+  const canCreate = level >= 2;
 
   return (
     <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose}>
@@ -1579,6 +1846,11 @@ function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView,
         </div>
 
         <nav className="p-2 flex-1 overflow-y-auto">
+          {canCreate && (
+            <button onClick={onNew} className="w-full flex items-center gap-2 mb-2 px-3 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+              <Plus size={16} /> New project
+            </button>
+          )}
           <MenuItem icon={ClipboardList} label="Projects" active={view === "projects"} onClick={() => onView("projects")} />
           <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
           <MenuItem icon={Flag} label="Snags" active={view === "snags"} badge={snagTotal} danger onClick={() => onView("snags")} />
@@ -1597,13 +1869,6 @@ function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView,
             <p className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber-500" /> {dueSoon} material deliver{dueSoon === 1 ? "y" : "ies"} due</p>
             <p className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-blue-500" /> {installsSoon} installation{installsSoon === 1 ? "" : "s"} starting</p>
           </div>
-
-          {level >= 3 && (
-            <>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">Developer</p>
-              <MenuItem icon={Plus} label="New project" onClick={onNew} />
-            </>
-          )}
         </nav>
 
         <div className="p-3 border-t border-slate-200">
@@ -1636,58 +1901,99 @@ function MenuItem({ icon: Icon, label, active, badge, danger, onClick }) {
 }
 
 /* ============================================================
-   NEW PROJECT FORM
+   NEW PROJECT FORM (installation or repair)
    ============================================================ */
 function ProjectForm({ onClose, onSave }) {
+  const [kind, setKind] = useState("installation"); // "installation" | "repair"
   const [f, setF] = useState({
     clientName: "", contact: "", address: "", po: "",
-    type: "", range: "", colour: "", sqm: "",
+    type: "", range: "", colour: "", sqm: "", repairType: "",
     consultant: "", team: "", orderDate: todayISO(), materialEta: "", reserved: false,
   });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const isRepair = kind === "repair";
+  const consultantOptions = isRepair ? REPAIR_CONSULTANTS : CONSULTANTS;
+
   const submit = () => {
     if (!f.clientName.trim()) return;
-    onSave({
-      id: uid(), ...f, status: "ordered", snags: [], log: [],
+    const base = {
+      id: uid(),
+      clientName: f.clientName, contact: f.contact, address: f.address, po: f.po,
+      type: f.type, consultant: f.consultant, team: f.team, orderDate: f.orderDate,
+      status: "ordered", snags: [], log: [],
       installTime: "", installDate: "", installEndDate: "", estHours: "",
       snagVisitDate: "", completedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
-    });
+    };
+    const extra = isRepair
+      ? { kind: "repair", repairType: f.repairType, range: "", colour: "", sqm: "", materialEta: "", reserved: false }
+      : { kind: "installation", range: f.range, colour: f.colour, sqm: f.sqm, materialEta: f.materialEta, reserved: f.reserved };
+    onSave({ ...base, ...extra });
   };
+
   return (
     <Modal onClose={onClose}>
       <div className="p-5">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-lg">New project</h2>
+          <h2 className="font-semibold text-lg">New {isRepair ? "repair" : "project"}</h2>
           <button onClick={onClose} className="p-2 -m-1 rounded-lg text-slate-400 hover:bg-slate-100"><X size={20} /></button>
         </div>
+
+        {/* Kind switch */}
+        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden mb-4">
+          <button onClick={() => setKind("installation")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${kind === "installation" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
+            <Package size={15} /> Installation
+          </button>
+          <button onClick={() => setKind("repair")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${kind === "repair" ? "bg-yellow-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
+            <Wrench size={15} /> Repair
+          </button>
+        </div>
+
         <div className="space-y-3">
           <Input label="Client name *" value={f.clientName} onChange={(v) => set("clientName", v)} autoFocus />
           <Input label="Client contact (phone / email)" value={f.contact} onChange={(v) => set("contact", v)} />
           <Input label="Address" value={f.address} onChange={(v) => set("address", v)} />
           <Input label="Internal PO number" value={f.po} onChange={(v) => set("po", v)} />
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-slate-500 mb-1 block">Type</label>
-              <select value={f.type} onChange={(e) => set("type", e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                <option value="">Select…</option>
-                {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <Input label="Square meters (m²)" value={f.sqm} onChange={(v) => set("sqm", v)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Input label="Range" value={f.range} onChange={(v) => set("range", v)} />
-            <Input label="Colour" value={f.colour} onChange={(v) => set("colour", v)} />
-          </div>
+          {isRepair ? (
+            <>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">Product type</label>
+                <select value={f.type} onChange={(e) => set("type", e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                  <option value="">Select…</option>
+                  {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <Input label="Repair type (what needs doing)" value={f.repairType} onChange={(v) => set("repairType", v)} />
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-500 mb-1 block">Type</label>
+                  <select value={f.type} onChange={(e) => set("type", e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                    <option value="">Select…</option>
+                    {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <Input label="Square meters (m²)" value={f.sqm} onChange={(v) => set("sqm", v)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Input label="Range" value={f.range} onChange={(v) => set("range", v)} />
+                <Input label="Colour" value={f.colour} onChange={(v) => set("colour", v)} />
+              </div>
+            </>
+          )}
 
           <div>
-            <label className="text-xs text-slate-500 mb-1 block">Consultant</label>
+            <label className="text-xs text-slate-500 mb-1 block">Consultant{isRepair ? " / logged by" : ""}</label>
             <select value={f.consultant} onChange={(e) => set("consultant", e.target.value)}
               className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
               <option value="">Select…</option>
-              {CONSULTANTS.map((c) => <option key={c} value={c}>{c}</option>)}
+              {consultantOptions.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
@@ -1698,20 +2004,27 @@ function ProjectForm({ onClose, onSave }) {
               {TEAMS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs text-slate-500 mb-1 block">Order date</label>
+          <div className={`grid ${isRepair ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
+            <div><label className="text-xs text-slate-500 mb-1 block">{isRepair ? "Logged date" : "Order date"}</label>
               <input type="date" value={f.orderDate} onChange={(e) => set("orderDate", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
-            <div><label className="text-xs text-slate-500 mb-1 block">Material ETA</label>
-              <input type="date" value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
+            {!isRepair && (
+              <div><label className="text-xs text-slate-500 mb-1 block">Material ETA</label>
+                <input type="date" value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
+            )}
           </div>
 
-          <label className="flex items-center gap-2 pt-1 cursor-pointer">
-            <input type="checkbox" checked={f.reserved} onChange={(e) => set("reserved", e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
-            <span className="text-sm text-slate-700">Pencil in as <b>Reserved</b> (material not yet arrived — shows as unconfirmed on the calendar)</span>
-          </label>
+          {!isRepair && (
+            <label className="flex items-center gap-2 pt-1 cursor-pointer">
+              <input type="checkbox" checked={f.reserved} onChange={(e) => set("reserved", e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
+              <span className="text-sm text-slate-700">Pencil in as <b>Reserved</b> (material not yet arrived — shows as unconfirmed on the calendar)</span>
+            </label>
+          )}
+          {isRepair && (
+            <p className="text-xs text-slate-400 pt-1">Repairs skip the material stage. Schedule from the yellow tray on the Calendar.</p>
+          )}
         </div>
         <button onClick={submit} disabled={!f.clientName.trim()}
-          className="w-full mt-5 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-40">Create project</button>
+          className="w-full mt-5 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-40">Create {isRepair ? "repair" : "project"}</button>
       </div>
     </Modal>
   );
@@ -1796,11 +2109,10 @@ function EmptyState({ canCreate, onCreate, hasAny }) {
     <div className="text-center py-16 px-4">
       <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400"><ClipboardList size={26} /></div>
       <p className="font-medium text-slate-700">{hasAny ? "No projects match" : "No projects yet"}</p>
-      <p className="text-sm text-slate-400 mb-4">{hasAny ? "Try clearing the search or filter." : canCreate ? "Add your first installation to get started." : "Enter the developer PIN to add projects."}</p>
+      <p className="text-sm text-slate-400 mb-4">{hasAny ? "Try clearing the search or filter." : canCreate ? "Add your first installation to get started." : "Enter the co-ordinator or developer PIN to add projects."}</p>
       {canCreate && !hasAny && (
         <button onClick={onCreate} className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium"><Plus size={16} /> New Project</button>
       )}
     </div>
   );
 }
-
