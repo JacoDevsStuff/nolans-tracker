@@ -49,6 +49,8 @@ const TIME_SLOTS = (() => {
 const DURATIONS = [1, 1.5, 2, 3, 4, 5, 6, 8, 12, 16, 24];
 const SNAG_HOURS = 2; // default capacity a snag return visit consumes (now editable per job)
 const SNAG_DURATIONS = [1, 1.5, 2, 3, 4, 6, 8];
+/* Snag categories — feed the Tracking Report; "note" is free text and never counted in stats */
+const SNAG_CATEGORIES = ["Measured incorrect", "Trims required", "Ordered incorrect", "Received incorrect", "Other"];
 const fmtHours = (h) => (h % 1 === 0 ? `${h}h` : `${Math.floor(h)}h30`);
 /* Hours a snag return visit consumes on the day (per-job override, falls back to default) */
 const snagHoursOf = (e) => (e && e.snagHours != null && e.snagHours !== "" ? Number(e.snagHours) : SNAG_HOURS);
@@ -267,6 +269,29 @@ export default function App() {
     setOpenId(null);
   };
 
+  /** Toggle the "Ready to invoice" tick on a Completed-tab job */
+  const toggleReadyToInvoice = async (id, val) => {
+    const p = await fetchProject(id);
+    if (!p) return;
+    await saveProject({ ...p, readyToInvoice: val });
+  };
+
+  /** Batch invoice: marks the given ids as invoiced — they move from Completed to History */
+  const invoiceProjects = async (ids) => {
+    for (const id of ids) {
+      const p = await fetchProject(id);
+      if (!p) continue;
+      await saveProject({ ...p, invoiced: true, invoicedAt: Date.now(), readyToInvoice: false });
+    }
+  };
+
+  /** Undo — bring an invoiced job back to the Completed tab */
+  const unInvoiceProject = async (id) => {
+    const p = await fetchProject(id);
+    if (!p) return;
+    await saveProject({ ...p, invoiced: false, invoicedAt: null, readyToInvoice: false });
+  };
+
   /** Book (or move) a job onto a day. Spans forward if the estimate exceeds one day. */
   const scheduleProject = async (id, iso) => {
     const p = await fetchProject(id);
@@ -284,8 +309,10 @@ export default function App() {
   const live = index.filter((e) => !e.deleted);
   const active = live.filter((e) => e.status !== "complete");
   const openSnagJobs = live.filter((e) => (e.openSnags || 0) > 0);
-  // History = completed jobs with no open snags, PLUS anything that's been deleted
-  const history = index.filter((e) => e.deleted || (e.status === "complete" && !(e.openSnags > 0)));
+  // Completed tab = finished jobs, no open snags, not yet invoiced
+  const completedJobs = live.filter((e) => e.status === "complete" && !(e.openSnags > 0) && !e.invoiced);
+  // History = invoiced jobs, PLUS anything that's been deleted
+  const history = index.filter((e) => e.deleted || (e.status === "complete" && !(e.openSnags > 0) && e.invoiced));
 
   /** Schedule a snag return visit onto a day */
   const scheduleSnagVisit = async (id, iso) => {
@@ -344,7 +371,9 @@ export default function App() {
             { key: "calendar", label: "Calendar", icon: CalendarDays },
             { key: "snags", label: "Snags", icon: Flag, count: openSnagJobs.length, danger: true },
             { key: "reports", label: "Reports", icon: FileText },
+            { key: "completed", label: "Completed", icon: Receipt, count: completedJobs.length },
             ...(level >= 2 ? [{ key: "availability", label: "Availability", icon: CalendarCheck }] : []),
+            ...(level >= 2 ? [{ key: "tracking", label: "Tracking Report", icon: Users }] : []),
             { key: "history", label: "History", icon: Archive, count: history.length },
           ].map((t) => (
             <button key={t.key} onClick={() => setView(t.key)}
@@ -368,10 +397,15 @@ export default function App() {
           <SnagsView snagJobs={openSnagJobs} level={level} onOpen={(id) => setOpenId(id)} />
         ) : view === "reports" ? (
           <ReportsView index={live} level={level} />
+        ) : view === "completed" ? (
+          <CompletedView completedJobs={completedJobs} level={level} onOpen={(id) => setOpenId(id)}
+            onToggleReady={toggleReadyToInvoice} onInvoice={invoiceProjects} />
         ) : view === "availability" && level >= 2 ? (
           <AvailabilityView index={active} />
+        ) : view === "tracking" && level >= 2 ? (
+          <TrackingReportView index={index} />
         ) : view === "history" ? (
-          <HistoryView history={history} onOpen={(id) => setOpenId(id)} />
+          <HistoryView history={history} onOpen={(id) => setOpenId(id)} onUnInvoice={unInvoiceProject} level={level} />
         ) : (
         <>
         {/* Search + filters */}
@@ -420,7 +454,7 @@ export default function App() {
       {/* Menu drawer */}
       {menuOpen && (
         <MenuDrawer
-          user={user} level={level} index={active} historyCount={history.length} snagTotal={openSnagJobs.length} view={view}
+          user={user} level={level} index={active} historyCount={history.length} completedCount={completedJobs.length} snagTotal={openSnagJobs.length} view={view}
           onView={(v) => { setView(v); setMenuOpen(false); }}
           onSignIn={() => { setMenuOpen(false); setPinOpen(true); }}
           onSignOut={() => { setUser(null); setMenuOpen(false); }}
@@ -526,13 +560,17 @@ function Card({ entry, onClick }) {
 function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge }) {
   const [p, setP] = useState(null);
   const [snagNote, setSnagNote] = useState("");
+  const [snagCategory, setSnagCategory] = useState("");
   const [snagBusy, setSnagBusy] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
   const [confirmPurge, setConfirmPurge] = useState(false);
   const [lightbox, setLightbox] = useState(null);
+  const [sketchBusy, setSketchBusy] = useState(false);
+  const [sketchCaption, setSketchCaption] = useState("");
   const fileRef = useRef(null);
+  const sketchFileRef = useRef(null);
 
   const canNote = level >= 1;      // consultant+
   const canOperate = level >= 2;   // coordinator+  (dates, status, material, install time, snags, team)
@@ -563,9 +601,11 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
   };
 
   const addSnag = async (photo) => {
-    const snag = { id: uid(), note: snagNote.trim(), photo: photo || null, resolved: false, createdAt: Date.now(), author: user ? user.name : "" };
+    if (!snagCategory) return; // category is required
+    const snag = { id: uid(), category: snagCategory, note: snagNote.trim(), photo: photo || null, resolved: false, createdAt: Date.now(), author: user ? user.name : "" };
     const next = { ...p, snags: [snag, ...(p.snags || [])] };
     setSnagNote("");
+    setSnagCategory("");
     await persist(next);
   };
 
@@ -586,6 +626,21 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
     const snags = p.snags.filter((s) => s.id !== sid);
     const stillOpen = snags.some((s) => !s.resolved);
     await persist({ ...p, snags, snagVisitDate: stillOpen ? p.snagVisitDate : "" });
+  };
+
+  const addSketch = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSketchBusy(true);
+    try {
+      const data = await compressImage(file, 1600, 0.7);
+      const sketch = { id: uid(), image: data, caption: sketchCaption.trim(), createdAt: Date.now(), author: user ? user.name : "" };
+      await persist({ ...p, sketches: [sketch, ...(p.sketches || [])] });
+      setSketchCaption("");
+    } finally { setSketchBusy(false); if (sketchFileRef.current) sketchFileRef.current.value = ""; }
+  };
+  const removeSketch = async (sid) => {
+    await persist({ ...p, sketches: (p.sketches || []).filter((s) => s.id !== sid) });
   };
 
   const addNote = async () => {
@@ -833,19 +888,26 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
 
           {canNote && (
             <div className="bg-slate-50 rounded-lg p-3 mb-3">
-              <input value={snagNote} onChange={(e) => setSnagNote(e.target.value)} placeholder="Describe the snag…"
+              <label className="text-[11px] text-slate-500 mb-1 block">Snag type *</label>
+              <select value={snagCategory} onChange={(e) => setSnagCategory(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
+                <option value="">Select a type…</option>
+                {SNAG_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input value={snagNote} onChange={(e) => setSnagNote(e.target.value)} placeholder="Reason / detail (optional)…"
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
               <div className="flex gap-2">
                 <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} className="hidden" />
-                <button onClick={() => fileRef.current?.click()} disabled={snagBusy}
+                <button onClick={() => fileRef.current?.click()} disabled={snagBusy || !snagCategory}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50">
                   <Camera size={15} /> {snagBusy ? "Adding…" : "Add with photo"}
                 </button>
-                <button onClick={() => addSnag(null)} disabled={snagBusy || !snagNote.trim()}
+                <button onClick={() => addSnag(null)} disabled={snagBusy || !snagCategory}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium hover:bg-white disabled:opacity-40">
                   <Plus size={15} /> Note only
                 </button>
               </div>
+              {!snagCategory && <p className="text-[11px] text-slate-400 mt-1.5">Select a snag type to enable adding.</p>}
             </div>
           )}
 
@@ -862,6 +924,9 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
                     <div className="h-16 w-16 rounded-lg bg-slate-100 flex items-center justify-center text-slate-300 shrink-0"><ImageIcon size={20} /></div>
                   )}
                   <div className="flex-1 min-w-0">
+                    {s.category && (
+                      <span className="inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 mb-1">{s.category}</span>
+                    )}
                     <p className={`text-sm ${s.resolved ? "line-through text-slate-400" : "text-slate-800"}`}>{s.note || "(no description)"}</p>
                     <p className="text-[11px] text-slate-400 mt-0.5">{s.author ? `${s.author} · ` : ""}{fmtWhen(s.createdAt)}</p>
                     {canOperate && (
@@ -874,6 +939,42 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
                     )}
                     {!canOperate && s.resolved && <span className="text-xs text-emerald-600 font-medium">Resolved</span>}
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Job card sketches */}
+        <section>
+          <SectionTitle>Job card / sketches {(p.sketches || []).length > 0 && <span className="text-slate-400">({p.sketches.length})</span>}</SectionTitle>
+          {canOperate && (
+            <div className="bg-slate-50 rounded-lg p-3 mb-3">
+              <input value={sketchCaption} onChange={(e) => setSketchCaption(e.target.value)} placeholder="Caption (optional) — e.g. Lounge, cut from doorway…"
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
+              <input ref={sketchFileRef} type="file" accept="image/*" capture="environment" onChange={addSketch} className="hidden" />
+              <button onClick={() => sketchFileRef.current?.click()} disabled={sketchBusy}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50">
+                <Camera size={15} /> {sketchBusy ? "Adding…" : "Add sketch / photo"}
+              </button>
+              <p className="text-[11px] text-slate-400 mt-1.5">Uploaded sketches print automatically below this job on the daily report — the same sheet doubles as a job card for installers.</p>
+            </div>
+          )}
+          {(p.sketches || []).length === 0 ? (
+            <p className="text-sm text-slate-400">No sketches added.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {p.sketches.map((s) => (
+                <div key={s.id} className="relative group">
+                  <img src={s.image} onClick={() => setLightbox(s.image)} alt="sketch"
+                    className="w-full h-28 rounded-lg object-cover cursor-pointer border border-slate-200" />
+                  {s.caption && <p className="text-[11px] text-slate-500 mt-1 truncate">{s.caption}</p>}
+                  {canOperate && (
+                    <button onClick={() => removeSketch(s.id)}
+                      className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                      <X size={13} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1415,7 +1516,8 @@ function SnagsView({ snagJobs, level, onOpen }) {
    projects. Deleted projects only ever appear in their own section
    at the bottom, and only when at least one exists.
    ============================================================ */
-function HistoryView({ history, onOpen }) {
+function HistoryView({ history, onOpen, onUnInvoice, level }) {
+  const canUndo = level >= 2;
   const [q, setQ] = useState("");
   const filtered = history.filter((e) => {
     if (!q.trim()) return true;
@@ -1500,6 +1602,17 @@ function HistoryView({ history, onOpen }) {
             {e.deleteReason ? ` · Reason: ${e.deleteReason}` : ""}
           </p>
         )}
+        {!del && e.invoiced && (
+          <p className="mt-2 text-xs text-slate-400 flex items-center gap-2">
+            <Receipt size={12} /> Invoiced {e.invoicedAt ? fmtWhen(e.invoicedAt) : ""}
+            {canUndo && (
+              <span onClick={(ev) => { ev.stopPropagation(); onUnInvoice(e.id); }}
+                className="font-medium text-blue-600 hover:underline cursor-pointer flex items-center gap-1">
+                <RotateCcw size={11} /> Move back to Completed
+              </span>
+            )}
+          </p>
+        )}
       </button>
     );
   };
@@ -1566,6 +1679,144 @@ function HistoryView({ history, onOpen }) {
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   COMPLETED VIEW — finished jobs awaiting invoicing
+   Co-ordinator+ ticks "Ready to invoice" on the jobs they want in
+   this batch, then Generate invoice list produces a printable PDF
+   of just that batch and moves those jobs on to History.
+   ============================================================ */
+function CompletedView({ completedJobs, level, onOpen, onToggleReady, onInvoice }) {
+  const [q, setQ] = useState("");
+  const [generated, setGenerated] = useState(false);
+  const canInvoice = level >= 2;
+
+  const list = completedJobs.filter((e) => {
+    if (!q.trim()) return true;
+    const s = q.toLowerCase();
+    return [e.clientName, e.address, e.consultant, e.po, e.range, e.colour, e.repairType].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
+  });
+
+  const ready = completedJobs.filter((e) => e.readyToInvoice);
+
+  const generate = async () => {
+    if (ready.length === 0) return;
+    setGenerated(true);
+    // Let the batch table render before print
+    setTimeout(() => window.print(), 50);
+  };
+
+  const confirmInvoiced = async () => {
+    await onInvoice(ready.map((e) => e.id));
+    setGenerated(false);
+  };
+
+  return (
+    <div>
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #invoice-batch, #invoice-batch * { visibility: visible !important; }
+          #invoice-batch { position: absolute; left: 0; top: 0; width: 100%; padding: 0 12px; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      {generated ? (
+        <div className="mb-5">
+          <div id="invoice-batch">
+            <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Receipt size={18} /> {COMPANY_NAME} — Invoice list</h2>
+            <p className="text-sm text-slate-500 mb-3">Generated {fmtWhen(Date.now())} · {ready.length} job{ready.length === 1 ? "" : "s"}</p>
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-200">
+                  <th className="py-1.5 pr-3 font-semibold">PO</th>
+                  <th className="py-1.5 pr-3 font-semibold">Client</th>
+                  <th className="py-1.5 pr-3 font-semibold">Product</th>
+                  <th className="py-1.5 pr-3 font-semibold">Consultant</th>
+                  <th className="py-1.5 pr-3 font-semibold">Completed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ready.map((j) => (
+                  <tr key={j.id} className="border-t border-slate-100 align-top">
+                    <td className="py-2 pr-3 whitespace-nowrap font-medium text-slate-800">{j.po || "—"}</td>
+                    <td className="py-2 pr-3">{j.clientName || "—"}</td>
+                    <td className="py-2 pr-3">{productSummary(j) || "—"}</td>
+                    <td className="py-2 pr-3">{j.consultant || "—"}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap text-slate-500">{fmtDate(invoiceDate(j))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="no-print flex items-center gap-2 mt-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
+            <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+            <p className="text-sm text-amber-800 flex-1">The PDF has been sent to print/save. Once accounts has the list, confirm below to move these {ready.length} job{ready.length === 1 ? "" : "s"} to History.</p>
+            <button onClick={confirmInvoiced} className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">Confirm invoiced</button>
+            <button onClick={() => setGenerated(false)} className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-200 text-sm">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="relative mb-4">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+              placeholder="Search completed jobs by client, PO, address…"
+              className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
+          </div>
+
+          {completedJobs.length === 0 ? (
+            <div className="text-center py-16 px-4">
+              <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-3 text-emerald-500"><Receipt size={26} /></div>
+              <p className="font-medium text-slate-700">Nothing awaiting invoicing</p>
+              <p className="text-sm text-slate-400">Jobs land here once marked Complete with no open snags.</p>
+            </div>
+          ) : list.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
+          ) : (
+            <div className="grid gap-2 mb-4">
+              {list.map((e) => {
+                const repair = isRepairJob(e);
+                return (
+                  <div key={e.id} className={`flex items-center gap-3 rounded-xl border p-3.5 transition ${e.readyToInvoice ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                    {canInvoice && (
+                      <input type="checkbox" checked={!!e.readyToInvoice}
+                        onChange={(ev) => onToggleReady(e.id, ev.target.checked)}
+                        className="h-5 w-5 rounded border-slate-300 shrink-0" title="Ready to invoice" />
+                    )}
+                    <button onClick={() => onOpen(e.id)} className="flex-1 min-w-0 text-left">
+                      <div className="font-semibold truncate flex items-center gap-2">
+                        {e.clientName || "Unnamed client"}
+                        {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap mt-0.5">
+                        {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
+                        {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
+                        {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
+                        <span className="flex items-center gap-1"><Calendar size={12} /> Completed {fmtDate(invoiceDate(e))}</span>
+                      </div>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {canInvoice && completedJobs.length > 0 && (
+            <div className="sticky bottom-4 flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900 text-white shadow-lg">
+              <p className="text-sm">{ready.length} job{ready.length === 1 ? "" : "s"} ready to invoice</p>
+              <button onClick={generate} disabled={ready.length === 0}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white text-slate-900 text-sm font-medium disabled:opacity-40">
+                <Printer size={15} /> Generate invoice list
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1731,28 +1982,46 @@ function ReportsView({ index, level }) {
                         <tbody>
                           {g.jobs.map((j) => {
                             const st = reportStatus(j);
+                            const sketches = !j._isSnag ? (j.sketches || []) : [];
                             return (
-                              <tr key={`${j.id}-${j._row}`} className="border-t border-slate-100 align-top">
-                                <td className="py-2 pr-3 whitespace-nowrap">
-                                  {j._isSnag ? (j.snagVisitDate ? "—" : "—") : (j.installTime || "TBC")}
-                                  {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
-                                </td>
-                                <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
-                                <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
-                                <td className="py-2 pr-3">{j.address || "—"}</td>
-                                <td className="py-2 pr-3">
-                                  {j._isSnag
-                                    ? <span className="text-red-700">Snag return · {fmtHours(snagHoursOf(j))}</span>
-                                    : isRepairJob(j)
-                                      ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[10px] text-slate-400">{j.type}</span> : null}</>
-                                      : (productSummary(j) || "—")}
-                                </td>
-                                <td className="py-2 pr-3">{j.consultant || "—"}</td>
-                                <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
-                                <td className="py-2 pr-3">
-                                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
-                                </td>
-                              </tr>
+                              <React.Fragment key={`${j.id}-${j._row}`}>
+                                <tr className="border-t border-slate-100 align-top">
+                                  <td className="py-2 pr-3 whitespace-nowrap">
+                                    {j._isSnag ? (j.snagVisitDate ? "—" : "—") : (j.installTime || "TBC")}
+                                    {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
+                                  </td>
+                                  <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
+                                  <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
+                                  <td className="py-2 pr-3">{j.address || "—"}</td>
+                                  <td className="py-2 pr-3">
+                                    {j._isSnag
+                                      ? <span className="text-red-700">Snag return · {fmtHours(snagHoursOf(j))}</span>
+                                      : isRepairJob(j)
+                                        ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[10px] text-slate-400">{j.type}</span> : null}</>
+                                        : (productSummary(j) || "—")}
+                                  </td>
+                                  <td className="py-2 pr-3">{j.consultant || "—"}</td>
+                                  <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
+                                  <td className="py-2 pr-3">
+                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
+                                  </td>
+                                </tr>
+                                {sketches.length > 0 && (
+                                  <tr className="border-t border-dashed border-slate-200">
+                                    <td colSpan={8} className="py-2 pr-3">
+                                      <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1.5">Job card — {j.clientName || "Unnamed"}</p>
+                                      <div className="flex flex-wrap gap-2">
+                                        {sketches.map((s) => (
+                                          <div key={s.id} className="w-40">
+                                            <img src={s.image} alt="sketch" className="w-full h-28 object-cover rounded border border-slate-300" />
+                                            {s.caption && <p className="text-[10px] text-slate-500 mt-0.5">{s.caption}</p>}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
                             );
                           })}
                         </tbody>
@@ -1775,6 +2044,165 @@ function reportStatus(j) {
   if (isRepairJob(j)) return { label: "Repair", cls: "bg-yellow-100 text-yellow-800 border-yellow-300" };
   if (j.reserved && !j.materialReceivedDate) return { label: "Reserved", cls: "bg-white text-slate-500 border-dashed border-slate-300" };
   return { label: "Installation", cls: "bg-blue-100 text-blue-800 border-blue-200" };
+}
+
+/* ============================================================
+   TRACKING REPORT — co-ordinator+ only
+   Per-consultant totals: projects, m² by product type, and snags
+   logged (with category breakdown). Repairs are excluded entirely.
+   ============================================================ */
+function TrackingReportView({ index }) {
+  const [productFilter, setProductFilter] = useState("all");
+  const [allTime, setAllTime] = useState(true);
+  const [fromDate, setFromDate] = useState(addDays(todayISO(), -90));
+  const [toDate, setToDate] = useState(todayISO());
+
+  // Base pool: non-deleted, non-repair jobs only
+  const pool = useMemo(() => {
+    return index.filter((e) => !e.deleted && !isRepairJob(e)).filter((e) => {
+      if (productFilter !== "all" && e.type !== productFilter) return false;
+      if (!allTime) {
+        const anchor = e.orderDate || "";
+        if (!anchor) return false;
+        if (anchor < fromDate || anchor > toDate) return false;
+      }
+      return true;
+    });
+  }, [index, productFilter, allTime, fromDate, toDate]);
+
+  // Group by consultant
+  const byConsultant = useMemo(() => {
+    const map = {};
+    pool.forEach((e) => {
+      const name = e.consultant || "Unassigned";
+      if (!map[name]) map[name] = { name, projects: 0, sqmByType: {}, snags: 0, snagsByCat: {} };
+      map[name].projects += 1;
+      if (e.sqm) {
+        const t = e.type || "Other";
+        const n = parseFloat(e.sqm);
+        if (!isNaN(n)) map[name].sqmByType[t] = (map[name].sqmByType[t] || 0) + n;
+      }
+      (e.snags || []).forEach((s) => {
+        map[name].snags += 1;
+        const cat = s.category || "Uncategorised";
+        map[name].snagsByCat[cat] = (map[name].snagsByCat[cat] || 0) + 1;
+      });
+    });
+    return Object.values(map).sort((a, b) => b.projects - a.projects);
+  }, [pool]);
+
+  // Overall snag summary across all consultants
+  const overallSnags = useMemo(() => {
+    const totals = {};
+    let grand = 0;
+    pool.forEach((e) => {
+      (e.snags || []).forEach((s) => {
+        const cat = s.category || "Uncategorised";
+        totals[cat] = (totals[cat] || 0) + 1;
+        grand += 1;
+      });
+    });
+    return { totals, grand };
+  }, [pool]);
+
+  const totalProjects = pool.length;
+  const totalSqm = pool.reduce((a, e) => a + (parseFloat(e.sqm) || 0), 0);
+
+  return (
+    <div>
+      <div className="mb-4">
+        <h2 className="font-semibold text-slate-900">Tracking Report</h2>
+        <p className="text-xs text-slate-500 mt-0.5">Per-consultant totals · projects, m² and logged snags. Repairs are excluded.</p>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-white border border-slate-200">
+        <div>
+          <label className="text-[11px] text-slate-500 mb-1 block">Product type</label>
+          <select value={productFilter} onChange={(e) => setProductFilter(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+            <option value="all">All types</option>
+            {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <div>
+            <label className="text-[11px] text-slate-500 mb-1 block">From</label>
+            <input type="date" value={fromDate} disabled={allTime} onChange={(e) => setFromDate(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-sm disabled:opacity-40" />
+          </div>
+          <div>
+            <label className="text-[11px] text-slate-500 mb-1 block">To</label>
+            <input type="date" value={toDate} disabled={allTime} onChange={(e) => setToDate(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-slate-200 text-sm disabled:opacity-40" />
+          </div>
+        </div>
+        <button onClick={() => setAllTime((v) => !v)}
+          className={`self-end mb-0.5 flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition ${
+            allTime ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
+          All time
+        </button>
+        <div className="ml-auto text-right">
+          <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold">In view</p>
+          <p className="text-sm font-semibold text-slate-800">{totalProjects} projects · {totalSqm.toFixed(1)}m²</p>
+        </div>
+      </div>
+
+      {byConsultant.length === 0 ? (
+        <p className="text-sm text-slate-400 text-center py-10">No projects match these filters.</p>
+      ) : (
+        <div className="grid gap-3 mb-6">
+          {byConsultant.map((c) => (
+            <div key={c.name} className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                <h3 className="font-semibold text-slate-900 flex items-center gap-1.5"><User size={15} /> {c.name}</h3>
+                <div className="flex items-center gap-3 text-xs text-slate-500">
+                  <span className="font-medium text-slate-700">{c.projects}</span> project{c.projects === 1 ? "" : "s"}
+                  <span className="text-slate-300">·</span>
+                  <span className="font-medium text-slate-700">{c.snags}</span> snag{c.snags === 1 ? "" : "s"}
+                </div>
+              </div>
+              {Object.keys(c.sqmByType).length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {Object.entries(c.sqmByType).map(([type, sqm]) => (
+                    <span key={type} className="text-[11px] font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
+                      {type}: {sqm.toFixed(1)}m²
+                    </span>
+                  ))}
+                </div>
+              )}
+              {c.snags > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(c.snagsByCat).map(([cat, n]) => (
+                    <span key={cat} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-100">
+                      {cat}: {n}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Overall snag summary */}
+      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Overall snag summary — all consultants</h3>
+        {overallSnags.grand === 0 ? (
+          <p className="text-sm text-slate-400">No snags logged in this view.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-800 text-white">Total: {overallSnags.grand}</span>
+            {Object.entries(overallSnags.totals).map(([cat, n]) => (
+              <span key={cat} className="text-xs font-medium px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200">
+                {cat}: {n}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -1900,7 +2328,7 @@ function AvailabilityView({ index }) {
 /* ============================================================
    MENU DRAWER
    ============================================================ */
-function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
+function MenuDrawer({ user, level, index, historyCount, completedCount, snagTotal, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
   const today = todayISO();
   const week = addDays(today, 7);
   const dueSoon = index.filter((e) => e.materialEta && e.materialEta >= today && e.materialEta <= week && e.status === "ordered").length;
@@ -1935,7 +2363,9 @@ function MenuDrawer({ user, level, index, historyCount, snagTotal, view, onView,
           <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
           <MenuItem icon={Flag} label="Snags" active={view === "snags"} badge={snagTotal} danger onClick={() => onView("snags")} />
           <MenuItem icon={FileText} label="Reports" active={view === "reports"} onClick={() => onView("reports")} />
+          <MenuItem icon={Receipt} label="Completed" active={view === "completed"} badge={completedCount} onClick={() => onView("completed")} />
           {level >= 2 && <MenuItem icon={CalendarCheck} label="Availability" active={view === "availability"} onClick={() => onView("availability")} />}
+          {level >= 2 && <MenuItem icon={Users} label="Tracking Report" active={view === "tracking"} onClick={() => onView("tracking")} />}
           <MenuItem icon={Archive} label="History" active={view === "history"} badge={historyCount} onClick={() => onView("history")} />
 
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">Quick filters</p>
