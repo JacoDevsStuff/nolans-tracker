@@ -79,7 +79,82 @@ const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Luciano", "Marco"];
 const REPAIR_CONSULTANTS = [...CONSULTANTS, "Office"];
 
 /* ---------- Product type options ---------- */
-const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Turf", "Novillon", "Rug", "Other"];
+const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Turf", "Novillon", "Other"];
+
+/* ---------- Range lists per product type ----------
+   Feeds the Range dropdown on each project (filtered by Type) and the
+   Tracking Report's per-range m² and snag breakdowns. Width is stored
+   for reference only (helps spot patterns like "mostly wrong on 4.2m
+   rolls") — it does not drive any calculation.
+   Turf and Novillon are empty until their range lists arrive — the UI
+   shows "Coming soon" for those two until then.
+   ============================================================ */
+const RANGES_BY_TYPE = {
+  "Carpet": [
+    { name: "Arabica", width: "4.0m" },
+    { name: "Conqueror", width: "4.0m" },
+    { name: "Textured", width: "4.0m" },
+    { name: "Aqua", width: "4.0m" },
+    { name: "Softology Light", width: "4.0m" },
+    { name: "Softology", width: "4.0m" },
+    { name: "Softology Ultra", width: "4.0m" },
+    { name: "Sensology Aural", width: "4.0m" },
+    { name: "Serengeti", width: "4.0m" },
+    { name: "Sensology Lush", width: "4.0m" },
+    { name: "Westminster", width: "4.0m" },
+    { name: "Baltimore", width: "4.0m" },
+    { name: "Sensology Tactual", width: "4.0m" },
+    { name: "Influence", width: "4.0m" },
+    { name: "Inclusive", width: "4.0m" },
+    { name: "Co-Exist", width: "4.0m" },
+    { name: "Co-Create", width: "4.0m" },
+    { name: "Merino", width: "4.0m" },
+    { name: "Grace", width: "4.0m" },
+    { name: "Latte", width: "4.0m" },
+    { name: "Mood", width: "4.0m" },
+    { name: "Longevity - Grandeur", width: "4.0m" },
+    { name: "Longevity - Serenity", width: "4.0m" },
+    { name: "Immerse", width: "4.0m" },
+    { name: "Mindful", width: "4.0m" },
+    { name: "Attuned", width: "4.0m" },
+    { name: "Color Rib", width: "4.2m" },
+    { name: "Garage Carpet", width: "4.0m" },
+    { name: "Hercules", width: "4.2m" },
+    { name: "Berber Point 650", width: "4.2m" },
+    { name: "Berber Point 920", width: "4.2m" },
+    { name: "Timbavati", width: "4.2m" },
+  ],
+  "Carpet Tile": [
+    { name: "Fliptile", width: "Tile" },
+    { name: "Perpetual", width: "Tile" },
+    { name: "City Life", width: "Tile" },
+    { name: "Rustic Grain", width: "Tile" },
+    { name: "Panthera", width: "Tile" },
+    { name: "Highlands", width: "Tile" },
+    { name: "Color Rib Resinbac", width: "Tile" },
+    { name: "Hercules Resinbac", width: "Tile" },
+    { name: "Berber Point 650 Resinbac", width: "Tile" },
+    { name: "Berber Point 920 Resinback", width: "Tile" },
+    { name: "Metro Resinbac", width: "Tile" },
+    { name: "Main Street Resinbac", width: "Tile" },
+    { name: "Diagonals Resinbac", width: "Tile" },
+    { name: "Berber Point 920 Nexbac", width: "Tile" },
+    { name: "Fringe", width: "Tile" },
+    { name: "Affect", width: "Tile" },
+    { name: "Margin", width: "Tile" },
+    { name: "Hard Craft", width: "Tile" },
+    { name: "Accelerate", width: "Tile" },
+    { name: "Blend", width: "Tile" },
+    { name: "Grid", width: "Tile" },
+    { name: "Terranova", width: "Tile" },
+  ],
+  "Turf": [],
+  "Novillon": [],
+  "Other": [
+    { name: "Sportec Rubber Flooring", width: "1.5m" },
+  ],
+};
+const rangesForType = (type) => RANGES_BY_TYPE[type] || [];
 
 /* Short one-line product summary from the split fields (with legacy fallback) */
 function productSummary(e) {
@@ -742,7 +817,7 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
             <div>
               <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Package size={12} /> Type</label>
               {canInternal ? (
-                <select value={p.type || ""} onChange={(e) => persist({ ...p, type: e.target.value })}
+                <select value={p.type || ""} onChange={(e) => persist({ ...p, type: e.target.value, range: "" })}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
                   <option value="">Select…</option>
                   {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -761,8 +836,26 @@ function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge
               </div>
             ) : (
               <>
-                <Field icon={Package} label="Range" value={p.range} editMode={canInternal} onChange={(v) => patch({ range: v })} onBlur={() => onSave(p)} />
-                <Field icon={Package} label="Colour" value={p.colour} editMode={canInternal} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
+                <div>
+                  <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Package size={12} /> Range</label>
+                  {canOperate ? (
+                    rangesForType(p.type).length > 0 ? (
+                      <select value={p.range || ""} onChange={(e) => persist({ ...p, range: e.target.value })}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                        <option value="">Select…</option>
+                        {rangesForType(p.type).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+                        {p.range && !rangesForType(p.type).some((r) => r.name === p.range) && <option value={p.range}>{p.range}</option>}
+                      </select>
+                    ) : p.type === "Turf" || p.type === "Novillon" ? (
+                      <select disabled className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-400">
+                        <option>Coming soon</option>
+                      </select>
+                    ) : (
+                      <p className="text-sm text-slate-400">{p.type ? "No ranges loaded for this type yet" : "Select a type first"}</p>
+                    )
+                  ) : <p className="text-sm text-slate-800">{p.range || "—"}</p>}
+                </div>
+                <Field icon={Package} label="Colour" value={p.colour} editMode={canOperate} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
                 <Field icon={Hash} label="Square meters (m²)" value={p.sqm} editMode={canInternal} onChange={(v) => patch({ sqm: v })} onBlur={() => onSave(p)} />
               </>
             )}
@@ -2048,8 +2141,10 @@ function reportStatus(j) {
 
 /* ============================================================
    TRACKING REPORT — co-ordinator+ only
-   Per-consultant totals: projects, m² by product type, and snags
-   logged (with category breakdown). Repairs are excluded entirely.
+   Per-consultant totals: projects, m² by product type and by range,
+   and snags logged (by category, and by range × category so a
+   pattern like "mostly wrong on one specific range" is visible).
+   Repairs are excluded entirely.
    ============================================================ */
 function TrackingReportView({ index }) {
   const [productFilter, setProductFilter] = useState("all");
@@ -2075,17 +2170,25 @@ function TrackingReportView({ index }) {
     const map = {};
     pool.forEach((e) => {
       const name = e.consultant || "Unassigned";
-      if (!map[name]) map[name] = { name, projects: 0, sqmByType: {}, snags: 0, snagsByCat: {} };
+      if (!map[name]) map[name] = { name, projects: 0, sqmByType: {}, sqmByRange: {}, snags: 0, snagsByCat: {}, snagsByRangeCat: {} };
       map[name].projects += 1;
       if (e.sqm) {
         const t = e.type || "Other";
         const n = parseFloat(e.sqm);
-        if (!isNaN(n)) map[name].sqmByType[t] = (map[name].sqmByType[t] || 0) + n;
+        if (!isNaN(n)) {
+          map[name].sqmByType[t] = (map[name].sqmByType[t] || 0) + n;
+          if (e.range) {
+            const rKey = `${t} · ${e.range}`;
+            map[name].sqmByRange[rKey] = (map[name].sqmByRange[rKey] || 0) + n;
+          }
+        }
       }
       (e.snags || []).forEach((s) => {
         map[name].snags += 1;
         const cat = s.category || "Uncategorised";
         map[name].snagsByCat[cat] = (map[name].snagsByCat[cat] || 0) + 1;
+        const rcKey = `${e.range || "No range"} · ${cat}`;
+        map[name].snagsByRangeCat[rcKey] = (map[name].snagsByRangeCat[rcKey] || 0) + 1;
       });
     });
     return Object.values(map).sort((a, b) => b.projects - a.projects);
@@ -2105,6 +2208,20 @@ function TrackingReportView({ index }) {
     return { totals, grand };
   }, [pool]);
 
+  // Overall snags by range × category, all consultants combined — surfaces
+  // product-driven patterns (e.g. one range generating most snags for everyone)
+  const overallByRange = useMemo(() => {
+    const totals = {};
+    pool.forEach((e) => {
+      (e.snags || []).forEach((s) => {
+        const cat = s.category || "Uncategorised";
+        const key = `${e.range || "No range"} · ${cat}`;
+        totals[key] = (totals[key] || 0) + 1;
+      });
+    });
+    return Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  }, [pool]);
+
   const totalProjects = pool.length;
   const totalSqm = pool.reduce((a, e) => a + (parseFloat(e.sqm) || 0), 0);
 
@@ -2112,7 +2229,7 @@ function TrackingReportView({ index }) {
     <div>
       <div className="mb-4">
         <h2 className="font-semibold text-slate-900">Tracking Report</h2>
-        <p className="text-xs text-slate-500 mt-0.5">Per-consultant totals · projects, m² and logged snags. Repairs are excluded.</p>
+        <p className="text-xs text-slate-500 mt-0.5">Per-consultant totals · projects, m² (by type &amp; range) and logged snags (by category &amp; range). Repairs are excluded.</p>
       </div>
 
       {/* Filters */}
@@ -2171,13 +2288,39 @@ function TrackingReportView({ index }) {
                   ))}
                 </div>
               )}
+              {Object.keys(c.sqmByRange).length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">By range</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(c.sqmByRange).map(([key, sqm]) => (
+                      <span key={key} className="text-[11px] font-medium px-2 py-1 rounded-full bg-blue-50/60 text-blue-600 border border-blue-100">
+                        {key}: {sqm.toFixed(1)}m²
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {c.snags > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(c.snagsByCat).map(([cat, n]) => (
-                    <span key={cat} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-100">
-                      {cat}: {n}
-                    </span>
-                  ))}
+                <div className="mb-2">
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(c.snagsByCat).map(([cat, n]) => (
+                      <span key={cat} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-100">
+                        {cat}: {n}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {Object.keys(c.snagsByRangeCat).length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Snags by range</p>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(c.snagsByRangeCat).sort((a, b) => b[1] - a[1]).map(([key, n]) => (
+                      <span key={key} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50/60 text-red-600 border border-red-100">
+                        {key}: {n}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -2186,7 +2329,7 @@ function TrackingReportView({ index }) {
       )}
 
       {/* Overall snag summary */}
-      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 mb-4">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Overall snag summary — all consultants</h3>
         {overallSnags.grand === 0 ? (
           <p className="text-sm text-slate-400">No snags logged in this view.</p>
@@ -2196,6 +2339,22 @@ function TrackingReportView({ index }) {
             {Object.entries(overallSnags.totals).map(([cat, n]) => (
               <span key={cat} className="text-xs font-medium px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200">
                 {cat}: {n}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Overall snags by range — spot product-driven patterns across everyone */}
+      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Snags by range — all consultants</h3>
+        {overallByRange.length === 0 ? (
+          <p className="text-sm text-slate-400">No snags logged in this view.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {overallByRange.map(([key, n]) => (
+              <span key={key} className="text-xs font-medium px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200">
+                {key}: {n}
               </span>
             ))}
           </div>
@@ -2483,7 +2642,7 @@ function ProjectForm({ onClose, onSave }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-slate-500 mb-1 block">Type</label>
-                  <select value={f.type} onChange={(e) => set("type", e.target.value)}
+                  <select value={f.type} onChange={(e) => { const t = e.target.value; setF((p) => ({ ...p, type: t, range: "" })); }}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
                     <option value="">Select…</option>
                     {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
@@ -2492,7 +2651,24 @@ function ProjectForm({ onClose, onSave }) {
                 <Input label="Square meters (m²)" value={f.sqm} onChange={(v) => set("sqm", v)} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input label="Range" value={f.range} onChange={(v) => set("range", v)} />
+                <div>
+                  <label className="text-xs text-slate-500 mb-1 block">Range</label>
+                  {rangesForType(f.type).length > 0 ? (
+                    <select value={f.range} onChange={(e) => set("range", e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+                      <option value="">Select…</option>
+                      {rangesForType(f.type).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+                    </select>
+                  ) : f.type === "Turf" || f.type === "Novillon" ? (
+                    <select disabled className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-400">
+                      <option>Coming soon</option>
+                    </select>
+                  ) : (
+                    <input value={f.range} onChange={(e) => set("range", e.target.value)} disabled={!f.type}
+                      placeholder={f.type ? "" : "Select a type first"}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:bg-slate-50 disabled:text-slate-400" />
+                  )}
+                </div>
                 <Input label="Colour" value={f.colour} onChange={(v) => set("colour", v)} />
               </div>
             </>
