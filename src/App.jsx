@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
-  Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar
+  Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
+  History, CalendarCheck, RotateCcw, ChevronDown
 } from "lucide-react";
 
 /* =========================================================
@@ -30,6 +31,14 @@ const DEPARTMENTS = [
   { id: "wood", label: "Wood", icon: Trees, from: "#8a5a34", to: "#2e1e12" },
 ];
 const deptOf = (id) => DEPARTMENTS.find((d) => d.id === id) || DEPARTMENTS[0];
+
+// Team names are placeholders until phase 3
+const TEAMS = { blinds: ["Team 1", "Team 2"], shutters: ["Team 1"], carpets: ["Team 1"], vinyl: ["Team 1", "Team 2"], wood: ["Team 1", "Team 2"] };
+const teamsOf = (dept) => TEAMS[dept] || ["Team 1"];
+
+// Daily capacity in hours for the Availability view
+const capacityOf = (dateIso) => (fromIso(dateIso).getDay() === 5 ? 7 : 8);
+const DEFAULT_HOURS_PER_DAY = 4;
 
 const TIMES = [];
 for (let h = 7; h <= 17; h++) for (let m = 0; m < 60; m += 15) {
@@ -62,6 +71,34 @@ const fmt = (s, opts = { weekday: "short", day: "numeric", month: "short", year:
 const fmtShort = (s) => fmt(s, { day: "numeric", month: "short" });
 const weekStart = (s) => { const d = fromIso(s); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return iso(d); };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+
+/* =========================================================
+   INSTALL SCHEDULE — one entry per install day, each movable
+   ========================================================= */
+// Build a fresh schedule of N working days from a start date
+const buildSchedule = (start, days, time) => {
+  const out = [{ dayIndex: 1, date: start, time }];
+  let cur = start;
+  for (let i = 2; i <= Math.max(1, days || 1); i++) {
+    do { cur = addDays(cur, 1); } while (isWeekend(cur));
+    out.push({ dayIndex: i, date: cur, time: null });
+  }
+  return out;
+};
+// Legacy fallback: phase-1 records only have installDate + installDays (number)
+const scheduleOf = (p) => {
+  if (Array.isArray(p.installSchedule) && p.installSchedule.length) return p.installSchedule;
+  if (p.installDate) return buildSchedule(p.installDate, Number(p.installDays) || 1, p.installTime);
+  return [];
+};
+// Keep the sortable top-level dates in sync with the schedule
+const withSchedule = (p, schedule) => {
+  const sorted = [...schedule].sort((a, b) => a.date.localeCompare(b.date));
+  return { ...p, installSchedule: schedule, installDate: sorted[0]?.date || null, installEndDate: sorted[sorted.length - 1]?.date || null };
+};
+const hoursPerDay = (p) => Number(p.estHours) || DEFAULT_HOURS_PER_DAY;
+// Received but some line items still outstanding
+const partiallyReceived = (p) => p.received && (p.lineItems || []).some((li) => !li.received);
 
 /* =========================================================
    SUPABASE (REST, no client library needed)
@@ -126,6 +163,9 @@ const Badge = ({ status }) => {
 };
 const RBadge = () => (
   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none">R</span>
+);
+const PartialBadge = () => (
+  <span title="Received, but not in full" className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 text-black text-[11px] font-bold leading-none">!</span>
 );
 const Field = ({ label, children }) => (
   <label className="block">
@@ -214,7 +254,8 @@ export default function App() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [view, setView] = useState("home"); // home | placed | received | booked | completed | reports | dept:<id>
+  const [view, setView] = useState("home"); // home | placed | received | booked | completed | history | availability | reports | dept:<id>
+  const [calMonth, setCalMonth] = useState(null); // month the calendar should open on (from Availability)
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -256,6 +297,7 @@ export default function App() {
   };
 
   const active = useMemo(() => projects.filter((p) => !p.deleted), [projects]);
+  const deletedList = useMemo(() => projects.filter((p) => p.deleted).sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || "")), [projects]);
   const mine = (list) => (level === 1 ? list.filter((p) => p.consultant === user.name) : list);
   const q = search.trim().toLowerCase();
   const matches = (p) => !q || [p.clientName, p.po, p.address, p.productType, p.consultant, p.contact].some((v) => (v || "").toLowerCase().includes(q));
@@ -264,8 +306,19 @@ export default function App() {
     placed: mine(active.filter((p) => p.status === "ordered")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
     received: mine(active.filter((p) => p.status === "received")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
     booked: active.filter((p) => p.status === "booked").sort((a, b) => (a.installDate || "").localeCompare(b.installDate || "")),
-    completed: active.filter((p) => p.status === "installed").sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
+    completed: active.filter((p) => p.status === "installed" && !p.invoiced).sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
+    history: active.filter((p) => p.status === "installed" && p.invoiced).sort((a, b) => (b.invoicedAt || "").localeCompare(a.invoicedAt || "")),
   }), [active, level, user]);
+
+  // Global search: consultants only see their own placed/received orders
+  const searchResults = useMemo(() => {
+    if (!q) return [];
+    return active
+      .filter(matches)
+      .filter((p) => level !== 1 || p.status === "booked" || p.status === "installed" || p.consultant === user.name)
+      .sort((a, b) => (a.clientName || "").localeCompare(b.clientName || ""))
+      .slice(0, 12);
+  }, [q, active, level, user]);
 
   if (!user) return <Login onLogin={setUser} />;
 
@@ -275,10 +328,16 @@ export default function App() {
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
     { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
-    ...(isCoord ? [{ id: "reports", label: "Reports", icon: FileText }] : []),
+    { id: "history", label: "History", icon: History, count: lists.history.length },
+    ...(isCoord ? [
+      { id: "availability", label: "Availability", icon: CalendarCheck },
+      { id: "reports", label: "Reports", icon: FileText },
+    ] : []),
   ];
 
   const logout = () => { sessionStorage.removeItem("nolans_user"); setUser(null); setView("home"); };
+  const openDept = (id, month) => { setCalMonth(month || null); setView(`dept:${id}`); };
+  const openProject = (p) => { setSelected(p); setSearch(""); };
 
   return (
     <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black">
@@ -289,9 +348,12 @@ export default function App() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setSearch(""); if (e.key === "Enter" && searchResults.length === 1) openProject(searchResults[0]); }}
             placeholder="Search orders, clients or PO numbers"
             className={`${inputCls} pl-9 rounded-full bg-[#161b22]`}
           />
+          {q && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200"><X size={14} /></button>}
+          {q && <SearchDropdown results={searchResults} onOpen={openProject} onClose={() => setSearch("")} />}
         </div>
         <div className="flex items-center gap-3 shrink-0">
           {isCoord && (
@@ -299,7 +361,7 @@ export default function App() {
               <Plus size={16} /> New project
             </button>
           )}
-          <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 2)">
+          <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 3)">
             <Bell size={18} />
           </button>
           <div className="flex items-center gap-2 pl-2">
@@ -334,7 +396,7 @@ export default function App() {
             <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
             {DEPARTMENTS.map((d) => (
               <button
-                key={d.id} onClick={() => setView(`dept:${d.id}`)}
+                key={d.id} onClick={() => openDept(d.id)}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.id}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
               >
                 <d.icon size={16} /> {d.label}
@@ -357,18 +419,24 @@ export default function App() {
           {loading ? (
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
-            <HomeView user={user} lists={lists} setView={setView} />
+            <HomeView user={user} lists={lists} setView={setView} openDept={openDept} />
           ) : view === "reports" ? (
             <ReportsView projects={active} />
+          ) : view === "availability" ? (
+            <AvailabilityView projects={active} openDept={openDept} />
+          ) : view === "completed" ? (
+            <CompletedView items={lists.completed} isCoord={isCoord} user={user} save={save} onOpen={setSelected} setToast={setToast} />
+          ) : view === "history" ? (
+            <HistoryView items={lists.history} deleted={deletedList} isCoord={isCoord} isDev={isDev} user={user} save={save} onOpen={setSelected} />
           ) : view.startsWith("dept:") ? (
             <CalendarView
-              dept={deptOf(view.slice(5))} projects={active.filter((p) => p.department === view.slice(5))}
-              isCoord={isCoord} user={user} save={save} onOpen={setSelected}
+              key={view} dept={deptOf(view.slice(5))} projects={active.filter((p) => p.department === view.slice(5))}
+              isCoord={isCoord} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
             />
           ) : (
             <ListView
               title={nav.find((n) => n.id === view)?.label} status={view}
-              items={lists[view].filter(matches)} onOpen={setSelected} level={level}
+              items={lists[view]} onOpen={setSelected} level={level}
             />
           )}
         </main>
@@ -377,7 +445,7 @@ export default function App() {
       {/* Modals */}
       {(showCreate || editing) && (
         <ProjectForm
-          initial={editing} user={user}
+          initial={editing} user={user} isCoord={isCoord}
           onClose={() => { setShowCreate(false); setEditing(null); }}
           onSave={async (p) => { await save(p, editing ? "Project updated" : "Project created"); setShowCreate(false); setEditing(null); if (editing) setSelected(p); }}
         />
@@ -397,9 +465,44 @@ export default function App() {
 }
 
 /* =========================================================
+   GLOBAL SEARCH DROPDOWN
+   ========================================================= */
+function SearchDropdown({ results, onOpen, onClose }) {
+  const ref = useRef();
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target) && !e.target.closest("input")) onClose(); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [onClose]);
+  return (
+    <div ref={ref} className="absolute left-0 right-0 top-full mt-2 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl overflow-hidden z-40">
+      {results.length === 0 ? (
+        <div className="px-4 py-3 text-sm text-slate-500">No matching orders.</div>
+      ) : results.map((p) => {
+        const d = deptOf(p.department);
+        return (
+          <button key={p.id} onClick={() => onOpen(p)} className="w-full text-left px-4 py-2.5 hover:bg-[#21262d] border-b border-[#30363d] last:border-0 flex items-center gap-3">
+            <d.icon size={16} className="text-slate-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-white truncate">{p.clientName} <span className="text-slate-500 font-normal">· PO {p.po}</span></div>
+              <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
+              <Badge status={p.status} />
+              {p.invoiced && <span className="text-[10px] text-slate-500">Invoiced</span>}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* =========================================================
    HOME DASHBOARD
    ========================================================= */
-function HomeView({ user, lists, setView }) {
+function HomeView({ user, lists, setView, openDept }) {
   const myCount = lists.placed.length + lists.received.length;
   const cards = [
     { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
@@ -438,7 +541,7 @@ function HomeView({ user, lists, setView }) {
         <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl p-3 space-y-3">
           {DEPARTMENTS.map((d) => (
             <button
-              key={d.id} onClick={() => setView(`dept:${d.id}`)}
+              key={d.id} onClick={() => openDept(d.id)}
               className="w-full h-24 rounded-xl border border-[#30363d] flex items-center px-6 gap-5 text-left relative overflow-hidden group"
               style={{ background: `linear-gradient(90deg, ${d.to} 0%, ${d.to} 35%, ${d.from} 100%)` }}
             >
@@ -487,7 +590,8 @@ function ListView({ title, status, items, onOpen, level }) {
                    <>Done {fmtShort((p.installedAt || "").slice(0, 10))}</>}
                 </div>
                 <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
-                  <span className="truncate">PO {p.po} · {p.consultant}</span>
+                  <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                  {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
                   <Badge status={p.status} />
                 </div>
               </button>
@@ -502,14 +606,20 @@ function ListView({ title, status, items, onOpen, level }) {
 /* =========================================================
    CREATE / EDIT PROJECT
    ========================================================= */
-function ProjectForm({ initial, user, onClose, onSave }) {
-  const [f, setF] = useState(() => initial || {
-    clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds",
-    productType: "", materialEta: todayIso(), installDays: 1, jobCards: [],
+function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
+  const [f, setF] = useState(() => initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0] } : {
+    clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds", team: "Team 1",
+    productType: "", lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const fileRef = useRef();
+
+  const setDept = (dept) => setF((s) => ({ ...s, department: dept, team: teamsOf(dept).includes(s.team) ? s.team : teamsOf(dept)[0] }));
+
+  const addLine = () => set("lineItems", [...f.lineItems, { id: uid(), description: "", received: false }]);
+  const updLine = (id, patch) => set("lineItems", f.lineItems.map((li) => (li.id === id ? { ...li, ...patch } : li)));
+  const delLine = (id) => set("lineItems", f.lineItems.filter((li) => li.id !== id));
 
   const addFiles = async (files) => {
     setBusy(true);
@@ -522,17 +632,17 @@ function ProjectForm({ initial, user, onClose, onSave }) {
     setBusy(false);
   };
 
-  const valid = f.clientName.trim() && f.po.trim() && f.materialEta;
+  const valid = f.clientName.trim() && f.po.trim() && f.productType.trim() && f.materialEta;
   const submit = async () => {
     if (!valid) return;
     setBusy(true);
     const now = new Date().toISOString();
+    const lineItems = f.lineItems.filter((li) => li.description.trim());
+    const base = { ...f, lineItems, installDays: Number(f.installDays) || 1, estHours: f.estHours === "" ? null : Number(f.estHours) };
     const p = initial
-      ? { ...f, installDays: Number(f.installDays) || 1 }
-      : { ...f, id: uid(), createdAt: now, createdBy: user.name, status: "ordered", received: false, installed: false, installDays: Number(f.installDays) || 1,
+      ? base
+      : { ...base, id: uid(), createdAt: now, createdBy: user.name, status: "ordered", received: false, installed: false,
           log: [{ id: uid(), text: "Project created", author: user.name, createdAt: now }] };
-    // keep calendar end date in sync if the duration changed on an already-booked job
-    if (p.installDate) p.installEndDate = installEnd(p.installDate, p.installDays);
     await onSave(p);
     setBusy(false);
   };
@@ -550,13 +660,42 @@ function ProjectForm({ initial, user, onClose, onSave }) {
           </select>
         </Field>
         <Field label="Department">
-          <select className={inputCls} value={f.department} onChange={(e) => set("department", e.target.value)}>
+          <select className={inputCls} value={f.department} onChange={(e) => setDept(e.target.value)}>
             {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
         </Field>
-        <Field label="Product type"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Roller blinds, Belgotex Loft" /></Field>
+        <Field label="Install team">
+          <select className={inputCls} value={f.team} onChange={(e) => set("team", e.target.value)} disabled={!isCoord}>
+            {teamsOf(f.department).map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
         <Field label="Material ETA"><input type="date" className={inputCls} value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} /></Field>
         <Field label="Estimated install duration (working days)"><input type="number" min="1" max="30" className={inputCls} value={f.installDays} onChange={(e) => set("installDays", e.target.value)} /></Field>
+        <div className="md:col-span-2">
+          <Field label="Estimated hours on site per day (used by Availability; blank = 4h)"><input type="number" min="1" max="10" step="0.5" className={inputCls} value={f.estHours ?? ""} onChange={(e) => set("estHours", e.target.value)} placeholder="4" /></Field>
+        </div>
+
+        {/* Line items */}
+        <div className="md:col-span-2 border border-[#30363d] rounded-xl p-4">
+          <Field label="Main line item (product)"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Engineered oak flooring 45m²" /></Field>
+          <div className="text-xs text-slate-400 mt-4 mb-2">Additional line items — trims, adhesive, moisture barrier, etc.</div>
+          <div className="space-y-2">
+            {f.lineItems.map((li) => (
+              <div key={li.id} className="flex items-center gap-2">
+                <input className={inputCls} value={li.description} onChange={(e) => updLine(li.id, { description: e.target.value })} placeholder="Item description" />
+                {isCoord && (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-300 shrink-0 select-none">
+                    <input type="checkbox" checked={!!li.received} onChange={(e) => updLine(li.id, { received: e.target.checked, receivedAt: e.target.checked ? new Date().toISOString() : null, receivedBy: e.target.checked ? user.name : null })} />
+                    Received
+                  </label>
+                )}
+                <button onClick={() => delLine(li.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>
+              </div>
+            ))}
+          </div>
+          <button onClick={addLine} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add item</button>
+        </div>
+
         <div className="md:col-span-2">
           <Field label="Job cards (JPEG)">
             <div
@@ -600,13 +739,20 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
   const [lightbox, setLightbox] = useState(null);
   const now = () => new Date().toISOString();
   const log = (text) => [...(p.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
+  const schedule = scheduleOf(p);
+  const lineItems = p.lineItems || [];
 
-  const markReceived = () => save({ ...p, status: "received", received: true, receivedAt: now(), log: log("Material received") }, "Marked as received");
+  const markReceived = () => save({ ...p, status: "received", received: true, receivedAt: now(), log: log("Main item received") }, "Marked as received");
   const undoReceived = () => save({ ...p, status: "ordered", received: false, receivedAt: null, log: log("Received undone") }, "Moved back to placed");
   const markInstalled = () => save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
   const undoInstalled = () => save({ ...p, status: "booked", installed: false, installedAt: null, log: log("Completion undone") }, "Moved back to booked");
-  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, log: log("Booking removed") }, "Booking removed");
+  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
   const del = () => save({ ...p, deleted: true, deletedAt: now(), deletedBy: user.name, deleteReason: reason, log: log(`Deleted: ${reason}`) }, "Project deleted");
+  const toggleLine = (li) => {
+    const received = !li.received;
+    const items = lineItems.map((x) => (x.id === li.id ? { ...x, received, receivedAt: received ? now() : null, receivedBy: received ? user.name : null } : x));
+    save({ ...p, lineItems: items, log: log(`${li.description}: ${received ? "received" : "marked not received"}`) });
+  };
 
   const Row = ({ icon: I, label, value }) => (
     <div className="flex items-start gap-3 py-2">
@@ -619,20 +765,54 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
     <Modal title={p.clientName} onClose={onClose} wide>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Badge status={p.status} />
+        {p.invoiced && <span className="text-xs px-2 py-0.5 rounded-full border border-slate-500/30 text-slate-400">Invoiced</span>}
         <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
         <span className="text-xs text-slate-400">· {p.consultant}</span>
+        {p.team && <span className="text-xs text-slate-400">· {p.team}</span>}
         {p.received && p.status === "received" && <RBadge />}
+        {partiallyReceived(p) && <span className="flex items-center gap-1 text-xs text-yellow-300"><PartialBadge /> not received in full</span>}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
         <Row icon={Phone} label="Contact" value={p.contact} />
         <Row icon={Hash} label="Purchase order" value={p.po} />
         <div className="md:col-span-2"><Row icon={MapPin} label="Address" value={p.address} /></div>
-        <Row icon={Layers} label="Product type" value={p.productType} />
         <Row icon={Truck} label="Material ETA" value={fmt(p.materialEta)} />
-        <Row icon={Clock} label="Install duration" value={`${p.installDays || 1} working day${(p.installDays || 1) > 1 ? "s" : ""}`} />
-        {p.installDate && (
-          <Row icon={CalendarDays} label="Installation" value={`${fmt(p.installDate)}${p.installEndDate !== p.installDate ? ` → ${fmt(p.installEndDate)}` : ""} at ${p.installTime}`} />
+        <Row icon={Clock} label="Install estimate" value={`${p.installDays || 1} working day${(p.installDays || 1) > 1 ? "s" : ""} · ${hoursPerDay(p)}h per day`} />
+        {schedule.length > 0 && (
+          <div className="md:col-span-2">
+            <Row icon={CalendarDays} label="Installation days" value={
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {[...schedule].sort((a, b) => a.date.localeCompare(b.date)).map((s) => (
+                  <span key={s.dayIndex} className="text-xs px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-100">
+                    {s.dayIndex}/{schedule.length} · {fmt(s.date)}{s.time ? ` at ${s.time}` : ""}
+                  </span>
+                ))}
+              </div>
+            } />
+          </div>
         )}
+      </div>
+
+      {/* Line items */}
+      <div className="mt-4 border border-[#30363d] rounded-xl p-3">
+        <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><Layers size={14} /> Line items</div>
+        <div className="flex items-center justify-between py-1.5 text-sm">
+          <span className="text-slate-100">{p.productType} <span className="text-slate-500 text-xs">(main)</span></span>
+          {p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>}
+        </div>
+        {lineItems.map((li) => (
+          <div key={li.id} className="flex items-center justify-between py-1.5 text-sm border-t border-[#30363d]">
+            <span className="text-slate-200">{li.description}</span>
+            {isCoord ? (
+              <button onClick={() => toggleLine(li)} className={`text-xs px-2 py-1 rounded-lg border ${li.received ? "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10" : "border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10"}`}>
+                {li.received ? "Received" : "Mark received"}
+              </button>
+            ) : (
+              <span className={`text-xs ${li.received ? "text-emerald-300" : "text-yellow-300"}`}>{li.received ? "Received" : "Not received"}</span>
+            )}
+          </div>
+        ))}
+        {lineItems.length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
       </div>
 
       <div className="mt-4">
@@ -650,11 +830,11 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
 
       {isCoord && (
         <div className="mt-6 pt-4 border-t border-[#30363d] flex flex-wrap gap-2">
-          {p.status === "ordered" && <button onClick={markReceived} className={btnPrimary}>Mark as received</button>}
+          {p.status === "ordered" && <button onClick={markReceived} className={btnPrimary}>Mark main item received</button>}
           {p.status === "received" && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
           {p.status === "booked" && <button onClick={markInstalled} className={btnPrimary}>Mark as completed</button>}
           {p.status === "booked" && <button onClick={unbook} className={btnGhost}>Remove booking</button>}
-          {p.status === "installed" && <button onClick={undoInstalled} className={btnGhost}>Undo completion</button>}
+          {p.status === "installed" && !p.invoiced && <button onClick={undoInstalled} className={btnGhost}>Undo completion</button>}
           <button onClick={onEdit} className={btnGhost}>Edit details</button>
           {isDev && !confirmDelete && <button onClick={() => setConfirmDelete(true)} className="ml-auto px-3 py-2 rounded-lg text-red-300 hover:bg-red-500/10 text-sm flex items-center gap-1"><Trash2 size={14} /> Delete</button>}
         </div>
@@ -691,7 +871,7 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
 /* =========================================================
    DEPARTMENT CALENDAR
    ========================================================= */
-function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag }) {
+function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time }) {
   const cls =
     variant === "installed" ? "bg-emerald-700/70 border-emerald-500/60 text-white" :
     variant === "booked" ? "bg-emerald-400/25 border-emerald-400/50 text-emerald-50" :
@@ -700,45 +880,47 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag }) {
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={onClick}
       className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant !== "booked" && variant !== "installed" ? "opacity-80" : ""}`}
-      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}`}
     >
       <div className="flex items-center gap-1.5">
         <span className="font-semibold truncate flex-1">{p.clientName}</span>
+        {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
+        {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
         {p.status === "received" && <RBadge />}
       </div>
       <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
-        <span className="truncate">{p.consultant}</span>
-        {p.installTime && !dayTag && <span>{p.installTime}</span>}
-        {dayTag && <span>{dayTag}</span>}
-        {!p.installTime && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
+        <span className="truncate">{p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+        {time && <span>{time}</span>}
+        {!time && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
       </div>
     </div>
   );
 }
 
-function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
-  const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
-  const [booking, setBooking] = useState(null); // { project, date, reschedule }
+function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMonth }) {
+  const [month, setMonth] = useState(() => {
+    const d = initialMonth ? fromIso(initialMonth) : new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [booking, setBooking] = useState(null); // { project, date, mode: "book" | "moveDay", dayIndex }
   const [dragOver, setDragOver] = useState(null);
-  const dragRef = useRef(null);
+  const dragRef = useRef(null); // { p, dayIndex }
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const onCal = projects.filter((p) => p.status === "booked" || p.status === "installed");
 
-  // map date → [{p, dayIndex, total}]
+  // map date → [{ p, day, total }]
   const byDay = useMemo(() => {
     const m = {};
     onCal.forEach((p) => {
-      if (!p.installDate) return;
-      const days = spanDays(p.installDate, p.installEndDate || p.installDate).filter((d) => !isWeekend(d) || d === p.installDate);
-      days.forEach((d, i) => { (m[d] = m[d] || []).push({ p, i, n: days.length }); });
+      const sched = scheduleOf(p);
+      sched.forEach((s) => { (m[s.date] = m[s.date] || []).push({ p, day: s, total: sched.length }); });
     });
-    Object.values(m).forEach((arr) => arr.sort((a, b) => (a.p.installTime || "").localeCompare(b.p.installTime || "")));
+    Object.values(m).forEach((arr) => arr.sort((a, b) => (a.day.time || "99").localeCompare(b.day.time || "99")));
     return m;
   }, [onCal]);
 
-  // grid cells
   const cells = useMemo(() => {
     const first = new Date(month.getFullYear(), month.getMonth(), 1);
     const lead = (first.getDay() + 6) % 7;
@@ -749,21 +931,33 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
     return out;
   }, [month]);
 
-  const startDrag = (p) => (e) => { dragRef.current = p; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); };
+  const startDrag = (p, dayIndex) => (e) => { dragRef.current = { p, dayIndex }; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); };
   const dropOn = (dateIso) => (e) => {
     e.preventDefault(); setDragOver(null);
-    const p = dragRef.current; dragRef.current = null;
-    if (!p || !isCoord) return;
-    if (p.status === "received") setBooking({ project: p, date: dateIso, reschedule: false });
-    else if (p.status === "booked" && p.installDate !== dateIso) setBooking({ project: p, date: dateIso, reschedule: true });
+    const drag = dragRef.current; dragRef.current = null;
+    if (!drag || !isCoord) return;
+    const { p, dayIndex } = drag;
+    if (p.status === "received") setBooking({ project: p, date: dateIso, mode: "book" });
+    else if (p.status === "booked") {
+      const cur = scheduleOf(p).find((s) => s.dayIndex === dayIndex);
+      if (cur && cur.date !== dateIso) setBooking({ project: p, date: dateIso, mode: "moveDay", dayIndex });
+    }
   };
 
+  const logLine = (text) => ({ id: uid(), text, author: user.name, createdAt: new Date().toISOString() });
+
   const confirmBooking = ({ time, days }) => {
-    const { project: p, date, reschedule } = booking;
-    const end = installEnd(date, days);
-    const text = reschedule ? `Rescheduled to ${fmt(date)} at ${time}` : `Booked for ${fmt(date)} at ${time}`;
-    save({ ...p, status: "booked", installDate: date, installEndDate: end, installTime: time, installDays: days,
-      log: [...(p.log || []), { id: uid(), text, author: user.name, createdAt: new Date().toISOString() }] }, reschedule ? "Installation moved" : "Installation booked");
+    const { project: p, date, mode, dayIndex } = booking;
+    if (mode === "book") {
+      const schedule = buildSchedule(date, days, time);
+      save(withSchedule({ ...p, status: "booked", installTime: time, installDays: days, log: [...(p.log || []), logLine(`Booked for ${fmt(date)} at ${time} (${days} day${days > 1 ? "s" : ""})`)] }, schedule), "Installation booked");
+    } else {
+      const schedule = scheduleOf(p).map((s) => (s.dayIndex === dayIndex ? { ...s, date, time: time || s.time } : s));
+      const total = schedule.length;
+      const next = withSchedule({ ...p, log: [...(p.log || []), logLine(`Day ${dayIndex}/${total} moved to ${fmt(date)}${time ? ` at ${time}` : ""}`)] }, schedule);
+      if (dayIndex === 1 && time) next.installTime = time;
+      save(next, `Day ${dayIndex}/${total} moved`);
+    }
     setBooking(null);
   };
 
@@ -784,7 +978,6 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col gap-3">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <dept.icon size={22} className="text-slate-300" />
@@ -809,7 +1002,7 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
             {received.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
             {received.map((p) => (
               <div key={p.id} className="w-44">
-                <Sticker p={p} draggable={isCoord} onDragStart={startDrag(p)} onClick={() => onOpen(p)} variant="received" />
+                <Sticker p={p} draggable={isCoord} onDragStart={startDrag(p, 1)} onClick={() => onOpen(p)} variant="received" />
               </div>
             ))}
           </div>
@@ -837,23 +1030,26 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
                   <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
                     <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
                   </div>
-                  {items.map(({ p, i, n }) => (
+                  {items.map(({ p, day, total }) => (
                     <Sticker
-                      key={p.id} p={p} variant={p.status}
-                      draggable={isCoord && p.status === "booked" && i === 0}
-                      onDragStart={startDrag(p)} onClick={() => onOpen(p)}
-                      dayTag={n > 1 ? `Day ${i + 1}/${n}${i === 0 && p.installTime ? ` · ${p.installTime}` : ""}` : null}
+                      key={`${p.id}-${day.dayIndex}`} p={p} variant={p.status}
+                      draggable={isCoord && p.status === "booked"}
+                      onDragStart={startDrag(p, day.dayIndex)} onClick={() => onOpen(p)}
+                      dayTag={total > 1 ? `${day.dayIndex}/${total}` : null}
+                      time={day.time}
                     />
                   ))}
                 </div>
               );
             })}
           </div>
-          <div className="flex items-center gap-4 mt-2 text-[11px] text-slate-500">
+          <div className="flex items-center gap-4 mt-2 text-[11px] text-slate-500 flex-wrap">
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /> Placed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /><RBadge /> Received</span>
+            <span className="flex items-center gap-1.5"><PartialBadge /> Not received in full</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed</span>
+            <span className="ml-auto">Each day of a multi-day job (1/3, 2/3…) can be dragged on its own.</span>
           </div>
         </div>
       </div>
@@ -864,33 +1060,280 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
 }
 
 function BookingModal({ booking, onClose, onConfirm }) {
-  const { project: p, date, reschedule } = booking;
-  const [time, setTime] = useState(p.installTime || "08:00");
+  const { project: p, date, mode, dayIndex } = booking;
+  const isMove = mode === "moveDay";
+  const current = isMove ? scheduleOf(p).find((s) => s.dayIndex === dayIndex) : null;
+  const total = isMove ? scheduleOf(p).length : 0;
+  const [time, setTime] = useState(isMove ? (current?.time || "") : (p.installTime || "08:00"));
   const [days, setDays] = useState(p.installDays || 1);
-  const end = installEnd(date, Number(days) || 1);
+  const end = !isMove ? installEnd(date, Number(days) || 1) : null;
   const weekend = isWeekend(date);
   return (
-    <Modal title={reschedule ? "Move installation" : "Book installation"} onClose={onClose}>
+    <Modal title={isMove ? `Move day ${dayIndex}/${total}` : "Book installation"} onClose={onClose}>
       <div className="text-sm text-slate-300 mb-4">
-        <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}
-        {reschedule && <div className="text-xs text-slate-400 mt-1">Currently {fmt(p.installDate)} at {p.installTime}</div>}
+        <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}{p.team ? ` · ${p.team}` : ""}
+        {isMove && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}. Only this day moves; the other days stay where they are.</div>}
       </div>
       <div className="grid grid-cols-2 gap-4">
-        <Field label="Date"><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
-        <Field label="Start time">
+        <Field label="New date"><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
+        <Field label={isMove ? "Start time (optional)" : "Start time"}>
           <select className={inputCls} value={time} onChange={(e) => setTime(e.target.value)}>
+            {isMove && <option value="">No time</option>}
             {TIMES.map((t) => <option key={t}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>
-        <Field label="Ends"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>
+        {!isMove && <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>}
+        {!isMove && <Field label="Ends"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>}
       </div>
       {weekend && <p className="text-xs text-amber-300 mt-3">This is a weekend date.</p>}
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className={btnGhost}>Cancel</button>
-        <button onClick={() => onConfirm({ time, days: Math.max(1, Number(days) || 1) })} className={btnPrimary}>{reschedule ? "Move installation" : "Book installation"}</button>
+        <button onClick={() => onConfirm({ time, days: Math.max(1, Number(days) || 1) })} className={btnPrimary}>{isMove ? "Move this day" : "Book installation"}</button>
       </div>
     </Modal>
+  );
+}
+
+/* =========================================================
+   COMPLETED (ready to invoice) + INVOICE LIST
+   ========================================================= */
+function CompletedView({ items, isCoord, user, save, onOpen, setToast }) {
+  const [printing, setPrinting] = useState(false);
+  const ticked = items.filter((p) => p.readyToInvoice);
+  const toggle = (p) => save({ ...p, readyToInvoice: !p.readyToInvoice });
+  const confirmInvoiced = () => {
+    const at = new Date().toISOString();
+    ticked.forEach((p) => save({ ...p, invoiced: true, invoicedAt: at, readyToInvoice: false, log: [...(p.log || []), { id: uid(), text: "Invoiced — moved to history", author: user.name, createdAt: at }] }));
+    setPrinting(false);
+    setToast(`${ticked.length} job${ticked.length > 1 ? "s" : ""} moved to History`);
+  };
+
+  if (printing) {
+    return (
+      <div>
+        <div className="print:hidden flex items-center gap-2 mb-4">
+          <button onClick={() => window.print()} className={`${btnPrimary} flex items-center gap-2`}><Printer size={16} /> Print / Save as PDF</button>
+          <button onClick={confirmInvoiced} className={`${btnGhost} border-emerald-500/40 text-emerald-300`}>Done — move these {ticked.length} to History</button>
+          <button onClick={() => setPrinting(false)} className={btnGhost}>Back</button>
+        </div>
+        <div className="report bg-white text-black rounded-2xl p-8 print:p-0 print:rounded-none">
+          <div className="border-b-2 border-black pb-3 mb-4">
+            <div className="text-xs tracking-widest text-gray-600">NOLANS INVOICE LIST</div>
+            <h2 className="text-2xl font-bold">{fmt(todayIso())} · {ticked.length} {ticked.length === 1 ? "job" : "jobs"}</h2>
+          </div>
+          <table className="w-full text-sm">
+            <thead><tr className="text-left border-b border-gray-400"><th className="py-1.5 pr-3">Client</th><th className="py-1.5 pr-3">PO</th><th className="py-1.5 pr-3">Department</th><th className="py-1.5 pr-3">Team</th><th className="py-1.5 pr-3">Consultant</th><th className="py-1.5 pr-3">Installed</th></tr></thead>
+            <tbody>
+              {ticked.map((p) => (
+                <tr key={p.id} className="border-b border-gray-200 align-top">
+                  <td className="py-1.5 pr-3"><div className="font-semibold">{p.clientName}</div><div className="text-xs text-gray-600">{p.address}</div></td>
+                  <td className="py-1.5 pr-3">{p.po}</td>
+                  <td className="py-1.5 pr-3">{deptOf(p.department).label}<div className="text-xs text-gray-600">{p.productType}</div></td>
+                  <td className="py-1.5 pr-3">{p.team || "—"}</td>
+                  <td className="py-1.5 pr-3">{p.consultant}</td>
+                  <td className="py-1.5 pr-3">{fmtShort(p.installDate)}{p.installEndDate && p.installEndDate !== p.installDate ? ` – ${fmtShort(p.installEndDate)}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <style>{`@media print { @page { margin: 12mm; } body { background: white !important; } }`}</style>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Completed orders</h1>
+          <div className="text-sm text-slate-400">{items.length} awaiting invoicing{isCoord && ticked.length > 0 ? ` · ${ticked.length} ticked` : ""}</div>
+        </div>
+        {isCoord && <button onClick={() => setPrinting(true)} disabled={ticked.length === 0} className={`${btnPrimary} flex items-center gap-2`}><FileText size={16} /> Generate invoice list</button>}
+      </div>
+      {items.length === 0 ? (
+        <div className="text-slate-400 text-sm py-10 text-center border border-dashed border-[#30363d] rounded-xl">Nothing here yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((p) => {
+            const d = deptOf(p.department);
+            return (
+              <div key={p.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4 flex items-center gap-4">
+                {isCoord && (
+                  <label className="flex items-center gap-2 text-xs text-slate-300 shrink-0 select-none cursor-pointer">
+                    <input type="checkbox" checked={!!p.readyToInvoice} onChange={() => toggle(p)} className="w-4 h-4" />
+                    Ready to invoice
+                  </label>
+                )}
+                <button onClick={() => onOpen(p)} className="flex-1 min-w-0 text-left grid grid-cols-12 gap-3 items-center">
+                  <div className="col-span-12 md:col-span-5 min-w-0">
+                    <div className="font-medium text-white truncate">{p.clientName}</div>
+                    <div className="text-xs text-slate-400 truncate">{p.address}</div>
+                  </div>
+                  <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}{p.team ? ` · ${p.team}` : ""}</div>
+                  <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right">PO {p.po} · {p.consultant} · done {fmtShort((p.installedAt || "").slice(0, 10))}</div>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   HISTORY (invoiced) + DELETED
+   ========================================================= */
+function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
+  const [showDeleted, setShowDeleted] = useState(false);
+  const groups = useMemo(() => {
+    const m = {};
+    items.forEach((p) => { const k = (p.invoicedAt || "").slice(0, 7); (m[k] = m[k] || []).push(p); });
+    return Object.entries(m).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [items]);
+  const stamp = () => new Date().toISOString();
+  const moveBack = (p) => save({ ...p, invoiced: false, invoicedAt: null, log: [...(p.log || []), { id: uid(), text: "Moved back to Completed", author: user.name, createdAt: stamp() }] }, "Moved back to Completed");
+  const restore = (p) => save({ ...p, deleted: false, deletedAt: null, deletedBy: null, deleteReason: null, log: [...(p.log || []), { id: uid(), text: "Restored", author: user.name, createdAt: stamp() }] }, "Project restored");
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+        <div className="flex items-baseline justify-between mb-5">
+          <h1 className="text-2xl font-bold text-white">History</h1>
+          <span className="text-sm text-slate-400">{items.length} invoiced</span>
+        </div>
+        {groups.length === 0 ? (
+          <div className="text-slate-400 text-sm py-10 text-center border border-dashed border-[#30363d] rounded-xl">No invoiced jobs yet.</div>
+        ) : groups.map(([k, list]) => (
+          <div key={k} className="mb-5">
+            <div className="text-xs text-slate-500 tracking-wider mb-2">{fromIso(k + "-01").toLocaleDateString("en-ZA", { month: "long", year: "numeric" }).toUpperCase()} · {list.length}</div>
+            <div className="space-y-2">
+              {list.map((p) => {
+                const d = deptOf(p.department);
+                return (
+                  <div key={p.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4 flex items-center gap-4">
+                    <button onClick={() => onOpen(p)} className="flex-1 min-w-0 text-left grid grid-cols-12 gap-3 items-center">
+                      <div className="col-span-12 md:col-span-5 min-w-0">
+                        <div className="font-medium text-white truncate">{p.clientName}</div>
+                        <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
+                      </div>
+                      <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
+                      <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right">Installed {fmtShort(p.installDate)} · invoiced {fmtShort((p.invoicedAt || "").slice(0, 10))}</div>
+                    </button>
+                    {isCoord && <button onClick={() => moveBack(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`} title="Move back to Completed"><RotateCcw size={12} /> Move back</button>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {isDev && deleted.length > 0 && (
+        <div className="bg-[#161b22] border border-orange-500/40 rounded-2xl p-6">
+          <button onClick={() => setShowDeleted((s) => !s)} className="w-full flex items-center justify-between text-left">
+            <div className="flex items-center gap-2 text-orange-300 font-semibold"><Trash2 size={16} /> Deleted projects <span className="text-xs font-normal text-orange-300/70">· {deleted.length} · developer only</span></div>
+            <ChevronDown size={18} className={`text-orange-300 transition-transform ${showDeleted ? "rotate-180" : ""}`} />
+          </button>
+          {showDeleted && (
+            <div className="space-y-2 mt-4">
+              {deleted.map((p) => (
+                <div key={p.id} className="bg-[#0d1117] border border-orange-500/30 rounded-xl p-4 flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-white truncate">{p.clientName} <span className="text-xs text-slate-500 font-normal">· PO {p.po} · {deptOf(p.department).label} · {p.consultant}</span></div>
+                    <div className="text-xs text-orange-200/80 mt-0.5">Reason: {p.deleteReason || "—"} · by {p.deletedBy} on {fmtShort((p.deletedAt || "").slice(0, 10))}</div>
+                  </div>
+                  <button onClick={() => restore(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`}><RotateCcw size={12} /> Restore</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   AVAILABILITY (co-ordinator+)
+   ========================================================= */
+function AvailabilityView({ projects, openDept }) {
+  const [dept, setDept] = useState("all");
+  const booked = projects.filter((p) => (p.status === "booked" || p.status === "installed") && (dept === "all" || p.department === dept));
+
+  const hoursByDay = useMemo(() => {
+    const m = {};
+    booked.forEach((p) => scheduleOf(p).forEach((s) => { m[s.date] = (m[s.date] || 0) + hoursPerDay(p); }));
+    return m;
+  }, [booked]);
+
+  const months = useMemo(() => {
+    const now = new Date();
+    return [0, 1, 2].map((off) => {
+      const first = new Date(now.getFullYear(), now.getMonth() + off, 1);
+      const days = [];
+      const cur = new Date(first);
+      while (cur.getMonth() === first.getMonth()) {
+        const k = iso(cur);
+        if (!isWeekend(k)) days.push(k);
+        cur.setDate(cur.getDate() + 1);
+      }
+      return { label: first.toLocaleDateString("en-ZA", { month: "long", year: "numeric" }), first: iso(first), days };
+    });
+  }, []);
+
+  const state = (k) => {
+    const used = hoursByDay[k] || 0, cap = capacityOf(k), pct = used / cap;
+    if (pct <= 0.5) return { cls: "bg-emerald-500/15 border-emerald-500/40 text-emerald-100", used, cap };
+    if (pct <= 0.8) return { cls: "bg-amber-500/15 border-amber-500/40 text-amber-100", used, cap };
+    return { cls: "bg-red-500/15 border-red-500/40 text-red-100", used, cap };
+  };
+  const today = todayIso();
+
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Availability</h1>
+          <div className="text-sm text-slate-400">Booked hours per working day · capacity 8h Mon–Thu, 7h Fri</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <select className={`${inputCls} w-44`} value={dept} onChange={(e) => setDept(e.target.value)}>
+            <option value="all">All departments</option>
+            {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+          <div className="flex items-center gap-3 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/40" /> Free</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-500/40" /> Limited</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-500/40" /> Full</span>
+          </div>
+        </div>
+      </div>
+      {months.map((m) => (
+        <div key={m.first} className="mb-6">
+          <div className="text-xs text-slate-500 tracking-wider mb-2">{m.label.toUpperCase()}</div>
+          <div className="grid grid-cols-5 gap-1.5">
+            {["Mon", "Tue", "Wed", "Thu", "Fri"].map((d) => <div key={d} className="text-[11px] text-slate-500 px-2">{d}</div>)}
+            {/* pad to the weekday of the first working day */}
+            {Array.from({ length: (fromIso(m.days[0]).getDay() + 6) % 7 }).map((_, i) => <div key={`pad${i}`} />)}
+            {m.days.map((k) => {
+              const s = state(k);
+              return (
+                <button
+                  key={k} onClick={() => openDept(dept === "all" ? "blinds" : dept, k)}
+                  className={`border rounded-lg p-2 text-left ${s.cls} ${k === today ? "ring-2 ring-[#1f6feb]" : ""} ${k < today ? "opacity-50" : ""}`}
+                  title="Open this month on the calendar"
+                >
+                  <div className="text-xs font-semibold">{fromIso(k).getDate()}</div>
+                  <div className="text-[11px] opacity-80">{s.used}h / {s.cap}h</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -903,10 +1346,11 @@ function ReportsView({ projects }) {
   const [date, setDate] = useState(todayIso());
 
   const range = mode === "daily" ? [date, date] : [weekStart(date), addDays(weekStart(date), 6)];
-  const jobs = projects
-    .filter((p) => p.department === dept && (p.status === "booked" || p.status === "installed") && p.installDate)
-    .filter((p) => p.installDate <= range[1] && (p.installEndDate || p.installDate) >= range[0])
-    .sort((a, b) => (a.installDate + (a.installTime || "")).localeCompare(b.installDate + (b.installTime || "")));
+  // one row per install day that falls in the range
+  const rows = projects
+    .filter((p) => p.department === dept && (p.status === "booked" || p.status === "installed"))
+    .flatMap((p) => scheduleOf(p).filter((s) => s.date >= range[0] && s.date <= range[1]).map((s) => ({ p, day: s, total: scheduleOf(p).length })))
+    .sort((a, b) => (a.day.date + (a.day.time || "99")).localeCompare(b.day.date + (b.day.time || "99")));
   const d = deptOf(dept);
   const title = mode === "daily" ? `${d.label} — ${fmt(date)}` : `${d.label} — week of ${fmt(range[0])} to ${fmt(range[1])}`;
 
@@ -927,38 +1371,37 @@ function ReportsView({ projects }) {
             </select>
           </Field>
           <Field label={mode === "daily" ? "Date" : "Any date in the week"}><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-          <button onClick={() => window.print()} disabled={jobs.length === 0} className={`${btnPrimary} flex items-center justify-center gap-2`}><Printer size={16} /> Save as PDF</button>
+          <button onClick={() => window.print()} disabled={rows.length === 0} className={`${btnPrimary} flex items-center justify-center gap-2`}><Printer size={16} /> Save as PDF</button>
         </div>
         <p className="text-xs text-slate-500 mt-3">Save as PDF opens the print dialog — choose "Save as PDF" as the printer, then share the file on WhatsApp.</p>
       </div>
 
-      {/* Printable report */}
       <div className="report bg-white text-black rounded-2xl p-8 print:p-0 print:rounded-none">
         <div className="flex items-baseline justify-between border-b-2 border-black pb-3 mb-4">
           <div>
             <div className="text-xs tracking-widest text-gray-600">NOLANS INSTALLATION SCHEDULE</div>
             <h2 className="text-2xl font-bold">{title}</h2>
           </div>
-          <div className="text-xs text-gray-600">{jobs.length} {jobs.length === 1 ? "installation" : "installations"}</div>
+          <div className="text-xs text-gray-600">{rows.length} {rows.length === 1 ? "visit" : "visits"}</div>
         </div>
-        {jobs.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="text-gray-600 text-sm py-8 text-center">No installations booked for this period.</div>
-        ) : jobs.map((p, idx) => (
-          <div key={p.id} className={`report-job ${idx > 0 ? "mt-6 pt-6 border-t border-gray-300" : ""}`}>
+        ) : rows.map(({ p, day, total }, idx) => (
+          <div key={`${p.id}-${day.dayIndex}`} className={`report-job ${idx > 0 ? "mt-6 pt-6 border-t border-gray-300" : ""}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-lg font-bold">{p.clientName}</div>
+                <div className="text-lg font-bold">{p.clientName}{total > 1 ? <span className="text-sm font-normal text-gray-600"> · day {day.dayIndex} of {total}</span> : null}</div>
                 <div className="text-sm text-gray-800">{p.address}</div>
                 <div className="text-sm text-gray-800">Contact: {p.contact || "—"}</div>
               </div>
               <div className="text-right text-sm">
-                <div className="font-semibold">{fmt(p.installDate)}{p.installEndDate !== p.installDate ? ` → ${fmt(p.installEndDate)}` : ""}</div>
-                <div className="text-gray-800">Start {p.installTime}</div>
+                <div className="font-semibold">{fmt(day.date)}</div>
+                <div className="text-gray-800">{day.time ? `Start ${day.time}` : "Continuation"}</div>
                 <div className="text-gray-800">PO {p.po}</div>
-                <div className="text-gray-600">{p.productType} · {p.consultant}</div>
+                <div className="text-gray-600">{p.productType} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
               </div>
             </div>
-            {(p.jobCards || []).length > 0 && (
+            {(p.jobCards || []).length > 0 && day.dayIndex === 1 && (
               <div className="mt-3 space-y-3">
                 {p.jobCards.map((c) => <img key={c.id} src={c.image} alt="Job card" className="w-full rounded border border-gray-300 report-img" />)}
               </div>
