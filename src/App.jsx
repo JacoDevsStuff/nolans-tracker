@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown
+  History, CalendarCheck, RotateCcw, ChevronDown, Menu
 } from "lucide-react";
 
 /* =========================================================
@@ -261,6 +261,7 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const level = user?.level ?? 0;
   const isCoord = level >= 2;
@@ -343,6 +344,7 @@ export default function App() {
     <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black">
       {/* Top bar */}
       <header className="print:hidden h-16 flex items-center gap-4 px-5 border-b border-[#30363d] bg-[#0d1117]">
+        <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2 -ml-2 rounded-lg hover:bg-[#161b22] text-slate-300 shrink-0"><Menu size={20} /></button>
         <button onClick={() => setView("home")} className="shrink-0"><Logo /></button>
         <div className="flex-1 max-w-2xl mx-auto relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -374,15 +376,16 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 relative">
+        {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />}
         {/* Sidebar */}
-        <aside className="print:hidden w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col">
+        <aside className={`print:hidden fixed md:static inset-y-0 left-0 z-40 w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col bg-[#0d1117] transform transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
           <nav className="space-y-1">
             {nav.map((n) => {
               const activeNav = view === n.id;
               return (
                 <button
-                  key={n.id} onClick={() => setView(n.id)}
+                  key={n.id} onClick={() => { setView(n.id); setSidebarOpen(false); }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
                 >
                   <n.icon size={18} />
@@ -396,7 +399,7 @@ export default function App() {
             <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
             {DEPARTMENTS.map((d) => (
               <button
-                key={d.id} onClick={() => openDept(d.id)}
+                key={d.id} onClick={() => { openDept(d.id); setSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.id}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
               >
                 <d.icon size={16} /> {d.label}
