@@ -1,2804 +1,981 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
-import { supabase, loadAll, fetchProject, upsertProject, removeProject } from "./supabase.js"
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
-  Lock, Unlock, Plus, Search, X, Camera, Check, Trash2, RefreshCw,
-  MapPin, User, Package, Calendar, AlertTriangle, ChevronRight, ChevronLeft,
-  ClipboardList, Image as ImageIcon, Phone, Hash, Users, Clock, Menu, CalendarDays, Archive, Undo2, StickyNote, FileText, Printer, CalendarCheck, Flag, Wrench, Receipt, RotateCcw,
+  Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
+  ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
+  Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar
 } from "lucide-react";
 
-/* ============================================================
-   CONFIG
-   PINs. Each tier can do everything the tier below can, plus
-   its own extras. Add or change people here (or just ask me).
-     Consultants → view + post notes
-     Coordinator → the above + dates, status, material received,
-                    install time, team, snags & photos,
-                    CREATE projects
-     Developer   → the above + edit client/order fields,
-                    delete / restore / permanently remove
-   ============================================================ */
+/* =========================================================
+   CONFIG — copy these two values from your old App.jsx
+   ========================================================= */
+const SUPABASE_URL = "https://fyuwslsfbdwtgnmgvbmm.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ5dXdzbHNmYmR3dGdubWd2Ym1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0Mzg5NDgsImV4cCI6MjEwNDAxNDk0OH0._ilgWkOoEz3F1OE4JTHzk7mHH6z7QEgfBbzYJOg_W2M";
+const TABLE = "projects_v2"; // new table so old tracker data stays untouched
+
 const USERS = {
-  "0001": { name: "Jaco",        level: 1 },
-  "0002": { name: "James",       level: 1 },
-  "0003": { name: "Trent",       level: 1 },
-  "0004": { name: "Theo",        level: 1 },
+  "0001": { name: "Jaco", level: 1 },
+  "0002": { name: "James", level: 1 },
+  "0003": { name: "Trent", level: 1 },
+  "0004": { name: "Theo", level: 1 },
   "0005": { name: "Co-ordinator", level: 2 },
-  "2222": { name: "Developer",   level: 3 },
+  "2222": { name: "Developer", level: 3 },
 };
-const ROLES = {
-  0: { name: "View only",   badge: "bg-slate-100 text-slate-600 border-slate-200" },
-  1: { name: "Consultant",  badge: "bg-blue-50 text-blue-700 border-blue-200" },
-  2: { name: "Co-ordinator", badge: "bg-amber-50 text-amber-800 border-amber-200" },
-  3: { name: "Developer",   badge: "bg-violet-50 text-violet-700 border-violet-200" },
-};
-const COMPANY_NAME = "Nolans Install Tracker";
+const CONSULTANTS = ["Jaco", "James", "Trent", "Theo"];
 
-/* Installation time options (09:00–17:00, half-hour steps) */
-const DAY_START = 9;
-const DAY_END = 17;
-const DAY_CAPACITY = DAY_END - DAY_START; // 8 working hours per team per day
-const TIME_SLOTS = (() => {
-  const out = [];
-  for (let h = DAY_START; h <= DAY_END; h++) {
-    out.push(`${String(h).padStart(2, "0")}:00`);
-    if (h < DAY_END) out.push(`${String(h).padStart(2, "0")}:30`);
-  }
-  return out;
-})();
-/* Estimated job durations the co-ordinator can pick from */
-const DURATIONS = [1, 1.5, 2, 3, 4, 5, 6, 8, 12, 16, 24];
-const SNAG_HOURS = 2; // default capacity a snag return visit consumes (now editable per job)
-const SNAG_DURATIONS = [1, 1.5, 2, 3, 4, 6, 8];
-/* Snag categories — feed the Tracking Report; "note" is free text and never counted in stats */
-const SNAG_CATEGORIES = ["Measured incorrect", "Trims required", "Ordered incorrect", "Received incorrect", "Other"];
-const fmtHours = (h) => (h % 1 === 0 ? `${h}h` : `${Math.floor(h)}h30`);
-/* Hours a snag return visit consumes on the day (per-job override, falls back to default) */
-const snagHoursOf = (e) => (e && e.snagHours != null && e.snagHours !== "" ? Number(e.snagHours) : SNAG_HOURS);
-
-/* ---------- Status pipeline ---------- */
-const STATUSES = [
-  { key: "ordered",           label: "Ordered",              badge: "bg-slate-100 text-slate-700 border-slate-200",   dot: "bg-slate-400" },
-  { key: "material_received", label: "Material Received",    badge: "bg-amber-100 text-amber-800 border-amber-200",   dot: "bg-amber-500" },
-  { key: "scheduled",         label: "Installation Scheduled", badge: "bg-blue-100 text-blue-800 border-blue-200",    dot: "bg-blue-500" },
-  { key: "installed",         label: "Installed",            badge: "bg-violet-100 text-violet-800 border-violet-200", dot: "bg-violet-500" },
-  { key: "complete",          label: "Complete",             badge: "bg-emerald-100 text-emerald-800 border-emerald-200", dot: "bg-emerald-500" },
+const DEPARTMENTS = [
+  { id: "blinds", label: "Blinds", icon: Blinds, from: "#3b4a63", to: "#1c2536" },
+  { id: "shutters", label: "Shutters", icon: PanelsTopLeft, from: "#5a5f6b", to: "#252a34" },
+  { id: "carpets", label: "Carpets", icon: Rows3, from: "#6b5d52", to: "#2a2420" },
+  { id: "vinyl", label: "Vinyl", icon: Layers, from: "#7a6a4f", to: "#2c261c" },
+  { id: "wood", label: "Wood", icon: Trees, from: "#8a5a34", to: "#2e1e12" },
 ];
-const statusIndex = (k) => Math.max(0, STATUSES.findIndex((s) => s.key === k));
-const statusMeta = (k) => STATUSES.find((s) => s.key === k) || STATUSES[0];
+const deptOf = (id) => DEPARTMENTS.find((d) => d.id === id) || DEPARTMENTS[0];
 
-/* ---------- Installation teams (edit here to add/rename) ---------- */
-const TEAMS = [
-  { key: "team1", label: "Team 1 — Darren" },
-  { key: "team2", label: "Team 2 — To be confirmed" },
-];
-const teamLabel = (k) => (TEAMS.find((t) => t.key === k) || {}).label || "Unassigned";
-
-/* ---------- Consultants (edit here to add/rename) ---------- */
-const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Luciano", "Marco"];
-/* Repairs can also be logged by the front office (receptionist / walk-in) */
-const REPAIR_CONSULTANTS = [...CONSULTANTS, "Office"];
-
-/* ---------- Product type options ---------- */
-const PRODUCT_TYPES = ["Carpet", "Carpet Tile", "Turf", "Novillon", "Other"];
-
-/* ---------- Range lists per product type ----------
-   Feeds the Range dropdown on each project (filtered by Type) and the
-   Tracking Report's per-range m² and snag breakdowns. Width is stored
-   for reference only (helps spot patterns like "mostly wrong on 4.2m
-   rolls") — it does not drive any calculation.
-   Turf and Novillon are empty until their range lists arrive — the UI
-   shows "Coming soon" for those two until then.
-   ============================================================ */
-const RANGES_BY_TYPE = {
-  "Carpet": [
-    { name: "Arabica", width: "4.0m" },
-    { name: "Conqueror", width: "4.0m" },
-    { name: "Textured", width: "4.0m" },
-    { name: "Aqua", width: "4.0m" },
-    { name: "Softology Light", width: "4.0m" },
-    { name: "Softology", width: "4.0m" },
-    { name: "Softology Ultra", width: "4.0m" },
-    { name: "Sensology Aural", width: "4.0m" },
-    { name: "Serengeti", width: "4.0m" },
-    { name: "Sensology Lush", width: "4.0m" },
-    { name: "Westminster", width: "4.0m" },
-    { name: "Baltimore", width: "4.0m" },
-    { name: "Sensology Tactual", width: "4.0m" },
-    { name: "Influence", width: "4.0m" },
-    { name: "Inclusive", width: "4.0m" },
-    { name: "Co-Exist", width: "4.0m" },
-    { name: "Co-Create", width: "4.0m" },
-    { name: "Merino", width: "4.0m" },
-    { name: "Grace", width: "4.0m" },
-    { name: "Latte", width: "4.0m" },
-    { name: "Mood", width: "4.0m" },
-    { name: "Longevity - Grandeur", width: "4.0m" },
-    { name: "Longevity - Serenity", width: "4.0m" },
-    { name: "Immerse", width: "4.0m" },
-    { name: "Mindful", width: "4.0m" },
-    { name: "Attuned", width: "4.0m" },
-    { name: "Color Rib", width: "4.2m" },
-    { name: "Garage Carpet", width: "4.0m" },
-    { name: "Hercules", width: "4.2m" },
-    { name: "Berber Point 650", width: "4.2m" },
-    { name: "Berber Point 920", width: "4.2m" },
-    { name: "Timbavati", width: "4.2m" },
-  ],
-  "Carpet Tile": [
-    { name: "Fliptile", width: "Tile" },
-    { name: "Perpetual", width: "Tile" },
-    { name: "City Life", width: "Tile" },
-    { name: "Rustic Grain", width: "Tile" },
-    { name: "Panthera", width: "Tile" },
-    { name: "Highlands", width: "Tile" },
-    { name: "Color Rib Resinbac", width: "Tile" },
-    { name: "Hercules Resinbac", width: "Tile" },
-    { name: "Berber Point 650 Resinbac", width: "Tile" },
-    { name: "Berber Point 920 Resinback", width: "Tile" },
-    { name: "Metro Resinbac", width: "Tile" },
-    { name: "Main Street Resinbac", width: "Tile" },
-    { name: "Diagonals Resinbac", width: "Tile" },
-    { name: "Berber Point 920 Nexbac", width: "Tile" },
-    { name: "Fringe", width: "Tile" },
-    { name: "Affect", width: "Tile" },
-    { name: "Margin", width: "Tile" },
-    { name: "Hard Craft", width: "Tile" },
-    { name: "Accelerate", width: "Tile" },
-    { name: "Blend", width: "Tile" },
-    { name: "Grid", width: "Tile" },
-    { name: "Terranova", width: "Tile" },
-  ],
-  "Turf": [],
-  "Novillon": [],
-  "Other": [
-    { name: "Sportec Rubber Flooring", width: "1.5m" },
-  ],
-};
-const rangesForType = (type) => RANGES_BY_TYPE[type] || [];
-
-/* Short one-line product summary from the split fields (with legacy fallback) */
-function productSummary(e) {
-  const parts = [e.type, e.range, e.colour].filter(Boolean);
-  if (parts.length) return parts.join(" · ") + (e.sqm ? ` · ${e.sqm}m²` : "");
-  return e.product || ""; // legacy single-field fallback
+const TIMES = [];
+for (let h = 7; h <= 17; h++) for (let m = 0; m < 60; m += 15) {
+  if (h === 17 && m > 0) break;
+  TIMES.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
 }
-const isRepairJob = (e) => e && e.kind === "repair";
 
-/* ---------- Image compression (keeps storage small) ---------- */
-function compressImage(file, maxDim = 1200, quality = 0.6) {
+/* =========================================================
+   DATE HELPERS
+   ========================================================= */
+const pad = (n) => String(n).padStart(2, "0");
+const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromIso = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const todayIso = () => iso(new Date());
+const addDays = (s, n) => { const d = fromIso(s); d.setDate(d.getDate() + n); return iso(d); };
+const isWeekend = (s) => { const w = fromIso(s).getDay(); return w === 0 || w === 6; };
+// install spans working days only (Mon–Fri)
+const installEnd = (start, days) => {
+  let cur = start, left = Math.max(1, days || 1) - 1;
+  while (left > 0) { cur = addDays(cur, 1); if (!isWeekend(cur)) left--; }
+  return cur;
+};
+const spanDays = (start, end) => {
+  const out = []; let cur = start;
+  while (cur <= end) { out.push(cur); cur = addDays(cur, 1); if (out.length > 60) break; }
+  return out;
+};
+const fmt = (s, opts = { weekday: "short", day: "numeric", month: "short", year: "numeric" }) =>
+  s ? fromIso(s).toLocaleDateString("en-ZA", opts) : "";
+const fmtShort = (s) => fmt(s, { day: "numeric", month: "short" });
+const weekStart = (s) => { const d = fromIso(s); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return iso(d); };
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+
+/* =========================================================
+   SUPABASE (REST, no client library needed)
+   ========================================================= */
+const headers = {
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+};
+async function dbLoad() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data`, { headers });
+  if (!r.ok) throw new Error(`Load failed (${r.status})`);
+  const rows = await r.json();
+  return rows.map((row) => ({ ...row.data, id: row.id }));
+}
+async function dbSave(project) {
+  const body = [{ id: project.id, data: project, updated_at: new Date().toISOString() }];
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Save failed (${r.status})`);
+}
+
+/* =========================================================
+   IMAGE COMPRESSION (job cards)
+   ========================================================= */
+function compressImage(file, maxW = 1400, quality = 0.8) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new window.Image();
+    reader.onload = () => {
+      const img = new Image();
       img.onload = () => {
-        let { width, height } = img;
-        if (width > height && width > maxDim) { height = Math.round((height * maxDim) / width); width = maxDim; }
-        else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
-        const canvas = document.createElement("canvas");
-        canvas.width = width; canvas.height = height;
-        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL("image/jpeg", quality));
+        const scale = Math.min(1, maxW / img.width);
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL("image/jpeg", quality));
       };
       img.onerror = reject;
-      img.src = e.target.result;
+      img.src = reader.result;
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
 }
 
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const fmtDate = (iso) => (iso ? new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" }) : "—");
-const fmtWhen = (ts) => (ts ? new Date(ts).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
-
-/* ---------- Date range helpers (multi-day installs) ---------- */
-const addDays = (iso, n) => {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+/* =========================================================
+   SMALL UI PIECES
+   ========================================================= */
+const STATUS_META = {
+  ordered: { label: "Placed", cls: "bg-slate-500/20 text-slate-300 border-slate-500/30" },
+  received: { label: "Received", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+  booked: { label: "Booked", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
+  installed: { label: "Completed", cls: "bg-teal-500/15 text-teal-300 border-teal-500/30" },
 };
-const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
-/** every ISO date from start..end inclusive (end optional = single day) */
-function dateRange(start, end) {
-  if (!start) return [];
-  if (!end || end <= start) return [start];
-  const span = Math.min(daysBetween(start, end), 60); // safety cap
-  return Array.from({ length: span + 1 }, (_, i) => addDays(start, i));
-}
-/** "12 Mar" or "12–14 Mar 2026" style label for an install range */
-function fmtRange(start, end) {
-  if (!start) return "—";
-  if (!end || end <= start) return fmtDate(start);
-  const a = new Date(start + "T00:00:00"), b = new Date(end + "T00:00:00");
-  const sameMonth = a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear();
-  const dayA = String(a.getDate()).padStart(2, "0");
-  return sameMonth
-    ? `${dayA}–${fmtDate(end)}`
-    : `${fmtDate(start)} – ${fmtDate(end)}`;
-}
-const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const DOW = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const Badge = ({ status }) => {
+  const m = STATUS_META[status] || STATUS_META.ordered;
+  return <span className={`text-xs px-2 py-0.5 rounded-full border ${m.cls}`}>{m.label}</span>;
+};
+const RBadge = () => (
+  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white text-[11px] font-bold leading-none">R</span>
+);
+const Field = ({ label, children }) => (
+  <label className="block">
+    <span className="block text-xs text-slate-400 mb-1">{label}</span>
+    {children}
+  </label>
+);
+const inputCls = "w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#1f6feb]";
+const btnPrimary = "px-4 py-2 rounded-lg bg-[#1f6feb] hover:bg-[#388bfd] text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed";
+const btnGhost = "px-4 py-2 rounded-lg border border-[#30363d] hover:bg-[#21262d] text-slate-200 text-sm";
 
-/** hours this job consumes on each day it occupies */
-function dayLoad(entry, forDate) {
-  const days = dateRange(entry.installDate, entry.installEndDate).length || 1;
-  const cap = forDate ? dayCapacity(forDate) : DAY_CAPACITY;
-  const total = entry.estHours || cap * days;
-  return total / days;
-}
-/** how many days a job needs at full capacity */
-const daysNeeded = (hours) => Math.max(1, Math.ceil((hours || DAY_CAPACITY) / DAY_CAPACITY));
-
-/** Capacity for a given ISO date — Fridays 7h (09:00–16:00), all others 8h */
-function dayCapacity(iso) {
-  const dow = new Date(iso + "T00:00:00").getDay(); // 0=Sun,5=Fri,6=Sat
-  return dow === 5 ? 7 : DAY_CAPACITY;
-}
-const isWeekend = (iso) => { const d = new Date(iso + "T00:00:00").getDay(); return d === 0 || d === 6; };
-
-/** Monday of the week containing iso */
-function startOfWeek(iso) {
-  const d = new Date(iso + "T00:00:00");
-  const dow = (d.getDay() + 6) % 7; // 0 = Monday
-  return addDays(iso, -dow);
-}
-/** does [aStart,aEnd] overlap [bStart,bEnd] (all inclusive ISO strings) */
-const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && aEnd >= bStart;
-const fmtDayLabel = (iso) => new Date(iso + "T00:00:00").toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" });
-
-/* ---------- New-snag notification (co-ordinator+) ----------
-   Tracked client-side in localStorage: when a co-ordinator/developer opens
-   a project, we stamp "now" against that project's id. Any open snag added
-   after that stamp counts as unseen until the project is opened again. */
-const SNAG_SEEN_PREFIX = "nolans_snag_seen_";
-function getSnagSeen(id) {
-  try { return Number(localStorage.getItem(SNAG_SEEN_PREFIX + id) || 0); } catch { return 0; }
-}
-function markSnagSeen(id) {
-  try { localStorage.setItem(SNAG_SEEN_PREFIX + id, String(Date.now())); } catch { /* ignore */ }
-}
-function hasNewSnag(e) {
-  const seen = getSnagSeen(e.id);
-  return (e.snags || []).some((s) => !s.resolved && (s.createdAt || 0) > seen);
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={onClose}>
+      <div
+        className={`bg-[#161b22] border border-[#30363d] rounded-2xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto shadow-2xl`}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#30363d] sticky top-0 bg-[#161b22] z-10">
+          <h3 className="text-base font-semibold text-white">{title}</h3>
+          <button onClick={onClose} className="p-1 rounded-md hover:bg-[#21262d] text-slate-400"><X size={18} /></button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
 }
 
-/* Date a completed job counts against for invoicing (installed → completed → install end) */
-const invoiceDate = (e) =>
-  e.installedDate ||
-  (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : "") ||
-  e.installEndDate || e.installDate || "";
+/* =========================================================
+   LOGIN
+   ========================================================= */
+function Login({ onLogin }) {
+  const [pin, setPin] = useState("");
+  const [err, setErr] = useState("");
+  const submit = () => {
+    const u = USERS[pin];
+    if (!u) { setErr("That PIN isn't recognised."); return; }
+    onLogin({ ...u, pin });
+  };
+  return (
+    <div className="min-h-screen bg-[#0d1117] flex items-center justify-center p-6">
+      <div className="w-full max-w-sm bg-[#161b22] border border-[#30363d] rounded-2xl p-8">
+        <Logo />
+        <p className="text-slate-400 text-sm mt-6 mb-4">Enter your PIN to sign in.</p>
+        <input
+          type="password" inputMode="numeric" maxLength={4} value={pin} autoFocus
+          onChange={(e) => { setPin(e.target.value.replace(/\D/g, "")); setErr(""); }}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          className={`${inputCls} text-center text-2xl tracking-[0.5em]`}
+          placeholder="••••"
+        />
+        {err && <p className="text-red-400 text-sm mt-2">{err}</p>}
+        <button onClick={submit} className={`${btnPrimary} w-full mt-4`}>Sign in</button>
+        <button onClick={() => onLogin({ name: "Viewer", level: 0 })} className="w-full mt-2 text-sm text-slate-400 hover:text-slate-200 py-2">
+          Continue as view only
+        </button>
+      </div>
+    </div>
+  );
+}
 
-/* ============================================================
-   MAIN
-   ============================================================ */
+function Logo({ small }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex gap-[3px] -skew-x-12">
+        <span className="block w-2.5 h-7 bg-[#4a7bd1] rounded-sm" />
+        <span className="block w-2.5 h-7 bg-[#4a7bd1] rounded-sm" />
+      </div>
+      {!small && (
+        <div className="leading-tight">
+          <div className="text-white font-extrabold tracking-[0.25em] text-lg">NOLANS</div>
+          <div className="text-slate-400 text-[10px] tracking-[0.2em]">INSTALLATION MANAGEMENT</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   MAIN APP
+   ========================================================= */
 export default function App() {
-  const [index, setIndex] = useState([]);
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("nolans_user")) || null; } catch { return null; }
+  });
+  const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState(null);
-  const [view, setView] = useState("projects");
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [pinOpen, setPinOpen] = useState(false);
-  const [pinValue, setPinValue] = useState("");
-  const [pinError, setPinError] = useState("");
+  const [error, setError] = useState("");
+  const [view, setView] = useState("home"); // home | placed | received | booked | completed | reports | dept:<id>
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [openId, setOpenId] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [toast, setToast] = useState("");
 
-  const level = user ? user.level : 0;
-  const canCreate = level >= 2;   // co-ordinator can now create projects
-  const canInternal = level >= 3; // developer — edit locked fields, delete/restore
+  const level = user?.level ?? 0;
+  const isCoord = level >= 2;
+  const isDev = level >= 3;
 
-  const loadAll_ = useCallback(async () => {
-    const list = await loadAll();
-    setIndex(list);
-  }, []);
+  useEffect(() => { if (user) sessionStorage.setItem("nolans_user", JSON.stringify(user)); }, [user]);
+
+  const refresh = async () => {
+    try { setProjects(await dbLoad()); setError(""); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => {
+    if (!user) return;
+    refresh();
+    const t = setInterval(refresh, 30000);
+    return () => clearInterval(t);
+  }, [user]);
 
   useEffect(() => {
-    (async () => { await loadAll_(); setLoading(false); })();
-    // Realtime: push updates to all open tabs instantly
-    const channel = supabase
-      .channel("projects_changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "projects" }, loadAll_)
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, [loadAll_]);
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2500);
+    return () => clearTimeout(t);
+  }, [toast]);
 
-  const manualRefresh = async () => { setRefreshing(true); await loadAll_(); setTimeout(() => setRefreshing(false), 400); };
-
-  const submitPin = () => {
-    const u = USERS[pinValue.trim()];
-    if (u) {
-      setUser(u); setPinOpen(false); setPinValue(""); setPinError("");
-    } else { setPinError("PIN not recognised"); }
-  };
-
-  const saveProject = async (p) => {
-    const saved = await upsertProject(p);
-    setIndex((prev) => {
-      const next = [...prev.filter((e) => e.id !== p.id), { ...saved, openSnags: (saved.snags||[]).filter(s=>!s.resolved).length }];
-      return next.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0));
+  const save = async (p, msg) => {
+    setProjects((prev) => {
+      const i = prev.findIndex((x) => x.id === p.id);
+      if (i === -1) return [...prev, p];
+      const copy = [...prev]; copy[i] = p; return copy;
     });
-    return saved;
+    try { await dbSave(p); if (msg) setToast(msg); }
+    catch (e) { setError(e.message); }
   };
 
-  /** Soft delete — keeps the record so it still shows in History, tagged with who, when, and why */
-  const deleteProject = async (id, reason) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    await saveProject({ ...p, deleted: true, deletedAt: Date.now(), deletedBy: user ? user.name : "Unknown", deleteReason: (reason || "").trim() });
-    setOpenId(null);
-  };
-  /** Bring a deleted project back to life */
-  const restoreProject = async (id) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    await saveProject({ ...p, deleted: false, deletedAt: null, deletedBy: null, deleteReason: "" });
-  };
-  /** Permanently wipe (developer only) */
-  const purgeProject = async (id) => {
-    await removeProject(id);
-    setIndex((prev) => prev.filter((e) => e.id !== id));
-    setOpenId(null);
-  };
+  const active = useMemo(() => projects.filter((p) => !p.deleted), [projects]);
+  const mine = (list) => (level === 1 ? list.filter((p) => p.consultant === user.name) : list);
+  const q = search.trim().toLowerCase();
+  const matches = (p) => !q || [p.clientName, p.po, p.address, p.productType, p.consultant, p.contact].some((v) => (v || "").toLowerCase().includes(q));
 
-  /** Toggle the "Ready to invoice" tick on a Completed-tab job */
-  const toggleReadyToInvoice = async (id, val) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    await saveProject({ ...p, readyToInvoice: val });
-  };
+  const lists = useMemo(() => ({
+    placed: mine(active.filter((p) => p.status === "ordered")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
+    received: mine(active.filter((p) => p.status === "received")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
+    booked: active.filter((p) => p.status === "booked").sort((a, b) => (a.installDate || "").localeCompare(b.installDate || "")),
+    completed: active.filter((p) => p.status === "installed").sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
+  }), [active, level, user]);
 
-  /** Batch invoice: marks the given ids as invoiced — they move from Completed to History */
-  const invoiceProjects = async (ids) => {
-    for (const id of ids) {
-      const p = await fetchProject(id);
-      if (!p) continue;
-      await saveProject({ ...p, invoiced: true, invoicedAt: Date.now(), readyToInvoice: false });
-    }
-  };
+  if (!user) return <Login onLogin={setUser} />;
 
-  /** Undo — bring an invoiced job back to the Completed tab */
-  const unInvoiceProject = async (id) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    await saveProject({ ...p, invoiced: false, invoicedAt: null, readyToInvoice: false });
-  };
+  const nav = [
+    { id: "home", label: "Home", icon: Home },
+    { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
+    { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
+    { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
+    { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
+    ...(isCoord ? [{ id: "reports", label: "Reports", icon: FileText }] : []),
+  ];
 
-  /** Book (or move) a job onto a day. Spans forward if the estimate exceeds one day. */
-  const scheduleProject = async (id, iso) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    const hadSpan = p.installDate && p.installEndDate && p.installEndDate > p.installDate
-      ? daysBetween(p.installDate, p.installEndDate) : null;
-    const span = hadSpan !== null ? hadSpan : daysNeeded(p.estHours) - 1;
-    p.installDate = iso;
-    p.installEndDate = span > 0 ? addDays(iso, span) : "";
-    if (statusIndex(p.status) < statusIndex("scheduled")) p.status = "scheduled";
-    await saveProject(p);
-  };
-
-  // Live (non-deleted) records feed every working view
-  const live = index.filter((e) => !e.deleted);
-  const active = live.filter((e) => e.status !== "complete");
-  const openSnagJobs = live.filter((e) => (e.openSnags || 0) > 0);
-  // Completed tab = finished jobs, no open snags, not yet invoiced
-  const completedJobs = live.filter((e) => e.status === "complete" && !(e.openSnags > 0) && !e.invoiced);
-  // History = invoiced jobs, PLUS anything that's been deleted
-  const history = index.filter((e) => e.deleted || (e.status === "complete" && !(e.openSnags > 0) && e.invoiced));
-
-  /** Schedule a snag return visit onto a day */
-  const scheduleSnagVisit = async (id, iso) => {
-    const p = await fetchProject(id);
-    if (!p) return;
-    p.snagVisitDate = iso;
-    await saveProject(p);
-  };
-
-  const filtered = active.filter((e) => {
-    if (filter === "snags" && !e.openSnags) return false;
-    if (filter !== "all" && filter !== "snags" && e.status !== filter) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      return [e.clientName, e.address, e.consultant, e.type, e.range, e.colour, e.product, e.po, e.repairType].filter(Boolean).some((x) => String(x).toLowerCase().includes(q));
-    }
-    return true;
-  });
-
-  const counts = STATUSES.reduce((a, s) => ({ ...a, [s.key]: live.filter((e) => e.status === s.key).length }), {});
-  const snagCount = active.reduce((a, e) => a + (e.openSnags || 0), 0);
-  const hasNewSnags = level >= 2 && openSnagJobs.some(hasNewSnag);
+  const logout = () => { sessionStorage.removeItem("nolans_user"); setUser(null); setView("home"); };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* Header */}
-      <header className="sticky top-0 z-20 bg-white border-b border-slate-200">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center gap-2">
-          <button onClick={() => setMenuOpen(true)} className="p-2 -ml-2 rounded-lg text-slate-600 hover:bg-slate-100" title="Menu">
-            <Menu size={20} />
-          </button>
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <div className="min-w-0">
-              <h1 className="font-semibold leading-tight truncate">{COMPANY_NAME}</h1>
-              <p className="text-xs text-slate-500 leading-tight">{active.length} active · {history.length} in history</p>
-            </div>
-          </div>
-          <button onClick={manualRefresh} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100" title="Refresh">
-            <RefreshCw size={18} className={refreshing ? "animate-spin" : ""} />
-          </button>
-          {user ? (
-            <button onClick={() => setUser(null)} title="Sign out to view only"
-              className={`flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border ${ROLES[level].badge}`}>
-              <Unlock size={15} /> {user.name}
-            </button>
-          ) : (
-            <button onClick={() => setPinOpen(true)} className="flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200">
-              <Lock size={15} /> Sign in
-            </button>
-          )}
+    <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black">
+      {/* Top bar */}
+      <header className="print:hidden h-16 flex items-center gap-4 px-5 border-b border-[#30363d] bg-[#0d1117]">
+        <button onClick={() => setView("home")} className="shrink-0"><Logo /></button>
+        <div className="flex-1 max-w-2xl mx-auto relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search orders, clients or PO numbers"
+            className={`${inputCls} pl-9 rounded-full bg-[#161b22]`}
+          />
         </div>
-        {/* View tabs */}
-        <div className="max-w-5xl mx-auto px-4 flex gap-1 overflow-x-auto">
-          {[
-            { key: "projects", label: "Projects", icon: ClipboardList, count: active.length },
-            { key: "calendar", label: "Calendar", icon: CalendarDays },
-            { key: "snags", label: "Snags", icon: Flag, count: openSnagJobs.length, danger: true },
-            { key: "reports", label: "Reports", icon: FileText },
-            { key: "completed", label: "Completed", icon: Receipt, count: completedJobs.length },
-            ...(level >= 2 ? [{ key: "availability", label: "Availability", icon: CalendarCheck }] : []),
-            ...(level >= 2 ? [{ key: "tracking", label: "Tracking Report", icon: Users }] : []),
-            { key: "history", label: "History", icon: Archive, count: history.length },
-          ].map((t) => (
-            <button key={t.key} onClick={() => setView(t.key)}
-              className={`flex items-center gap-1.5 text-sm font-medium px-3 py-2 border-b-2 -mb-px transition ${
-                view === t.key ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
-              <t.icon size={15} /> {t.label}
-              {t.key === "snags" && hasNewSnags && (
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white animate-pulse">NEW</span>
-              )}
-              {t.count > 0 && <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${t.danger ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-500"}`}>{t.count}</span>}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto px-4 py-5">
-        {view === "calendar" ? (
-          <CalendarView index={active} level={level} onOpen={(id) => setOpenId(id)}
-            onSchedule={scheduleProject} onScheduleSnag={scheduleSnagVisit} snagJobs={openSnagJobs} />
-        ) : view === "snags" ? (
-          <SnagsView snagJobs={openSnagJobs} level={level} onOpen={(id) => setOpenId(id)} />
-        ) : view === "reports" ? (
-          <ReportsView index={live} level={level} />
-        ) : view === "completed" ? (
-          <CompletedView completedJobs={completedJobs} level={level} onOpen={(id) => setOpenId(id)}
-            onToggleReady={toggleReadyToInvoice} onInvoice={invoiceProjects} />
-        ) : view === "availability" && level >= 2 ? (
-          <AvailabilityView index={active} />
-        ) : view === "tracking" && level >= 2 ? (
-          <TrackingReportView index={index} />
-        ) : view === "history" ? (
-          <HistoryView history={history} onOpen={(id) => setOpenId(id)} onUnInvoice={unInvoiceProject} level={level} />
-        ) : (
-        <>
-        {/* Search + filters */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-4">
-          <div className="relative flex-1">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search} onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search client, address, consultant…"
-              className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
-            />
-          </div>
-          {canCreate && (
-            <button onClick={() => setCreating(true)} className="flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
-              <Plus size={16} /> New Project
-            </button>
-          )}
-        </div>
-
-        <div className="flex gap-2 overflow-x-auto pb-2 mb-4 -mx-1 px-1">
-          <Chip active={filter === "all"} onClick={() => setFilter("all")}>All <b className="ml-1 opacity-60">{active.length}</b></Chip>
-          {STATUSES.filter((s) => s.key !== "complete").map((s) => (
-            <Chip key={s.key} active={filter === s.key} onClick={() => setFilter(s.key)}>
-              <span className={`inline-block h-2 w-2 rounded-full mr-1.5 ${s.dot}`} />{s.label} <b className="ml-1 opacity-60">{counts[s.key]}</b>
-            </Chip>
-          ))}
-          <Chip active={filter === "snags"} onClick={() => setFilter("snags")} danger>
-            <AlertTriangle size={12} className="mr-1" /> Open snags <b className="ml-1 opacity-70">{snagCount}</b>
-          </Chip>
-        </div>
-
-        {/* List */}
-        {loading ? (
-          <div className="text-center py-20 text-slate-400 text-sm">Loading…</div>
-        ) : filtered.length === 0 ? (
-          <EmptyState canCreate={canCreate} onCreate={() => setCreating(true)} hasAny={active.length > 0} />
-        ) : (
-          <div className="grid gap-3">
-            {filtered.map((e) => <Card key={e.id} entry={e} onClick={() => setOpenId(e.id)} />)}
-          </div>
-        )}
-        </>
-        )}
-      </main>
-
-      {/* Menu drawer */}
-      {menuOpen && (
-        <MenuDrawer
-          user={user} level={level} index={active} historyCount={history.length} completedCount={completedJobs.length} snagTotal={openSnagJobs.length} view={view}
-          onView={(v) => { setView(v); setMenuOpen(false); }}
-          onSignIn={() => { setMenuOpen(false); setPinOpen(true); }}
-          onSignOut={() => { setUser(null); setMenuOpen(false); }}
-          onNew={() => { setMenuOpen(false); setCreating(true); }}
-          onFilter={(f) => { setFilter(f); setView("projects"); setMenuOpen(false); }}
-          onClose={() => setMenuOpen(false)}
-        />
-      )}
-
-      {/* PIN modal */}
-      {pinOpen && (
-        <Modal onClose={() => { setPinOpen(false); setPinError(""); setPinValue(""); }}>
-          <div className="p-6">
-            <div className="flex items-center gap-2 mb-1"><Lock size={18} /><h2 className="font-semibold text-lg">Sign in</h2></div>
-            <p className="text-sm text-slate-500 mb-4">Enter your personal PIN. It sets your name on notes and what you can change.</p>
-            <input
-              autoFocus type="password" inputMode="numeric" value={pinValue}
-              onChange={(e) => { setPinValue(e.target.value); setPinError(""); }}
-              onKeyDown={(e) => e.key === "Enter" && submitPin()}
-              placeholder="PIN"
-              className="w-full px-3 py-2.5 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 mb-2"
-            />
-            {pinError && <p className="text-sm text-red-600 mb-2">{pinError}</p>}
-            <button onClick={submitPin} className="w-full py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">Unlock</button>
-          </div>
-        </Modal>
-      )}
-
-      {/* New project */}
-      {creating && (
-        <ProjectForm
-          onClose={() => setCreating(false)}
-          onSave={async (p) => { await saveProject(p); setCreating(false); setOpenId(p.id); }}
-        />
-      )}
-
-      {/* Detail */}
-      {openId && (
-        <Detail
-          id={openId} level={level} user={user}
-          onClose={() => { setOpenId(null); loadAll_(); }}
-          onSave={saveProject} onDelete={deleteProject}
-          onRestore={restoreProject} onPurge={purgeProject}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   LIST CARD
-   ============================================================ */
-function Card({ entry, onClick }) {
-  const meta = statusMeta(entry.status);
-  const stage = statusIndex(entry.status);
-  const pct = (stage / (STATUSES.length - 1)) * 100;
-  const scheduled = entry.status !== "ordered" && entry.status !== "material_received";
-  const multiDay = entry.installEndDate && entry.installDate && entry.installEndDate > entry.installDate;
-  const repair = isRepairJob(entry);
-  return (
-    <button onClick={onClick} className="text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-slate-300 hover:shadow-sm transition">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="min-w-0">
-          <div className="font-semibold truncate flex items-center gap-2">
-            {entry.clientName || "Unnamed client"}
-            {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
-            {entry.reserved && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-dashed border-slate-300">RESERVED</span>}
-          </div>
-          <div className="text-sm text-slate-500 flex items-center gap-1 truncate"><MapPin size={13} className="shrink-0" /> {entry.address || "No address"}</div>
-        </div>
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 ${meta.badge}`}>{meta.label}</span>
-      </div>
-      <div className="flex items-center gap-3 text-xs text-slate-500 mb-3 flex-wrap">
-        {entry.po && <span className="flex items-center gap-1"><Hash size={12} /> {entry.po}</span>}
-        {repair
-          ? (entry.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {entry.repairType}</span>)
-          : (productSummary(entry) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(entry)}</span>)}
-        {repair && entry.type && <span className="flex items-center gap-1"><Package size={12} /> {entry.type}</span>}
-        {entry.consultant && <span className="flex items-center gap-1"><User size={12} /> {entry.consultant}</span>}
-        {entry.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(entry.team)}</span>}
-        <span className="flex items-center gap-1">
-          <Calendar size={12} />
-          {scheduled
-            ? <>Install: {fmtRange(entry.installDate, entry.installEndDate)}{entry.installTime ? ` · ${entry.installTime}` : ""}{multiDay ? ` · ${daysBetween(entry.installDate, entry.installEndDate) + 1} days` : ""}</>
-            : repair
-              ? <>Repair · awaiting scheduling</>
-              : <>Material ETA: {fmtDate(entry.materialEta)}</>}
-        </span>
-        {entry.openSnags > 0 && (
-          <span className="flex items-center gap-1 text-red-600 font-medium"><AlertTriangle size={12} /> {entry.openSnags} snag{entry.openSnags > 1 ? "s" : ""}</span>
-        )}
-      </div>
-      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-        <div className={`h-full ${meta.dot}`} style={{ width: `${pct}%` }} />
-      </div>
-    </button>
-  );
-}
-
-/* ============================================================
-   DETAIL
-   ============================================================ */
-function Detail({ id, level, user, onClose, onSave, onDelete, onRestore, onPurge }) {
-  const [p, setP] = useState(null);
-  const [snagNote, setSnagNote] = useState("");
-  const [snagCategory, setSnagCategory] = useState("");
-  const [snagBusy, setSnagBusy] = useState(false);
-  const [noteText, setNoteText] = useState("");
-  const [confirmDel, setConfirmDel] = useState(false);
-  const [deleteReason, setDeleteReason] = useState("");
-  const [confirmPurge, setConfirmPurge] = useState(false);
-  const [lightbox, setLightbox] = useState(null);
-  const [sketchBusy, setSketchBusy] = useState(false);
-  const [sketchCaption, setSketchCaption] = useState("");
-  const fileRef = useRef(null);
-  const sketchFileRef = useRef(null);
-
-  const canNote = level >= 1;      // consultant+
-  const canOperate = level >= 2;   // coordinator+  (dates, status, material, install time, snags, team)
-  const canInternal = level >= 3;  // developer+    (client/order fields, delete/restore/purge)
-
-  useEffect(() => {
-    (async () => {
-      const proj = await fetchProject(id);
-      if (proj && !proj.log) {
-        proj.log = proj.notes ? [{ id: uid(), text: proj.notes, role: 0, createdAt: proj.createdAt || Date.now() }] : [];
-      }
-      setP(proj);
-      if (proj && level >= 2) markSnagSeen(id); // clears the "NEW" flag for this project
-    })();
-  }, [id, level]);
-
-  const patch = (fields) => setP((prev) => ({ ...prev, ...fields }));
-
-  const persist = async (next) => { setP(next); await onSave(next); };
-
-  const setStatus = async (key) => {
-    const next = { ...p, status: key };
-    if (key === "material_received" && !next.materialReceivedDate) next.materialReceivedDate = todayISO();
-    if (key === "installed" && !next.installedDate) next.installedDate = next.installEndDate || next.installDate || todayISO();
-    if (key === "complete") next.completedAt = next.completedAt || Date.now();
-    else next.completedAt = null;
-    await persist(next);
-  };
-
-  const addSnag = async (photo) => {
-    if (!snagCategory) return; // category is required
-    const snag = { id: uid(), category: snagCategory, note: snagNote.trim(), photo: photo || null, resolved: false, createdAt: Date.now(), author: user ? user.name : "" };
-    const next = { ...p, snags: [snag, ...(p.snags || [])] };
-    setSnagNote("");
-    setSnagCategory("");
-    await persist(next);
-  };
-
-  const onPhoto = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSnagBusy(true);
-    try { const data = await compressImage(file); await addSnag(data); }
-    finally { setSnagBusy(false); if (fileRef.current) fileRef.current.value = ""; }
-  };
-
-  const toggleSnag = async (sid) => {
-    const snags = p.snags.map((s) => (s.id === sid ? { ...s, resolved: !s.resolved } : s));
-    const stillOpen = snags.some((s) => !s.resolved);
-    await persist({ ...p, snags, snagVisitDate: stillOpen ? p.snagVisitDate : "" });
-  };
-  const removeSnag = async (sid) => {
-    const snags = p.snags.filter((s) => s.id !== sid);
-    const stillOpen = snags.some((s) => !s.resolved);
-    await persist({ ...p, snags, snagVisitDate: stillOpen ? p.snagVisitDate : "" });
-  };
-
-  const addSketch = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setSketchBusy(true);
-    try {
-      const data = await compressImage(file, 1600, 0.7);
-      const sketch = { id: uid(), image: data, caption: sketchCaption.trim(), createdAt: Date.now(), author: user ? user.name : "" };
-      await persist({ ...p, sketches: [sketch, ...(p.sketches || [])] });
-      setSketchCaption("");
-    } finally { setSketchBusy(false); if (sketchFileRef.current) sketchFileRef.current.value = ""; }
-  };
-  const removeSketch = async (sid) => {
-    await persist({ ...p, sketches: (p.sketches || []).filter((s) => s.id !== sid) });
-  };
-
-  const addNote = async () => {
-    if (!noteText.trim()) return;
-    const entry = { id: uid(), text: noteText.trim(), role: level, author: user ? user.name : "", createdAt: Date.now() };
-    setNoteText("");
-    await persist({ ...p, log: [entry, ...(p.log || [])] });
-  };
-  const removeNote = async (nid) => {
-    await persist({ ...p, log: (p.log || []).filter((n) => n.id !== nid) });
-  };
-
-  if (!p) return <Modal onClose={onClose}><div className="p-10 text-center text-slate-400 text-sm">Loading…</div></Modal>;
-
-  const meta = statusMeta(p.status);
-  const curIdx = statusIndex(p.status);
-  const openSnags = (p.snags || []).filter((s) => !s.resolved).length;
-  const repair = isRepairJob(p);
-  const consultantOptions = repair ? REPAIR_CONSULTANTS : CONSULTANTS;
-
-  return (
-    <Modal onClose={onClose} wide>
-      {/* head */}
-      <div className="flex items-start justify-between gap-3 p-5 border-b border-slate-200 sticky top-0 bg-white z-10">
-        <div className="min-w-0">
-          {canInternal ? (
-            <input value={p.clientName || ""} onChange={(e) => patch({ clientName: e.target.value })} onBlur={() => onSave(p)}
-              className="font-semibold text-lg w-full focus:outline-none border-b border-transparent focus:border-slate-300" placeholder="Client name" />
-          ) : <h2 className="font-semibold text-lg truncate">{p.clientName || "Unnamed client"}</h2>}
-          <div className="flex items-center gap-2 mt-1 flex-wrap">
-            <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full border ${meta.badge}`}>{meta.label}</span>
-            {repair && <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full border bg-yellow-100 text-yellow-800 border-yellow-300"><Wrench size={11} /> Repair</span>}
-            {p.deleted && <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full border bg-orange-100 text-orange-800 border-orange-300">Deleted</span>}
-          </div>
-        </div>
-        <button onClick={onClose} className="p-2 -m-1 rounded-lg text-slate-400 hover:bg-slate-100"><X size={20} /></button>
-      </div>
-
-      <div className="p-5 space-y-6">
-        {p.deleted && (
-          <div className="rounded-lg bg-orange-50 border border-orange-200 p-3 text-sm text-orange-800">
-            This project was deleted{p.deletedBy ? ` by ${p.deletedBy}` : ""}{p.deletedAt ? ` on ${fmtWhen(p.deletedAt)}` : ""}. It stays in History for the record.
-            {p.deleteReason && <span className="block mt-1"><b>Reason:</b> {p.deleteReason}</span>}
-          </div>
-        )}
-
-        {/* Status stepper */}
-        <section>
-          <SectionTitle>Status</SectionTitle>
-          <div className="flex items-center gap-1 overflow-x-auto pb-1">
-            {STATUSES.map((s, i) => {
-              const done = i <= curIdx;
-              const clickable = canOperate && !p.deleted;
-              return (
-                <React.Fragment key={s.key}>
-                  <button
-                    disabled={!clickable} onClick={() => setStatus(s.key)}
-                    className={`flex flex-col items-center gap-1 px-1 shrink-0 ${clickable ? "cursor-pointer" : "cursor-default"}`}
-                    style={{ minWidth: 72 }}
-                  >
-                    <span className={`h-7 w-7 rounded-full flex items-center justify-center text-white text-xs ${done ? s.dot : "bg-slate-200"}`}>
-                      {done ? <Check size={14} /> : i + 1}
-                    </span>
-                    <span className={`text-[10px] text-center leading-tight ${done ? "text-slate-700 font-medium" : "text-slate-400"}`}>{s.label}</span>
-                  </button>
-                  {i < STATUSES.length - 1 && <div className={`h-0.5 flex-1 min-w-[10px] ${i < curIdx ? s.dot : "bg-slate-200"}`} />}
-                </React.Fragment>
-              );
-            })}
-          </div>
-          {canOperate && p.status === "complete" && openSnags > 0 && (
-            <p className="mt-2 text-xs text-amber-700 flex items-center gap-1"><AlertTriangle size={12} /> Marked complete with {openSnags} open snag{openSnags > 1 ? "s" : ""}.</p>
-          )}
-          {canOperate && !p.deleted && p.installDate && (
-            <button onClick={async () => {
-              await persist({ ...p, installDate: "", installEndDate: "", installTime: "",
-                status: p.status === "scheduled" ? (repair ? "ordered" : "material_received") : p.status });
-            }} className="mt-2 text-xs font-medium text-slate-500 hover:text-slate-800 hover:underline flex items-center gap-1">
-              <Undo2 size={12} /> Unbook (send back to the tray)
-            </button>
-          )}
-          {canOperate && !p.deleted && !repair && (
-            <label className="mt-3 flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={!!p.reserved} onChange={(e) => persist({ ...p, reserved: e.target.checked })} className="h-4 w-4 rounded border-slate-300" />
-              <span className="text-xs text-slate-600">
-                <b>Reserved</b> — pencilled in, material not yet arrived (shows as unconfirmed on the calendar)
-              </span>
-            </label>
-          )}
-        </section>
-
-        {/* Details */}
-        <section>
-          <SectionTitle>Details</SectionTitle>
-          <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3">
-            <Field icon={Phone} label="Client contact" value={p.contact} editMode={canInternal} onChange={(v) => patch({ contact: v })} onBlur={() => onSave(p)} />
-            <Field icon={MapPin} label="Address" value={p.address} editMode={canInternal} onChange={(v) => patch({ address: v })} onBlur={() => onSave(p)} />
-            <Field icon={Hash} label="Internal PO number" value={p.po} editMode={canInternal} onChange={(v) => patch({ po: v })} onBlur={() => onSave(p)} />
-            <div>
-              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Package size={12} /> Type</label>
-              {canInternal ? (
-                <select value={p.type || ""} onChange={(e) => persist({ ...p, type: e.target.value, range: "" })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                  <option value="">Select…</option>
-                  {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  {p.type && !PRODUCT_TYPES.includes(p.type) && <option value={p.type}>{p.type}</option>}
-                </select>
-              ) : <p className="text-sm text-slate-800">{p.type || p.product || "—"}</p>}
-            </div>
-            {repair ? (
-              <div className="sm:col-span-2">
-                <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Wrench size={12} /> Repair type</label>
-                {canInternal ? (
-                  <input value={p.repairType || ""} onChange={(e) => patch({ repairType: e.target.value })} onBlur={() => onSave(p)}
-                    placeholder="e.g. re-stretch lounge, patch burn near hearth…"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-                ) : <p className="text-sm text-slate-800">{p.repairType || "—"}</p>}
-              </div>
-            ) : (
-              <>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Package size={12} /> Range</label>
-                  {canOperate ? (
-                    rangesForType(p.type).length > 0 ? (
-                      <select value={p.range || ""} onChange={(e) => persist({ ...p, range: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                        <option value="">Select…</option>
-                        {rangesForType(p.type).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
-                        {p.range && !rangesForType(p.type).some((r) => r.name === p.range) && <option value={p.range}>{p.range}</option>}
-                      </select>
-                    ) : p.type === "Turf" || p.type === "Novillon" ? (
-                      <select disabled className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-400">
-                        <option>Coming soon</option>
-                      </select>
-                    ) : (
-                      <p className="text-sm text-slate-400">{p.type ? "No ranges loaded for this type yet" : "Select a type first"}</p>
-                    )
-                  ) : <p className="text-sm text-slate-800">{p.range || "—"}</p>}
-                </div>
-                <Field icon={Package} label="Colour" value={p.colour} editMode={canOperate} onChange={(v) => patch({ colour: v })} onBlur={() => onSave(p)} />
-                <Field icon={Hash} label="Square meters (m²)" value={p.sqm} editMode={canInternal} onChange={(v) => patch({ sqm: v })} onBlur={() => onSave(p)} />
-              </>
-            )}
-            <div>
-              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><User size={12} /> Consultant</label>
-              {canInternal ? (
-                <select value={p.consultant || ""} onChange={(e) => persist({ ...p, consultant: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                  <option value="">Select…</option>
-                  {consultantOptions.map((c) => <option key={c} value={c}>{c}</option>)}
-                  {p.consultant && !consultantOptions.includes(p.consultant) && <option value={p.consultant}>{p.consultant}</option>}
-                </select>
-              ) : <p className="text-sm text-slate-800">{p.consultant || "—"}</p>}
-            </div>
-            <div>
-              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Users size={12} /> Installation team</label>
-              {canOperate ? (
-                <select value={p.team || ""} onChange={(e) => persist({ ...p, team: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                  <option value="">Unassigned</option>
-                  {TEAMS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-                </select>
-              ) : <p className="text-sm text-slate-800">{p.team ? teamLabel(p.team) : "—"}</p>}
-            </div>
-            <DateField label="Order date" value={p.orderDate} editMode={canOperate} onChange={(v) => persist({ ...p, orderDate: v })} />
-            {!repair && <DateField label="Material ETA" value={p.materialEta} editMode={canOperate} onChange={(v) => persist({ ...p, materialEta: v })} />}
-            {!repair && <DateField label="Material received" value={p.materialReceivedDate} editMode={canOperate} onChange={(v) => persist({ ...p, materialReceivedDate: v })} />}
-            <DateField label={repair ? "Repair start date" : "Install start date"} value={p.installDate} editMode={canOperate} onChange={(v) => persist({ ...p, installDate: v })} />
-            <DateField label={repair ? "Repair end date (multi-day)" : "Install end date (multi-day)"} value={p.installEndDate} editMode={canOperate} min={p.installDate}
-              hint={p.installDate && p.installEndDate && p.installEndDate > p.installDate ? `${daysBetween(p.installDate, p.installEndDate) + 1} days on site` : "Leave blank for a single day"}
-              onChange={(v) => persist({ ...p, installEndDate: v })} />
-            <TimeField label={repair ? "Repair start time" : "Install start time"} value={p.installTime} editMode={canOperate} onChange={(v) => persist({ ...p, installTime: v })} />
-            <div>
-              <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Clock size={12} /> Estimated duration</label>
-              {canOperate ? (
-                <>
-                  <select value={p.estHours || ""} onChange={(e) => persist({ ...p, estHours: e.target.value ? Number(e.target.value) : "" })}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                    <option value="">Full day ({DAY_CAPACITY}h)</option>
-                    {DURATIONS.map((h) => <option key={h} value={h}>{fmtHours(h)}</option>)}
-                  </select>
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    {p.estHours > DAY_CAPACITY
-                      ? `Needs ${daysNeeded(p.estHours)} days at ${DAY_CAPACITY}h/day`
-                      : `Uses ${fmtHours(p.estHours || DAY_CAPACITY)} of the ${DAY_CAPACITY}h day`}
-                  </p>
-                </>
-              ) : <p className="text-sm text-slate-800">{p.estHours ? fmtHours(p.estHours) : `Full day (${DAY_CAPACITY}h)`}</p>}
-            </div>
-            <DateField label="Installed on" value={p.installedDate} editMode={canOperate} onChange={(v) => persist({ ...p, installedDate: v })} />
-          </div>
-        </section>
-
-        {/* Notes & messages */}
-        <section>
-          <SectionTitle>Notes &amp; messages</SectionTitle>
-          {canNote ? (
-            <div className="flex gap-2 mb-3">
-              <input value={noteText} onChange={(e) => setNoteText(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addNote()}
-                placeholder="e.g. Client asked to move the date, please call from site…"
-                className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-              <button onClick={addNote} disabled={!noteText.trim()}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-40">
-                <Plus size={15} /> Post
-              </button>
-            </div>
-          ) : (
-            <p className="text-xs text-slate-400 mb-3">Enter a PIN to add a note.</p>
-          )}
-          {(p.log || []).length === 0 ? (
-            <p className="text-sm text-slate-400">No notes yet.</p>
-          ) : (
-            <div className="grid gap-2">
-              {p.log.map((n) => (
-                <div key={n.id} className="flex gap-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-800 whitespace-pre-wrap break-words">{n.text}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      <span className="font-medium text-slate-500">{n.author || ROLES[n.role]?.name || "—"}</span>
-                      {n.author && <span className="text-slate-400"> ({ROLES[n.role]?.name})</span>} · {fmtWhen(n.createdAt)}
-                    </p>
-                  </div>
-                  {canOperate && (
-                    <button onClick={() => removeNote(n.id)} className="text-slate-300 hover:text-red-500 shrink-0" title="Delete note"><Trash2 size={14} /></button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Snags */}
-        <section>
-          <div className="flex items-center justify-between mb-2">
-            <SectionTitle noMargin>Snags {openSnags > 0 && <span className="text-red-600">({openSnags} open)</span>}</SectionTitle>
-          </div>
-
-          {openSnags > 0 && (
-            <div className="mb-3 p-3 rounded-lg bg-red-50 border border-red-100">
-              <label className="text-xs text-red-800 mb-1 flex items-center gap-1 font-medium"><Flag size={12} /> Snag return visit</label>
-              {canOperate ? (
-                <>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-[11px] text-red-700/80">Return date</span>
-                      <input type="date" value={p.snagVisitDate || ""} onChange={(e) => persist({ ...p, snagVisitDate: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300" />
-                    </div>
-                    <div>
-                      <span className="text-[11px] text-red-700/80">Visit duration</span>
-                      <select value={p.snagHours ?? SNAG_HOURS} onChange={(e) => persist({ ...p, snagHours: Number(e.target.value) })}
-                        className="w-full px-3 py-2 rounded-lg border border-red-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-300">
-                        {SNAG_DURATIONS.map((h) => <option key={h} value={h}>{fmtHours(h)}</option>)}
-                      </select>
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-red-700/80 mt-1">Or drag this job from the Snags tray onto a day in the Calendar. Counts {fmtHours(snagHoursOf(p))} against that day.</p>
-                </>
-              ) : <p className="text-sm text-slate-800">{p.snagVisitDate ? `${fmtDate(p.snagVisitDate)} · ${fmtHours(snagHoursOf(p))}` : "Not scheduled"}</p>}
-            </div>
-          )}
-
-          {canNote && (
-            <div className="bg-slate-50 rounded-lg p-3 mb-3">
-              <label className="text-[11px] text-slate-500 mb-1 block">Snag type *</label>
-              <select value={snagCategory} onChange={(e) => setSnagCategory(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300">
-                <option value="">Select a type…</option>
-                {SNAG_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <input value={snagNote} onChange={(e) => setSnagNote(e.target.value)} placeholder="Reason / detail (optional)…"
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
-              <div className="flex gap-2">
-                <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPhoto} className="hidden" />
-                <button onClick={() => fileRef.current?.click()} disabled={snagBusy || !snagCategory}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50">
-                  <Camera size={15} /> {snagBusy ? "Adding…" : "Add with photo"}
-                </button>
-                <button onClick={() => addSnag(null)} disabled={snagBusy || !snagCategory}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium hover:bg-white disabled:opacity-40">
-                  <Plus size={15} /> Note only
-                </button>
-              </div>
-              {!snagCategory && <p className="text-[11px] text-slate-400 mt-1.5">Select a snag type to enable adding.</p>}
-            </div>
-          )}
-
-          {(p.snags || []).length === 0 ? (
-            <p className="text-sm text-slate-400">No snags logged.</p>
-          ) : (
-            <div className="grid gap-2">
-              {p.snags.map((s) => (
-                <div key={s.id} className={`flex gap-3 p-3 rounded-lg border ${s.resolved ? "bg-slate-50 border-slate-200" : "bg-red-50 border-red-100"}`}>
-                  {s.photo ? (
-                    <img src={s.photo} onClick={() => setLightbox(s.photo)} alt="snag"
-                      className="h-16 w-16 rounded-lg object-cover cursor-pointer shrink-0" />
-                  ) : (
-                    <div className="h-16 w-16 rounded-lg bg-slate-100 flex items-center justify-center text-slate-300 shrink-0"><ImageIcon size={20} /></div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    {s.category && (
-                      <span className="inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-700 mb-1">{s.category}</span>
-                    )}
-                    <p className={`text-sm ${s.resolved ? "line-through text-slate-400" : "text-slate-800"}`}>{s.note || "(no description)"}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{s.author ? `${s.author} · ` : ""}{fmtWhen(s.createdAt)}</p>
-                    {canOperate && (
-                      <div className="flex gap-3 mt-1.5">
-                        <button onClick={() => toggleSnag(s.id)} className="text-xs font-medium text-emerald-700 hover:underline">
-                          {s.resolved ? "Reopen" : "Mark resolved"}
-                        </button>
-                        <button onClick={() => removeSnag(s.id)} className="text-xs font-medium text-red-600 hover:underline">Delete</button>
-                      </div>
-                    )}
-                    {!canOperate && s.resolved && <span className="text-xs text-emerald-600 font-medium">Resolved</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Job card sketches */}
-        <section>
-          <SectionTitle>Job card / sketches {(p.sketches || []).length > 0 && <span className="text-slate-400">({p.sketches.length})</span>}</SectionTitle>
-          {canOperate && (
-            <div className="bg-slate-50 rounded-lg p-3 mb-3">
-              <input value={sketchCaption} onChange={(e) => setSketchCaption(e.target.value)} placeholder="Caption (optional) — e.g. Lounge, cut from doorway…"
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm mb-2 focus:outline-none focus:ring-2 focus:ring-slate-300" />
-              <input ref={sketchFileRef} type="file" accept="image/*" capture="environment" onChange={addSketch} className="hidden" />
-              <button onClick={() => sketchFileRef.current?.click()} disabled={sketchBusy}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50">
-                <Camera size={15} /> {sketchBusy ? "Adding…" : "Add sketch / photo"}
-              </button>
-              <p className="text-[11px] text-slate-400 mt-1.5">Uploaded sketches print automatically below this job on the daily report — the same sheet doubles as a job card for installers.</p>
-            </div>
-          )}
-          {(p.sketches || []).length === 0 ? (
-            <p className="text-sm text-slate-400">No sketches added.</p>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {p.sketches.map((s) => (
-                <div key={s.id} className="relative group">
-                  <img src={s.image} onClick={() => setLightbox(s.image)} alt="sketch"
-                    className="w-full h-28 rounded-lg object-cover cursor-pointer border border-slate-200" />
-                  {s.caption && <p className="text-[11px] text-slate-500 mt-1 truncate">{s.caption}</p>}
-                  {canOperate && (
-                    <button onClick={() => removeSketch(s.id)}
-                      className="absolute top-1 right-1 h-6 w-6 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-                      <X size={13} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Danger zone */}
-        {canInternal && (
-          <section className="pt-2 border-t border-slate-100">
-            {p.deleted ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <button onClick={() => { onRestore(p.id); onClose(); }} className="flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">
-                  <RotateCcw size={14} /> Restore project
-                </button>
-                {confirmPurge ? (
-                  <>
-                    <span className="text-sm text-slate-600">Permanently remove? This can't be undone.</span>
-                    <button onClick={() => onPurge(p.id)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, wipe it</button>
-                    <button onClick={() => setConfirmPurge(false)} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
-                  </>
-                ) : (
-                  <button onClick={() => setConfirmPurge(true)} className="flex items-center gap-1.5 text-sm text-red-600 hover:underline"><Trash2 size={14} /> Delete permanently</button>
-                )}
-              </div>
-            ) : confirmDel ? (
-              <div className="flex flex-col gap-2">
-                <span className="text-sm text-slate-600">Delete this project? It stays in History, marked deleted.</span>
-                <input
-                  autoFocus
-                  value={deleteReason}
-                  onChange={(e) => setDeleteReason(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && onDelete(p.id, deleteReason)}
-                  placeholder="Reason for deleting (optional)…"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
-                />
-                <div className="flex items-center gap-2">
-                  <button onClick={() => onDelete(p.id, deleteReason)} className="text-sm font-medium px-3 py-1.5 rounded-lg bg-red-600 text-white">Yes, delete</button>
-                  <button onClick={() => { setConfirmDel(false); setDeleteReason(""); }} className="text-sm px-3 py-1.5 rounded-lg border border-slate-200">Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <button onClick={() => setConfirmDel(true)} className="flex items-center gap-1.5 text-sm text-red-600 hover:underline"><Trash2 size={14} /> Delete project</button>
-            )}
-          </section>
-        )}
-        <p className="text-[11px] text-slate-400 text-right">Last updated {fmtWhen(p.updatedAt)}</p>
-      </div>
-
-      {lightbox && (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
-          <img src={lightbox} alt="snag full" className="max-h-full max-w-full rounded-lg" />
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-/* ============================================================
-   CALENDAR VIEW
-   Material ETAs (amber) and installation days (blue). Jobs whose
-   material has arrived but aren't booked yet sit in the sticky-note
-   tray as "stickers"; the co-ordinator drags one onto a day to book
-   it. Received-material stickers carry a red "R". Repairs sit in
-   their own yellow tray and land as wrench entries. Each day shows
-   how much of the working day is still free.
-   ============================================================ */
-function CalendarView({ index, level, onOpen, onSchedule, onScheduleSnag, snagJobs = [] }) {
-  const now = new Date();
-  const [cursor, setCursor] = useState({ y: now.getFullYear(), m: now.getMonth() });
-  const [show, setShow] = useState({ eta: true, install: true, reserved: true, snag: true, repair: true });
-  const [dragId, setDragId] = useState(null);   // HTML5 drag
-  const [dragKind, setDragKind] = useState(null); // "install" | "snag"
-  const [pendingId, setPendingId] = useState(null); // tap-to-place (touch friendly)
-  const [pendingKind, setPendingKind] = useState(null);
-  const [dropTarget, setDropTarget] = useState(null);
-
-  const canOperate = level >= 2;
-
-  // Stickers whose material has landed but aren't booked yet
-  const tray = index.filter((e) => !isRepairJob(e) && e.status === "material_received" && !e.installDate);
-  // Repair stickers awaiting a booking
-  const repairTray = index.filter((e) => isRepairJob(e) && !e.installDate);
-  // Jobs with open snags not yet given a return-visit date → red snag stickers
-  const snagTray = snagJobs.filter((e) => !e.snagVisitDate);
-
-  // Lookup: ISO date -> events, plus hours booked per day
-  const byDate = {};
-  const loadByDate = {};
-  const push = (iso, ev) => { if (!iso) return; (byDate[iso] = byDate[iso] || []).push(ev); };
-  index.forEach((e) => {
-    if (show.eta && e.materialEta && e.status === "ordered" && !isRepairJob(e)) {
-      push(e.materialEta, { type: "eta", id: e.id, label: e.clientName || "Unnamed", sub: productSummary(e) });
-    }
-    if (e.installDate) {
-      const repair = isRepairJob(e);
-      const days = dateRange(e.installDate, e.installEndDate);
-      days.forEach((d, i) => {
-        const load = dayLoad(e, d);
-        loadByDate[d] = (loadByDate[d] || 0) + load; // reserved still counts toward capacity
-        const evType = e.reserved ? "reserved" : repair ? "repair" : "install";
-        const showIt = e.reserved ? show.reserved : repair ? show.repair : show.install;
-        if (showIt) push(d, {
-          type: evType, id: e.id,
-          label: e.clientName || "Unnamed",
-          sub: days.length > 1 ? `Day ${i + 1}/${days.length}` : (repair ? (e.repairType || "") : ""),
-          time: e.installTime || "",
-          hours: load, team: e.team, first: i === 0, span: days.length > 1,
-        });
-      });
-    }
-  });
-  // Snag return visits (from all jobs with open snags)
-  snagJobs.forEach((e) => {
-    if (!e.snagVisitDate) return;
-    const h = snagHoursOf(e);
-    loadByDate[e.snagVisitDate] = (loadByDate[e.snagVisitDate] || 0) + h;
-    if (show.snag) push(e.snagVisitDate, {
-      type: "snag", id: e.id, label: e.clientName || "Unnamed",
-      sub: "Snag return", hours: h, first: true,
-    });
-  });
-
-  // Month grid, Monday-first
-  const first = new Date(cursor.y, cursor.m, 1);
-  const startPad = (first.getDay() + 6) % 7;
-  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
-  const cells = [];
-  for (let i = 0; i < startPad; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) {
-    cells.push({ d, iso: `${cursor.y}-${String(cursor.m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}` });
-  }
-  while (cells.length % 7 !== 0) cells.push(null);
-
-  const step = (n) => {
-    const d = new Date(cursor.y, cursor.m + n, 1);
-    setCursor({ y: d.getFullYear(), m: d.getMonth() });
-  };
-  const today = todayISO();
-
-  const place = (id, iso, kind) => {
-    if (!canOperate || !id) return;
-    if (kind === "snag") onScheduleSnag(id, iso);
-    else onSchedule(id, iso);
-    setDragId(null); setDragKind(null); setPendingId(null); setPendingKind(null); setDropTarget(null);
-  };
-
-  const horizon = addDays(today, 30);
-  const upcoming = Object.keys(byDate)
-    .filter((iso) => iso >= today && iso <= horizon).sort()
-    .map((iso) => ({ iso, events: byDate[iso].filter((e) => e.type === "eta" || e.first) }))
-    .filter((g) => g.events.length);
-
-  return (
-    <div>
-      {/* Sticker tray — material in, awaiting booking (each carries a red R) */}
-      {(tray.length > 0 || (pendingId && pendingKind === "install")) && (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-800 flex items-center gap-1.5">
-              <Package size={13} /> Material in, awaiting booking ({tray.length})
-            </h3>
-            {canOperate && (
-              <span className="text-[11px] text-amber-700">
-                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a sticker onto a day, or tap it"}
-              </span>
-            )}
-          </div>
-          {tray.length === 0 ? (
-            <p className="text-sm text-amber-700/70">All received material is booked in.</p>
-          ) : (
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {tray.map((e) => {
-                const hrs = e.estHours || DAY_CAPACITY;
-                const picked = pendingId === e.id && pendingKind === "install";
-                return (
-                  <div key={e.id}
-                    draggable={canOperate}
-                    onDragStart={() => { setDragId(e.id); setDragKind("install"); }}
-                    onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
-                    onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("install")))}
-                    className={`relative shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
-                      canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
-                      picked ? "bg-amber-200 border-amber-500 ring-2 ring-amber-400" : "bg-amber-100 border-amber-300 hover:shadow"}`}
-                    style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
-                    <span className="absolute top-1 right-1 h-5 w-5 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center justify-center shadow-sm" title="Material received">R</span>
-                    <p className="text-sm font-semibold text-amber-950 truncate pr-5">{e.clientName || "Unnamed"}</p>
-                    {productSummary(e) && <p className="text-[11px] text-amber-800 truncate">{productSummary(e)}</p>}
-                    <div className="flex items-center gap-2 mt-1.5 text-[11px] text-amber-800">
-                      <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(hrs)}</span>
-                      {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
-                    </div>
-                    <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
-                      className="mt-1.5 text-[11px] font-medium text-amber-900 underline underline-offset-2">Open</button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Repair tray — repairs awaiting a booking (yellow, wrench) */}
-      {repairTray.length > 0 && (
-        <div className="mb-4 rounded-xl border border-yellow-300 bg-yellow-50/70 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-yellow-800 flex items-center gap-1.5">
-              <Wrench size={13} /> Repairs to schedule ({repairTray.length})
-            </h3>
-            {canOperate && (
-              <span className="text-[11px] text-yellow-700">
-                {pendingId && pendingKind === "install" ? "Now tap a day to book it" : "Drag a sticker onto a day, or tap it"}
-              </span>
-            )}
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {repairTray.map((e) => {
-              const hrs = e.estHours || DAY_CAPACITY;
-              const picked = pendingId === e.id && pendingKind === "install";
-              return (
-                <div key={e.id}
-                  draggable={canOperate}
-                  onDragStart={() => { setDragId(e.id); setDragKind("install"); }}
-                  onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
-                  onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("install")))}
-                  className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
-                    canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
-                    picked ? "bg-yellow-200 border-yellow-500 ring-2 ring-yellow-400" : "bg-yellow-100 border-yellow-300 hover:shadow"}`}
-                  style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
-                  <p className="text-sm font-semibold text-yellow-900 truncate flex items-center gap-1"><Wrench size={11} /> {e.clientName || "Unnamed"}</p>
-                  {e.repairType && <p className="text-[11px] text-yellow-800 truncate">{e.repairType}</p>}
-                  <div className="flex items-center gap-2 mt-1.5 text-[11px] text-yellow-800">
-                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(hrs)}</span>
-                    {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
-                  </div>
-                  <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
-                    className="mt-1.5 text-[11px] font-medium text-yellow-900 underline underline-offset-2">Open</button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Snag tray — open snags awaiting a return-visit date */}
-      {snagTray.length > 0 && (
-        <div className="mb-4 rounded-xl border border-red-200 bg-red-50/60 p-3">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-red-800 flex items-center gap-1.5">
-              <Flag size={13} /> Snags to schedule ({snagTray.length})
-            </h3>
-            {canOperate && (
-              <span className="text-[11px] text-red-700">
-                {pendingId && pendingKind === "snag" ? "Now tap a day for the return visit" : "Drag onto a day, or tap it"}
-              </span>
-            )}
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {snagTray.map((e) => {
-              const picked = pendingId === e.id && pendingKind === "snag";
-              const openN = (e.snags || []).filter((s) => !s.resolved).length;
-              return (
-                <div key={e.id}
-                  draggable={canOperate}
-                  onDragStart={() => { setDragId(e.id); setDragKind("snag"); }}
-                  onDragEnd={() => { setDragId(null); setDragKind(null); setDropTarget(null); }}
-                  onClick={() => canOperate && (picked ? (setPendingId(null), setPendingKind(null)) : (setPendingId(e.id), setPendingKind("snag")))}
-                  className={`shrink-0 w-44 p-2.5 rounded-lg shadow-sm border transition select-none ${
-                    canOperate ? "cursor-grab active:cursor-grabbing" : ""} ${
-                    picked ? "bg-red-200 border-red-500 ring-2 ring-red-400" : "bg-red-100 border-red-300 hover:shadow"}`}
-                  style={{ transform: picked ? "rotate(0deg)" : "rotate(-1deg)" }}>
-                  <p className="text-sm font-semibold text-red-950 truncate flex items-center gap-1"><Flag size={11} /> {e.clientName || "Unnamed"}</p>
-                  <p className="text-[11px] text-red-800 truncate">{openN} open snag{openN > 1 ? "s" : ""}{e.address ? ` · ${e.address}` : ""}</p>
-                  <div className="flex items-center gap-2 mt-1.5 text-[11px] text-red-800">
-                    <span className="flex items-center gap-0.5"><Clock size={10} /> {fmtHours(snagHoursOf(e))}</span>
-                    {e.team && <span className="flex items-center gap-0.5 truncate"><Users size={10} /> {teamLabel(e.team).split(" — ")[0]}</span>}
-                  </div>
-                  <button onClick={(ev) => { ev.stopPropagation(); onOpen(e.id); }}
-                    className="mt-1.5 text-[11px] font-medium text-red-900 underline underline-offset-2">Open</button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Controls */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-1">
-          <button onClick={() => step(-1)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100"><ChevronLeft size={18} /></button>
-          <h2 className="font-semibold text-base min-w-[150px] text-center">{MONTHS[cursor.m]} {cursor.y}</h2>
-          <button onClick={() => step(1)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100"><ChevronRight size={18} /></button>
-        </div>
-        <button onClick={() => setCursor({ y: now.getFullYear(), m: now.getMonth() })}
-          className="text-xs font-medium px-3 py-1.5 rounded-full border border-slate-200 bg-white text-slate-600 hover:border-slate-300">Today</button>
-      </div>
-
-      {/* Legend / toggles */}
-      <div className="flex gap-2 mb-3 flex-wrap">
-        <button onClick={() => setShow((s) => ({ ...s, eta: !s.eta }))}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-            show.eta ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-white text-slate-400 border-slate-200"}`}>
-          <span className="h-2 w-2 rounded-full bg-amber-500" /> Material ETA
-        </button>
-        <button onClick={() => setShow((s) => ({ ...s, install: !s.install }))}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-            show.install ? "bg-blue-50 text-blue-800 border-blue-200" : "bg-white text-slate-400 border-slate-200"}`}>
-          <span className="h-2 w-2 rounded-full bg-blue-500" /> Installation
-        </button>
-        <button onClick={() => setShow((s) => ({ ...s, repair: !s.repair }))}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-            show.repair ? "bg-yellow-50 text-yellow-800 border-yellow-300" : "bg-white text-slate-400 border-slate-200"}`}>
-          <Wrench size={11} /> Repair
-        </button>
-        <button onClick={() => setShow((s) => ({ ...s, reserved: !s.reserved }))}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-            show.reserved ? "bg-slate-50 text-slate-700 border-slate-300" : "bg-white text-slate-400 border-slate-200"}`}>
-          <span className="h-2 w-2 rounded-full border border-dashed border-slate-400" /> Reserved
-        </button>
-        <button onClick={() => setShow((s) => ({ ...s, snag: !s.snag }))}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-            show.snag ? "bg-red-50 text-red-800 border-red-200" : "bg-white text-slate-400 border-slate-200"}`}>
-          <span className="h-2 w-2 rounded-full bg-red-500" /> Snag visit
-        </button>
-        <span className="flex items-center gap-1.5 text-xs text-slate-400 px-2 py-1.5">
-          Working day: {DAY_CAPACITY}h ({String(DAY_START).padStart(2,"0")}:00–{DAY_END}:00)
-        </span>
-      </div>
-
-      {/* Grid */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50">
-          {DOW.map((d) => <div key={d} className="text-[11px] font-semibold text-slate-500 text-center py-2">{d}</div>)}
-        </div>
-        <div className="grid grid-cols-7">
-          {cells.map((c, i) => {
-            const events = c ? (byDate[c.iso] || []) : [];
-            const booked = c ? (loadByDate[c.iso] || 0) : 0;
-            const cap = c ? dayCapacity(c.iso) : DAY_CAPACITY;
-            const free = Math.max(0, cap - booked);
-            const over = booked > cap;
-            const isToday = c && c.iso === today;
-            const weekend = i % 7 >= 5;
-            const isTarget = c && dropTarget === c.iso;
-            const armed = canOperate && (dragId || pendingId);
-            return (
-              <div key={i}
-                onDragOver={(e) => { if (c && canOperate) { e.preventDefault(); setDropTarget(c.iso); } }}
-                onDragLeave={() => setDropTarget((t) => (c && t === c.iso ? null : t))}
-                onDrop={(e) => { e.preventDefault(); if (c) place(dragId, c.iso, dragKind); }}
-                onClick={() => { if (c && pendingId) place(pendingId, c.iso, pendingKind); }}
-                className={`min-h-[104px] border-b border-r border-slate-100 p-1.5 transition ${
-                  weekend ? "bg-slate-50/60" : ""} ${!c ? "bg-slate-50/40" : ""} ${
-                  isTarget ? "bg-blue-50 ring-2 ring-inset ring-blue-400" : ""} ${
-                  armed && c ? "cursor-pointer hover:bg-blue-50/50" : ""}`}>
-                {c && (
-                  <>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={`text-[11px] inline-flex items-center justify-center h-5 min-w-[20px] px-1 rounded-full ${
-                        isToday ? "bg-slate-900 text-white font-semibold" : "text-slate-400"}`}>{c.d}</span>
-                      {booked > 0 && (
-                        <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${
-                          over ? "bg-red-100 text-red-700" : free === 0 ? "bg-slate-200 text-slate-600" : "bg-emerald-100 text-emerald-700"}`}>
-                          {over ? `+${fmtHours(booked - cap)}` : free === 0 ? "Full" : `${fmtHours(free)} left`}
-                        </span>
-                      )}
-                    </div>
-                    {booked > 0 && (
-                      <div className="h-1 rounded-full bg-slate-100 mb-1 overflow-hidden">
-                        <div className={`h-full ${over ? "bg-red-500" : booked >= cap ? "bg-slate-400" : "bg-blue-500"}`}
-                          style={{ width: `${Math.min(100, (booked / cap) * 100)}%` }} />
-                      </div>
-                    )}
-                    <div className="space-y-1">
-                      {events.slice(0, 3).map((ev, j) => {
-                        const style =
-                          ev.type === "eta" ? "bg-amber-100 text-amber-900"
-                          : ev.type === "snag" ? "bg-red-100 text-red-800 border border-red-300"
-                          : ev.type === "repair" ? "bg-yellow-100 text-yellow-900 border border-yellow-400"
-                          : ev.type === "reserved" ? "bg-white text-slate-500 border border-dashed border-slate-400 opacity-80"
-                          : `bg-blue-100 text-blue-900 ${ev.span && !ev.first ? "opacity-70" : ""}`;
-                        const lead =
-                          ev.type === "eta" ? "ETA"
-                          : ev.type === "snag" ? "⚑ Snag"
-                          : ev.type === "repair" ? `🔧 ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
-                          : ev.type === "reserved" ? `◌ ${ev.first ? (ev.time || "TBC") : fmtHours(ev.hours)}`
-                          : (ev.first ? (ev.time || "TBC") : fmtHours(ev.hours));
-                        const draggableEvent = canOperate && ev.first && (ev.type === "install" || ev.type === "reserved" || ev.type === "repair" || ev.type === "snag");
-                        return (
-                          <button key={j} onClick={(e) => { e.stopPropagation(); onOpen(ev.id); }}
-                            draggable={draggableEvent}
-                            onDragStart={(e) => { e.stopPropagation(); setDragId(ev.id); setDragKind(ev.type === "snag" ? "snag" : "install"); }}
-                            className={`w-full text-left text-[10px] leading-tight px-1.5 py-1 rounded truncate transition hover:opacity-80 ${style}`}
-                            title={`${ev.label}${ev.sub ? " · " + ev.sub : ""}${ev.time ? " · " + ev.time : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}>
-                            <span className="font-medium">{lead}</span> {ev.label}
-                            {ev.sub && <span className="block opacity-70 truncate">{ev.sub}</span>}
-                          </button>
-                        );
-                      })}
-                      {events.length > 3 && <div className="text-[10px] text-slate-400 pl-1">+{events.length - 3} more</div>}
-                    </div>
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {canOperate && (
-        <p className="text-[11px] text-slate-400 mt-2">
-          Drag a booked job to another day to move it. Open a job to unbook it.
-        </p>
-      )}
-
-      {/* Upcoming */}
-      <div className="mt-6">
-        <SectionTitle>Next 30 days</SectionTitle>
-        {upcoming.length === 0 ? (
-          <p className="text-sm text-slate-400">Nothing scheduled in the next 30 days.</p>
-        ) : (
-          <div className="grid gap-2">
-            {upcoming.map((g) => (
-              <div key={g.iso} className="bg-white rounded-lg border border-slate-200 p-3">
-                <div className="flex items-center justify-between mb-1.5">
-                  <p className="text-xs font-semibold text-slate-500">{fmtDate(g.iso)}{g.iso === today && <span className="ml-2 text-slate-900">Today</span>}</p>
-                  {loadByDate[g.iso] > 0 && (
-                    <p className="text-[11px] text-slate-400">{fmtHours(loadByDate[g.iso])} of {DAY_CAPACITY}h booked</p>
-                  )}
-                </div>
-                <div className="grid gap-1.5">
-                  {g.events.map((ev, j) => (
-                    <button key={j} onClick={() => onOpen(ev.id)} className="flex items-center gap-2 text-left hover:underline">
-                      <span className={`h-2 w-2 rounded-full shrink-0 ${
-                        ev.type === "eta" ? "bg-amber-500" :
-                        ev.type === "snag" ? "bg-red-500" :
-                        ev.type === "repair" ? "bg-yellow-400" :
-                        ev.type === "reserved" ? "bg-slate-300" : "bg-blue-500"}`} />
-                      <span className="text-sm text-slate-800 truncate">{ev.label}</span>
-                      <span className="text-xs text-slate-400 truncate">
-                        {ev.type === "eta" ? "material ETA"
-                          : ev.type === "snag" ? "snag return"
-                          : ev.type === "repair" ? `repair${ev.time ? " · " + ev.time : ""}`
-                          : ev.type === "reserved" ? `reserved${ev.time ? " · " + ev.time : ""}`
-                          : `installation${ev.time ? " · " + ev.time : ""}${ev.hours ? " · " + fmtHours(ev.hours) : ""}`}{ev.sub ? ` · ${ev.sub}` : ""}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================
-   SNAGS VIEW — every job with open snags, in one place
-   ============================================================ */
-function SnagsView({ snagJobs, level, onOpen }) {
-  const [q, setQ] = useState("");
-  const canSeeNew = level >= 2;
-  const list = snagJobs.filter((e) => {
-    if (!q.trim()) return true;
-    const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.po, e.range, e.colour].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
-  });
-
-  return (
-    <div>
-      <div className="relative mb-4">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search snags by client, PO, address…"
-          className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-      </div>
-
-      {snagJobs.length === 0 ? (
-        <div className="text-center py-16 px-4">
-          <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-3 text-emerald-500"><Check size={26} /></div>
-          <p className="font-medium text-slate-700">No open snags</p>
-          <p className="text-sm text-slate-400">Everything's clear. Snags logged on any job show up here until resolved.</p>
-        </div>
-      ) : list.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
-      ) : (
-        <div className="grid gap-3">
-          {list.map((e) => {
-            const open = (e.snags || []).filter((s) => !s.resolved);
-            const wasCompleted = e.status === "complete";
-            const isNew = canSeeNew && hasNewSnag(e);
-            return (
-              <button key={e.id} onClick={() => onOpen(e.id)}
-                className={`text-left bg-red-50 rounded-xl border p-4 hover:shadow-sm transition ${isNew ? "border-red-400 ring-1 ring-red-300" : "border-red-200 hover:border-red-300"}`}>
-                <div className="flex items-start justify-between gap-3 mb-2">
-                  <div className="min-w-0">
-                    <div className="font-semibold truncate flex items-center gap-2 text-slate-900">
-                      <Flag size={15} className="text-red-500 shrink-0" />
-                      {e.clientName || "Unnamed client"}
-                      {isNew && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">NEW</span>}
-                    </div>
-                    <div className="text-sm text-slate-500 flex items-center gap-1 truncate mt-0.5"><MapPin size={13} className="shrink-0" /> {e.address || "No address"}</div>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-red-100 text-red-700 border border-red-200">
-                      {open.length} open snag{open.length > 1 ? "s" : ""}
-                    </span>
-                    {wasCompleted && <span className="text-[10px] text-slate-500">was completed</span>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 text-xs text-slate-500 mb-2 flex-wrap">
-                  {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-                  {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
-                  {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
-                  {e.snagVisitDate
-                    ? <span className="flex items-center gap-1 text-red-600 font-medium"><Calendar size={12} /> Return visit {fmtDate(e.snagVisitDate)} · {fmtHours(snagHoursOf(e))}</span>
-                    : <span className="flex items-center gap-1 text-amber-600 font-medium"><Calendar size={12} /> Not yet scheduled</span>}
-                </div>
-                <div className="space-y-1">
-                  {open.slice(0, 2).map((s) => (
-                    <p key={s.id} className="text-sm text-slate-700 flex items-start gap-1.5">
-                      <span className="text-red-400 mt-0.5">•</span> {s.note || "(no description)"}
-                    </p>
-                  ))}
-                  {open.length > 2 && <p className="text-xs text-slate-400">+{open.length - 2} more…</p>}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   HISTORY VIEW — completed installations, and (separately) deleted
-   projects. Deleted projects only ever appear in their own section
-   at the bottom, and only when at least one exists.
-   ============================================================ */
-function HistoryView({ history, onOpen, onUnInvoice, level }) {
-  const canUndo = level >= 2;
-  const [q, setQ] = useState("");
-  const filtered = history.filter((e) => {
-    if (!q.trim()) return true;
-    const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.range, e.colour, e.product, e.po, e.repairType, e.deletedBy, e.deleteReason].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
-  });
-
-  const completed = filtered.filter((e) => !e.deleted);
-  const deleted = filtered.filter((e) => e.deleted);
-
-  // Group completed jobs by month (installed / completed / updated date)
-  const completedGroups = {};
-  completed.forEach((e) => {
-    const when = e.installedDate || (e.completedAt ? new Date(e.completedAt).toISOString().slice(0, 10) : null)
-      || (e.updatedAt ? new Date(e.updatedAt).toISOString().slice(0, 10) : todayISO());
-    const key = when.slice(0, 7);
-    (completedGroups[key] = completedGroups[key] || []).push({ ...e, when });
-  });
-  const completedKeys = Object.keys(completedGroups).sort().reverse();
-  completedKeys.forEach((k) => completedGroups[k].sort((a, b) => b.when.localeCompare(a.when)));
-
-  // Group deleted projects by month of deletion
-  const deletedGroups = {};
-  deleted.forEach((e) => {
-    const when = e.deletedAt ? new Date(e.deletedAt).toISOString().slice(0, 10) : todayISO();
-    const key = when.slice(0, 7);
-    (deletedGroups[key] = deletedGroups[key] || []).push({ ...e, when });
-  });
-  const deletedKeys = Object.keys(deletedGroups).sort().reverse();
-  deletedKeys.forEach((k) => deletedGroups[k].sort((a, b) => b.when.localeCompare(a.when)));
-
-  const renderCard = (e) => {
-    const days = dateRange(e.installDate, e.installEndDate).length;
-    const del = e.deleted;
-    const repair = isRepairJob(e);
-    return (
-      <button key={e.id} onClick={() => onOpen(e.id)}
-        className={`text-left rounded-xl border p-3.5 hover:shadow-sm transition ${
-          del ? "bg-orange-50 border-orange-200 hover:border-orange-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-        <div className="flex items-start justify-between gap-3 mb-1.5">
-          <div className="min-w-0">
-            <div className="font-semibold truncate flex items-center gap-2">
-              {e.clientName || "Unnamed client"}
-              {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
-            </div>
-            <div className="text-sm text-slate-500 flex items-center gap-1 truncate">
-              <MapPin size={13} className="shrink-0" /> {e.address || "No address"}
-            </div>
-          </div>
-          {del ? (
-            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-orange-100 text-orange-800 border-orange-300">
-              <Trash2 size={11} className="inline -mt-0.5 mr-0.5" /> Deleted
-            </span>
-          ) : (
-            <span className="text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 bg-emerald-100 text-emerald-800 border-emerald-200">
-              <Check size={11} className="inline -mt-0.5 mr-0.5" /> Complete
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-          {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-          {repair
-            ? (e.repairType && <span className="flex items-center gap-1 text-yellow-700"><Wrench size={12} /> {e.repairType}</span>)
-            : (productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>)}
-          {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
-          {e.team && <span className="flex items-center gap-1"><Users size={12} /> {teamLabel(e.team)}</span>}
-          {e.installDate && (
-            <span className="flex items-center gap-1">
-              <Calendar size={12} /> {repair ? "Repaired" : "Installed"} {fmtRange(e.installDate, e.installEndDate)}
-              {days > 1 ? ` (${days} days)` : ""}
-            </span>
-          )}
-          {!del && e.openSnags > 0 && (
-            <span className="flex items-center gap-1 text-amber-700 font-medium">
-              <AlertTriangle size={12} /> closed with {e.openSnags} open snag{e.openSnags > 1 ? "s" : ""}
-            </span>
-          )}
-        </div>
-        {del && (
-          <p className="mt-2 text-xs text-orange-700 flex items-center gap-1">
-            <Trash2 size={12} /> Deleted{e.deletedBy ? ` by ${e.deletedBy}` : ""}{e.deletedAt ? ` · ${fmtWhen(e.deletedAt)}` : ""}
-            {e.deleteReason ? ` · Reason: ${e.deleteReason}` : ""}
-          </p>
-        )}
-        {!del && e.invoiced && (
-          <p className="mt-2 text-xs text-slate-400 flex items-center gap-2">
-            <Receipt size={12} /> Invoiced {e.invoicedAt ? fmtWhen(e.invoicedAt) : ""}
-            {canUndo && (
-              <span onClick={(ev) => { ev.stopPropagation(); onUnInvoice(e.id); }}
-                className="font-medium text-blue-600 hover:underline cursor-pointer flex items-center gap-1">
-                <RotateCcw size={11} /> Move back to Completed
-              </span>
-            )}
-          </p>
-        )}
-      </button>
-    );
-  };
-
-  return (
-    <div>
-      <div className="relative mb-4">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search history by client, PO, address…"
-          className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-      </div>
-
-      {history.length === 0 ? (
-        <div className="text-center py-16 px-4">
-          <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400"><Archive size={26} /></div>
-          <p className="font-medium text-slate-700">Nothing in history yet</p>
-          <p className="text-sm text-slate-400">Jobs move here once the co-ordinator marks them Complete. Deleted projects are kept here too.</p>
-        </div>
-      ) : filtered.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
-      ) : (
-        <div className="space-y-8">
-          {/* Completed jobs */}
-          {completedKeys.length > 0 && (
-            <div className="space-y-5">
-              {completedKeys.map((k) => {
-                const [y, m] = k.split("-");
-                return (
-                  <div key={k}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
-                      {MONTHS[Number(m) - 1]} {y} <span className="text-slate-300">· {completedGroups[k].length}</span>
-                    </h3>
-                    <div className="grid gap-2">
-                      {completedGroups[k].map(renderCard)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Deleted projects — own section, only when any exist */}
-          {deletedKeys.length > 0 && (
-            <div>
-              <h2 className="text-sm font-semibold text-orange-800 mb-3 pb-1.5 border-b border-orange-200 flex items-center gap-1.5">
-                <Trash2 size={14} /> Deleted projects
-              </h2>
-              <div className="space-y-5">
-                {deletedKeys.map((k) => {
-                  const [y, m] = k.split("-");
-                  return (
-                    <div key={k}>
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-orange-400 mb-2">
-                        {MONTHS[Number(m) - 1]} {y} <span className="text-orange-300">· {deletedGroups[k].length}</span>
-                      </h3>
-                      <div className="grid gap-2">
-                        {deletedGroups[k].map(renderCard)}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   COMPLETED VIEW — finished jobs awaiting invoicing
-   Co-ordinator+ ticks "Ready to invoice" on the jobs they want in
-   this batch, then Generate invoice list produces a printable PDF
-   of just that batch and moves those jobs on to History.
-   ============================================================ */
-function CompletedView({ completedJobs, level, onOpen, onToggleReady, onInvoice }) {
-  const [q, setQ] = useState("");
-  const [generated, setGenerated] = useState(false);
-  const canInvoice = level >= 2;
-
-  const list = completedJobs.filter((e) => {
-    if (!q.trim()) return true;
-    const s = q.toLowerCase();
-    return [e.clientName, e.address, e.consultant, e.po, e.range, e.colour, e.repairType].filter(Boolean).some((x) => String(x).toLowerCase().includes(s));
-  });
-
-  const ready = completedJobs.filter((e) => e.readyToInvoice);
-
-  const generate = async () => {
-    if (ready.length === 0) return;
-    setGenerated(true);
-    // Let the batch table render before print
-    setTimeout(() => window.print(), 50);
-  };
-
-  const confirmInvoiced = async () => {
-    await onInvoice(ready.map((e) => e.id));
-    setGenerated(false);
-  };
-
-  return (
-    <div>
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          #invoice-batch, #invoice-batch * { visibility: visible !important; }
-          #invoice-batch { position: absolute; left: 0; top: 0; width: 100%; padding: 0 12px; }
-          .no-print { display: none !important; }
-        }
-      `}</style>
-
-      {generated ? (
-        <div className="mb-5">
-          <div id="invoice-batch">
-            <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Receipt size={18} /> {COMPANY_NAME} — Invoice list</h2>
-            <p className="text-sm text-slate-500 mb-3">Generated {fmtWhen(Date.now())} · {ready.length} job{ready.length === 1 ? "" : "s"}</p>
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-200">
-                  <th className="py-1.5 pr-3 font-semibold">PO</th>
-                  <th className="py-1.5 pr-3 font-semibold">Client</th>
-                  <th className="py-1.5 pr-3 font-semibold">Product</th>
-                  <th className="py-1.5 pr-3 font-semibold">Consultant</th>
-                  <th className="py-1.5 pr-3 font-semibold">Completed</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ready.map((j) => (
-                  <tr key={j.id} className="border-t border-slate-100 align-top">
-                    <td className="py-2 pr-3 whitespace-nowrap font-medium text-slate-800">{j.po || "—"}</td>
-                    <td className="py-2 pr-3">{j.clientName || "—"}</td>
-                    <td className="py-2 pr-3">{productSummary(j) || "—"}</td>
-                    <td className="py-2 pr-3">{j.consultant || "—"}</td>
-                    <td className="py-2 pr-3 whitespace-nowrap text-slate-500">{fmtDate(invoiceDate(j))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="no-print flex items-center gap-2 mt-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
-            <AlertTriangle size={16} className="text-amber-600 shrink-0" />
-            <p className="text-sm text-amber-800 flex-1">The PDF has been sent to print/save. Once accounts has the list, confirm below to move these {ready.length} job{ready.length === 1 ? "" : "s"} to History.</p>
-            <button onClick={confirmInvoiced} className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700">Confirm invoiced</button>
-            <button onClick={() => setGenerated(false)} className="shrink-0 px-3 py-1.5 rounded-lg border border-slate-200 text-sm">Cancel</button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="relative mb-4">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={q} onChange={(e) => setQ(e.target.value)}
-              placeholder="Search completed jobs by client, PO, address…"
-              className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-          </div>
-
-          {completedJobs.length === 0 ? (
-            <div className="text-center py-16 px-4">
-              <div className="h-14 w-14 rounded-2xl bg-emerald-50 flex items-center justify-center mx-auto mb-3 text-emerald-500"><Receipt size={26} /></div>
-              <p className="font-medium text-slate-700">Nothing awaiting invoicing</p>
-              <p className="text-sm text-slate-400">Jobs land here once marked Complete with no open snags.</p>
-            </div>
-          ) : list.length === 0 ? (
-            <p className="text-sm text-slate-400 text-center py-10">Nothing matches that search.</p>
-          ) : (
-            <div className="grid gap-2 mb-4">
-              {list.map((e) => {
-                const repair = isRepairJob(e);
-                return (
-                  <div key={e.id} className={`flex items-center gap-3 rounded-xl border p-3.5 transition ${e.readyToInvoice ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
-                    {canInvoice && (
-                      <input type="checkbox" checked={!!e.readyToInvoice}
-                        onChange={(ev) => onToggleReady(e.id, ev.target.checked)}
-                        className="h-5 w-5 rounded border-slate-300 shrink-0" title="Ready to invoice" />
-                    )}
-                    <button onClick={() => onOpen(e.id)} className="flex-1 min-w-0 text-left">
-                      <div className="font-semibold truncate flex items-center gap-2">
-                        {e.clientName || "Unnamed client"}
-                        {repair && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-0.5"><Wrench size={10} /> REPAIR</span>}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap mt-0.5">
-                        {e.po && <span className="flex items-center gap-1"><Hash size={12} /> {e.po}</span>}
-                        {productSummary(e) && <span className="flex items-center gap-1"><Package size={12} /> {productSummary(e)}</span>}
-                        {e.consultant && <span className="flex items-center gap-1"><User size={12} /> {e.consultant}</span>}
-                        <span className="flex items-center gap-1"><Calendar size={12} /> Completed {fmtDate(invoiceDate(e))}</span>
-                      </div>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {canInvoice && completedJobs.length > 0 && (
-            <div className="sticky bottom-4 flex items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-900 text-white shadow-lg">
-              <p className="text-sm">{ready.length} job{ready.length === 1 ? "" : "s"} ready to invoice</p>
-              <button onClick={generate} disabled={ready.length === 0}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white text-slate-900 text-sm font-medium disabled:opacity-40">
-                <Printer size={15} /> Generate invoice list
-              </button>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   REPORTS VIEW — printable daily / weekly schedule + invoicing
-   ============================================================ */
-function ReportsView({ index, level }) {
-  const [mode, setMode] = useState("daily");
-  const [date, setDate] = useState(todayISO());
-  const canInvoice = level >= 2;
-
-  const isWeekMode = mode === "weekly" || mode === "invoicing";
-  const start = isWeekMode ? startOfWeek(date) : date;
-  const end = isWeekMode ? addDays(start, 6) : date;
-  const periodLabel = mode === "daily" ? fmtDate(date) : `${fmtDate(start)} – ${fmtDate(end)}`;
-
-  const stepBack = () => setDate(addDays(date, isWeekMode ? -7 : -1));
-  const stepFwd = () => setDate(addDays(date, isWeekMode ? 7 : 1));
-
-  // ---- Schedule report (daily / weekly): installs + snag return visits ----
-  const dayList = dateRange(start, end);
-  const scheduleGroups = dayList.map((day) => {
-    const installs = index
-      .filter((e) => e.installDate && rangesOverlap(e.installDate, e.installEndDate || e.installDate, day, day))
-      .map((e) => {
-        const span = dateRange(e.installDate, e.installEndDate);
-        return { ...e, dayNo: span.indexOf(day) + 1, dayCount: span.length, _row: "install" };
-      });
-    const snags = index
-      .filter((e) => e.snagVisitDate === day && (e.snags || []).some((s) => !s.resolved))
-      .map((e) => ({ ...e, dayNo: 1, dayCount: 1, _row: "snag", _isSnag: true }));
-    const jobs = [...installs, ...snags]
-      .sort((a, b) => (a.installTime || "99").localeCompare(b.installTime || "99") || (a.clientName || "").localeCompare(b.clientName || ""));
-    return { day, jobs };
-  }).filter((g) => g.jobs.length);
-  const totalJobs = scheduleGroups.reduce((a, g) => a + g.jobs.length, 0);
-
-  // ---- Invoicing report: completed jobs in the selected week ----
-  const invoiceJobs = index
-    .filter((e) => e.status === "complete" && !e.deleted)
-    .map((e) => ({ ...e, _inv: invoiceDate(e) }))
-    .filter((e) => e._inv && e._inv >= start && e._inv <= end)
-    .sort((a, b) => a._inv.localeCompare(b._inv) || (a.clientName || "").localeCompare(b.clientName || ""));
-
-  return (
-    <div>
-      {/* Print styling — only #install-report shows on paper */}
-      <style>{`
-        @media print {
-          body * { visibility: hidden !important; }
-          #install-report, #install-report * { visibility: visible !important; }
-          #install-report { position: absolute; left: 0; top: 0; width: 100%; padding: 0 12px; }
-          .no-print { display: none !important; }
-          #install-report table { font-size: 11px; }
-          #install-report thead { display: table-header-group; }
-          #install-report tr { page-break-inside: avoid; }
-        }
-      `}</style>
-
-      {/* Controls */}
-      <div className="no-print flex flex-wrap items-center gap-2 mb-4">
-        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden">
-          {["daily", "weekly", ...(canInvoice ? ["invoicing"] : [])].map((m) => (
-            <button key={m} onClick={() => setMode(m)}
-              className={`px-3 py-2 text-sm font-medium capitalize ${mode === m ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
-              {m}
-            </button>
-          ))}
-        </div>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300" />
-        <div className="flex gap-1">
-          <button onClick={stepBack} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronLeft size={16} /></button>
-          <button onClick={() => setDate(todayISO())} className="px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50">Today</button>
-          <button onClick={stepFwd} className="p-2 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"><ChevronRight size={16} /></button>
-        </div>
-        <button onClick={() => window.print()}
-          className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
-          <Printer size={15} /> Print / Save PDF
-        </button>
-      </div>
-
-      {/* Report body */}
-      <div id="install-report">
-        {mode === "invoicing" ? (
-          <>
-            <div className="mb-4">
-              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2"><Receipt size={18} /> {COMPANY_NAME} — Invoicing</h2>
-              <p className="text-sm text-slate-500">
-                Completed installations ready for invoicing · Week of {periodLabel} · {invoiceJobs.length} job{invoiceJobs.length === 1 ? "" : "s"}
-              </p>
-            </div>
-            {invoiceJobs.length === 0 ? (
-              <p className="text-sm text-slate-400 py-10 text-center no-print">Nothing completed in this week.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-left text-xs uppercase tracking-wide text-slate-400 border-b border-slate-200">
-                      <th className="py-1.5 pr-3 font-semibold">PO</th>
-                      <th className="py-1.5 pr-3 font-semibold">Client</th>
-                      <th className="py-1.5 pr-3 font-semibold">Product</th>
-                      <th className="py-1.5 pr-3 font-semibold">Consultant</th>
-                      <th className="py-1.5 pr-3 font-semibold">Completed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invoiceJobs.map((j) => (
-                      <tr key={j.id} className="border-t border-slate-100 align-top">
-                        <td className="py-2 pr-3 whitespace-nowrap font-medium text-slate-800">{j.po || "—"}</td>
-                        <td className="py-2 pr-3">
-                          {j.clientName || "—"}
-                          {isRepairJob(j) && <span className="ml-1.5 text-[10px] font-semibold px-1 py-0.5 rounded bg-yellow-100 text-yellow-800 border border-yellow-300">Repair</span>}
-                        </td>
-                        <td className="py-2 pr-3">
-                          {isRepairJob(j)
-                            ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[11px] text-slate-400">{j.type}</span> : null}</>
-                            : (productSummary(j) || "—")}
-                        </td>
-                        <td className="py-2 pr-3">{j.consultant || "—"}</td>
-                        <td className="py-2 pr-3 whitespace-nowrap text-slate-500">{fmtDate(j._inv)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="mb-4">
-              <h2 className="text-lg font-bold text-slate-900">{COMPANY_NAME} — Installation schedule</h2>
-              <p className="text-sm text-slate-500">
-                {mode === "daily" ? "Daily" : "Weekly"} report · {periodLabel} · {totalJobs} job{totalJobs === 1 ? "" : "s"}
-              </p>
-            </div>
-
-            {scheduleGroups.length === 0 ? (
-              <p className="text-sm text-slate-400 py-10 text-center no-print">Nothing booked for this {mode === "daily" ? "day" : "week"}.</p>
-            ) : (
-              <div className="space-y-5">
-                {scheduleGroups.map((g) => (
-                  <div key={g.day}>
-                    <h3 className="text-sm font-semibold text-slate-700 mb-2 pb-1 border-b border-slate-200">
-                      {fmtDayLabel(g.day)} <span className="text-slate-400 font-normal">· {g.jobs.length} job{g.jobs.length === 1 ? "" : "s"}</span>
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm border-collapse">
-                        <thead>
-                          <tr className="text-left text-xs uppercase tracking-wide text-slate-400">
-                            <th className="py-1.5 pr-3 font-semibold">Time</th>
-                            <th className="py-1.5 pr-3 font-semibold">Client</th>
-                            <th className="py-1.5 pr-3 font-semibold">Contact</th>
-                            <th className="py-1.5 pr-3 font-semibold">Address</th>
-                            <th className="py-1.5 pr-3 font-semibold">Product</th>
-                            <th className="py-1.5 pr-3 font-semibold">Consultant</th>
-                            <th className="py-1.5 pr-3 font-semibold">Team</th>
-                            <th className="py-1.5 pr-3 font-semibold">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {g.jobs.map((j) => {
-                            const st = reportStatus(j);
-                            const sketches = !j._isSnag ? (j.sketches || []) : [];
-                            return (
-                              <React.Fragment key={`${j.id}-${j._row}`}>
-                                <tr className="border-t border-slate-100 align-top">
-                                  <td className="py-2 pr-3 whitespace-nowrap">
-                                    {j._isSnag ? (j.snagVisitDate ? "—" : "—") : (j.installTime || "TBC")}
-                                    {j.dayCount > 1 && <span className="block text-[10px] text-slate-400">Day {j.dayNo}/{j.dayCount}</span>}
-                                  </td>
-                                  <td className="py-2 pr-3 font-medium text-slate-800">{j.clientName || "—"}</td>
-                                  <td className="py-2 pr-3 whitespace-nowrap">{j.contact || "—"}</td>
-                                  <td className="py-2 pr-3">{j.address || "—"}</td>
-                                  <td className="py-2 pr-3">
-                                    {j._isSnag
-                                      ? <span className="text-red-700">Snag return · {fmtHours(snagHoursOf(j))}</span>
-                                      : isRepairJob(j)
-                                        ? <>{j.repairType ? <span className="text-yellow-700">🔧 {j.repairType}</span> : "Repair"}{j.type ? <span className="block text-[10px] text-slate-400">{j.type}</span> : null}</>
-                                        : (productSummary(j) || "—")}
-                                  </td>
-                                  <td className="py-2 pr-3">{j.consultant || "—"}</td>
-                                  <td className="py-2 pr-3 whitespace-nowrap">{j.team ? teamLabel(j.team).split(" — ")[0] : "—"}</td>
-                                  <td className="py-2 pr-3">
-                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
-                                  </td>
-                                </tr>
-                                {sketches.length > 0 && (
-                                  <tr className="border-t border-dashed border-slate-200">
-                                    <td colSpan={8} className="py-2 pr-3">
-                                      <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1.5">Job card — {j.clientName || "Unnamed"}</p>
-                                      <div className="flex flex-wrap gap-2">
-                                        {sketches.map((s) => (
-                                          <div key={s.id} className="w-40">
-                                            <img src={s.image} alt="sketch" className="w-full h-28 object-cover rounded border border-slate-300" />
-                                            {s.caption && <p className="text-[10px] text-slate-500 mt-0.5">{s.caption}</p>}
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                )}
-                              </React.Fragment>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* Status label shown on the daily/weekly report */
-function reportStatus(j) {
-  if (j._isSnag) return { label: "Snag", cls: "bg-red-100 text-red-800 border-red-200" };
-  if (isRepairJob(j)) return { label: "Repair", cls: "bg-yellow-100 text-yellow-800 border-yellow-300" };
-  if (j.reserved && !j.materialReceivedDate) return { label: "Reserved", cls: "bg-white text-slate-500 border-dashed border-slate-300" };
-  return { label: "Installation", cls: "bg-blue-100 text-blue-800 border-blue-200" };
-}
-
-/* ============================================================
-   TRACKING REPORT — co-ordinator+ only
-   Per-consultant totals: projects, m² by product type and by range,
-   and snags logged (by category, and by range × category so a
-   pattern like "mostly wrong on one specific range" is visible).
-   Repairs are excluded entirely.
-   ============================================================ */
-function TrackingReportView({ index }) {
-  const [productFilter, setProductFilter] = useState("all");
-  const [allTime, setAllTime] = useState(true);
-  const [fromDate, setFromDate] = useState(addDays(todayISO(), -90));
-  const [toDate, setToDate] = useState(todayISO());
-
-  // Base pool: non-deleted, non-repair jobs only
-  const pool = useMemo(() => {
-    return index.filter((e) => !e.deleted && !isRepairJob(e)).filter((e) => {
-      if (productFilter !== "all" && e.type !== productFilter) return false;
-      if (!allTime) {
-        const anchor = e.orderDate || "";
-        if (!anchor) return false;
-        if (anchor < fromDate || anchor > toDate) return false;
-      }
-      return true;
-    });
-  }, [index, productFilter, allTime, fromDate, toDate]);
-
-  // Group by consultant
-  const byConsultant = useMemo(() => {
-    const map = {};
-    pool.forEach((e) => {
-      const name = e.consultant || "Unassigned";
-      if (!map[name]) map[name] = { name, projects: 0, sqmByType: {}, sqmByRange: {}, snags: 0, snagsByCat: {}, snagsByRangeCat: {} };
-      map[name].projects += 1;
-      if (e.sqm) {
-        const t = e.type || "Other";
-        const n = parseFloat(e.sqm);
-        if (!isNaN(n)) {
-          map[name].sqmByType[t] = (map[name].sqmByType[t] || 0) + n;
-          if (e.range) {
-            const rKey = `${t} · ${e.range}`;
-            map[name].sqmByRange[rKey] = (map[name].sqmByRange[rKey] || 0) + n;
-          }
-        }
-      }
-      (e.snags || []).forEach((s) => {
-        map[name].snags += 1;
-        const cat = s.category || "Uncategorised";
-        map[name].snagsByCat[cat] = (map[name].snagsByCat[cat] || 0) + 1;
-        const rcKey = `${e.range || "No range"} · ${cat}`;
-        map[name].snagsByRangeCat[rcKey] = (map[name].snagsByRangeCat[rcKey] || 0) + 1;
-      });
-    });
-    return Object.values(map).sort((a, b) => b.projects - a.projects);
-  }, [pool]);
-
-  // Overall snag summary across all consultants
-  const overallSnags = useMemo(() => {
-    const totals = {};
-    let grand = 0;
-    pool.forEach((e) => {
-      (e.snags || []).forEach((s) => {
-        const cat = s.category || "Uncategorised";
-        totals[cat] = (totals[cat] || 0) + 1;
-        grand += 1;
-      });
-    });
-    return { totals, grand };
-  }, [pool]);
-
-  // Overall snags by range × category, all consultants combined — surfaces
-  // product-driven patterns (e.g. one range generating most snags for everyone)
-  const overallByRange = useMemo(() => {
-    const totals = {};
-    pool.forEach((e) => {
-      (e.snags || []).forEach((s) => {
-        const cat = s.category || "Uncategorised";
-        const key = `${e.range || "No range"} · ${cat}`;
-        totals[key] = (totals[key] || 0) + 1;
-      });
-    });
-    return Object.entries(totals).sort((a, b) => b[1] - a[1]);
-  }, [pool]);
-
-  const totalProjects = pool.length;
-  const totalSqm = pool.reduce((a, e) => a + (parseFloat(e.sqm) || 0), 0);
-
-  return (
-    <div>
-      <div className="mb-4">
-        <h2 className="font-semibold text-slate-900">Tracking Report</h2>
-        <p className="text-xs text-slate-500 mt-0.5">Per-consultant totals · projects, m² (by type &amp; range) and logged snags (by category &amp; range). Repairs are excluded.</p>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 mb-4 p-3 rounded-xl bg-white border border-slate-200">
-        <div>
-          <label className="text-[11px] text-slate-500 mb-1 block">Product type</label>
-          <select value={productFilter} onChange={(e) => setProductFilter(e.target.value)}
-            className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-            <option value="all">All types</option>
-            {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-        <div className="flex items-center gap-2">
-          <div>
-            <label className="text-[11px] text-slate-500 mb-1 block">From</label>
-            <input type="date" value={fromDate} disabled={allTime} onChange={(e) => setFromDate(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm disabled:opacity-40" />
-          </div>
-          <div>
-            <label className="text-[11px] text-slate-500 mb-1 block">To</label>
-            <input type="date" value={toDate} disabled={allTime} onChange={(e) => setToDate(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm disabled:opacity-40" />
-          </div>
-        </div>
-        <button onClick={() => setAllTime((v) => !v)}
-          className={`self-end mb-0.5 flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg border transition ${
-            allTime ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
-          All time
-        </button>
-        <div className="ml-auto text-right">
-          <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold">In view</p>
-          <p className="text-sm font-semibold text-slate-800">{totalProjects} projects · {totalSqm.toFixed(1)}m²</p>
-        </div>
-      </div>
-
-      {byConsultant.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-10">No projects match these filters.</p>
-      ) : (
-        <div className="grid gap-3 mb-6">
-          {byConsultant.map((c) => (
-            <div key={c.name} className="bg-white rounded-xl border border-slate-200 p-4">
-              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                <h3 className="font-semibold text-slate-900 flex items-center gap-1.5"><User size={15} /> {c.name}</h3>
-                <div className="flex items-center gap-3 text-xs text-slate-500">
-                  <span className="font-medium text-slate-700">{c.projects}</span> project{c.projects === 1 ? "" : "s"}
-                  <span className="text-slate-300">·</span>
-                  <span className="font-medium text-slate-700">{c.snags}</span> snag{c.snags === 1 ? "" : "s"}
-                </div>
-              </div>
-              {Object.keys(c.sqmByType).length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {Object.entries(c.sqmByType).map(([type, sqm]) => (
-                    <span key={type} className="text-[11px] font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-100">
-                      {type}: {sqm.toFixed(1)}m²
-                    </span>
-                  ))}
-                </div>
-              )}
-              {Object.keys(c.sqmByRange).length > 0 && (
-                <div className="mb-2">
-                  <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">By range</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(c.sqmByRange).map(([key, sqm]) => (
-                      <span key={key} className="text-[11px] font-medium px-2 py-1 rounded-full bg-blue-50/60 text-blue-600 border border-blue-100">
-                        {key}: {sqm.toFixed(1)}m²
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {c.snags > 0 && (
-                <div className="mb-2">
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(c.snagsByCat).map(([cat, n]) => (
-                      <span key={cat} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-100">
-                        {cat}: {n}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {Object.keys(c.snagsByRangeCat).length > 0 && (
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Snags by range</p>
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(c.snagsByRangeCat).sort((a, b) => b[1] - a[1]).map(([key, n]) => (
-                      <span key={key} className="text-[11px] font-medium px-2 py-1 rounded-full bg-red-50/60 text-red-600 border border-red-100">
-                        {key}: {n}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Overall snag summary */}
-      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 mb-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Overall snag summary — all consultants</h3>
-        {overallSnags.grand === 0 ? (
-          <p className="text-sm text-slate-400">No snags logged in this view.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-800 text-white">Total: {overallSnags.grand}</span>
-            {Object.entries(overallSnags.totals).map(([cat, n]) => (
-              <span key={cat} className="text-xs font-medium px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200">
-                {cat}: {n}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Overall snags by range — spot product-driven patterns across everyone */}
-      <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Snags by range — all consultants</h3>
-        {overallByRange.length === 0 ? (
-          <p className="text-sm text-slate-400">No snags logged in this view.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {overallByRange.map(([key, n]) => (
-              <span key={key} className="text-xs font-medium px-2.5 py-1 rounded-full bg-white text-slate-700 border border-slate-200">
-                {key}: {n}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================
-   AVAILABILITY VIEW — co-ordinator only
-   Shows next 3 months of weekdays (Mon–Fri) with free hours.
-   Fridays cap at 7h (09:00–16:00), all other days 8h.
-   ============================================================ */
-function AvailabilityView({ index }) {
-  const today = todayISO();
-
-  // Build load map (installs + snag return visits)
-  const loadByDate = useMemo(() => {
-    const map = {};
-    index.forEach((e) => {
-      if (e.installDate) {
-        dateRange(e.installDate, e.installEndDate).forEach((d) => {
-          map[d] = (map[d] || 0) + dayLoad(e, d);
-        });
-      }
-      if (e.snagVisitDate && (e.snags || []).some((s) => !s.resolved)) {
-        map[e.snagVisitDate] = (map[e.snagVisitDate] || 0) + snagHoursOf(e);
-      }
-    });
-    return map;
-  }, [index]);
-
-  // Safe counter-based loop — no string comparison, guaranteed to finish
-  const days = useMemo(() => {
-    const result = [];
-    for (let i = 0; i <= 90; i++) {
-      const d = addDays(today, i);
-      if (!isWeekend(d)) result.push(d);
-    }
-    return result;
-  }, [today]);
-
-  // Group by week
-  const weekGroups = useMemo(() => {
-    const weeks = {};
-    days.forEach((d) => {
-      const wk = startOfWeek(d);
-      (weeks[wk] = weeks[wk] || []).push(d);
-    });
-    return Object.keys(weeks).sort().map((wk) => ({ wk, days: weeks[wk] }));
-  }, [days]);
-
-  const freeHours = (d) => Math.max(0, dayCapacity(d) - (loadByDate[d] || 0));
-  const isFull = (d) => freeHours(d) === 0;
-  const isLimited = (d) => !isFull(d) && freeHours(d) < dayCapacity(d) / 2;
-  const dotColor = (d) => isFull(d) ? "bg-red-500" : isLimited(d) ? "bg-amber-400" : "bg-emerald-500";
-  const cardColor = (d) => isFull(d) ? "bg-red-50 border-red-100" : isLimited(d) ? "bg-amber-50 border-amber-100" : "bg-emerald-50 border-emerald-100";
-  const textColor = (d) => isFull(d) ? "text-red-700" : isLimited(d) ? "text-amber-800" : "text-emerald-800";
-  const isFriday = (d) => new Date(d + "T00:00:00").getDay() === 5;
-  const nextFree = days.find((d) => freeHours(d) === dayCapacity(d));
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="font-semibold text-slate-900">Availability — next 3 months</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Weekdays only · Mon–Thu 8h · Fri 7h (09:00–16:00)</p>
-        </div>
-        {nextFree && (
-          <div className="text-right">
-            <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold">Next fully free day</p>
-            <p className="text-sm font-semibold text-emerald-700">{fmtDayLabel(nextFree)}</p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex gap-3 mb-4 text-xs text-slate-600">
-        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Available</span>
-        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Limited (&lt;50% free)</span>
-        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Full</span>
-      </div>
-
-      <div className="space-y-4">
-        {weekGroups.map(({ wk, days: wkDays }) => {
-          const allFull = wkDays.every(isFull);
-          return (
-            <div key={wk}>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
-                Week of {fmtDate(wk)}
-                {allFull && <span className="ml-2 text-red-500">· Fully booked</span>}
-              </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-                {wkDays.map((d) => {
-                  const free = freeHours(d);
-                  const cap = dayCapacity(d);
-                  const pct = Math.min(100, ((cap - free) / cap) * 100);
-                  const isToday = d === today;
-                  return (
-                    <div key={d} className={`rounded-xl border p-3 ${cardColor(d)} ${isToday ? "ring-2 ring-slate-900" : ""}`}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className={`text-xs font-semibold ${textColor(d)}`}>
-                          {fmtDayLabel(d)}{isFriday(d) ? " ·Fri" : ""}
-                          {isToday && <span className="ml-1 text-slate-900">· Today</span>}
-                        </span>
-                        <span className={`h-2 w-2 rounded-full shrink-0 ${dotColor(d)}`} />
-                      </div>
-                      <div className="h-1.5 rounded-full bg-white/60 overflow-hidden mb-1.5">
-                        <div className={`h-full ${isFull(d) ? "bg-red-400" : isLimited(d) ? "bg-amber-400" : "bg-emerald-400"}`}
-                          style={{ width: `${pct}%` }} />
-                      </div>
-                      <p className={`text-[11px] font-medium ${textColor(d)}`}>
-                        {isFull(d) ? "Full" : `${fmtHours(free)} of ${fmtHours(cap)} free`}
-                      </p>
-                      {(loadByDate[d] || 0) > 0 && !isFull(d) && (
-                        <p className="text-[10px] text-slate-500 mt-0.5">{fmtHours(loadByDate[d])} booked</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================
-   MENU DRAWER
-   ============================================================ */
-function MenuDrawer({ user, level, index, historyCount, completedCount, snagTotal, view, onView, onSignIn, onSignOut, onNew, onFilter, onClose }) {
-  const today = todayISO();
-  const week = addDays(today, 7);
-  const dueSoon = index.filter((e) => e.materialEta && e.materialEta >= today && e.materialEta <= week && e.status === "ordered").length;
-  const installsSoon = index.filter((e) => e.installDate && e.installDate >= today && e.installDate <= week).length;
-  const awaitingBooking = index.filter((e) => e.status === "material_received" && !e.installDate).length;
-  const snagCount = index.reduce((a, e) => a + (e.openSnags || 0), 0);
-  const canCreate = level >= 2;
-
-  return (
-    <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="bg-white w-72 max-w-[85vw] h-full shadow-xl flex flex-col">
-        <div className="p-4 border-b border-slate-200">
-          <div className="flex items-center justify-between mb-3">
-            <div className="h-9 w-9 rounded-lg bg-slate-900 flex items-center justify-center text-white"><ClipboardList size={18} /></div>
-            <button onClick={onClose} className="p-2 -mr-2 rounded-lg text-slate-400 hover:bg-slate-100"><X size={18} /></button>
-          </div>
-          <p className="font-semibold leading-tight">{COMPANY_NAME}</p>
-          {user ? (
-            <p className="text-xs text-slate-500 mt-0.5">Signed in as <span className="font-medium text-slate-700">{user.name}</span> · {ROLES[level].name}</p>
-          ) : (
-            <p className="text-xs text-slate-500 mt-0.5">Not signed in · view only</p>
-          )}
-        </div>
-
-        <nav className="p-2 flex-1 overflow-y-auto">
-          {canCreate && (
-            <button onClick={onNew} className="w-full flex items-center gap-2 mb-2 px-3 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+        <div className="flex items-center gap-3 shrink-0">
+          {isCoord && (
+            <button onClick={() => setShowCreate(true)} className={`${btnPrimary} flex items-center gap-1.5`}>
               <Plus size={16} /> New project
             </button>
           )}
-          <MenuItem icon={ClipboardList} label="Projects" active={view === "projects"} onClick={() => onView("projects")} />
-          <MenuItem icon={CalendarDays} label="Calendar" active={view === "calendar"} onClick={() => onView("calendar")} />
-          <MenuItem icon={Flag} label="Snags" active={view === "snags"} badge={snagTotal} danger onClick={() => onView("snags")} />
-          <MenuItem icon={FileText} label="Reports" active={view === "reports"} onClick={() => onView("reports")} />
-          <MenuItem icon={Receipt} label="Completed" active={view === "completed"} badge={completedCount} onClick={() => onView("completed")} />
-          {level >= 2 && <MenuItem icon={CalendarCheck} label="Availability" active={view === "availability"} onClick={() => onView("availability")} />}
-          {level >= 2 && <MenuItem icon={Users} label="Tracking Report" active={view === "tracking"} onClick={() => onView("tracking")} />}
-          <MenuItem icon={Archive} label="History" active={view === "history"} badge={historyCount} onClick={() => onView("history")} />
-
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">Quick filters</p>
-          <MenuItem icon={Package} label="Awaiting material" badge={index.filter((e) => e.status === "ordered").length} onClick={() => onFilter("ordered")} />
-          <MenuItem icon={StickyNote} label="Awaiting booking" badge={awaitingBooking} onClick={() => onFilter("material_received")} />
-          <MenuItem icon={Calendar} label="Scheduled" badge={index.filter((e) => e.status === "scheduled").length} onClick={() => onFilter("scheduled")} />
-          <MenuItem icon={AlertTriangle} label="Open snags" badge={snagCount} danger onClick={() => onFilter("snags")} />
-
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 px-3 pt-4 pb-1">This week</p>
-          <div className="px-3 py-2 text-sm text-slate-600 space-y-1">
-            <p className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber-500" /> {dueSoon} material deliver{dueSoon === 1 ? "y" : "ies"} due</p>
-            <p className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-blue-500" /> {installsSoon} installation{installsSoon === 1 ? "" : "s"} starting</p>
+          <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 2)">
+            <Bell size={18} />
+          </button>
+          <div className="flex items-center gap-2 pl-2">
+            <div className="w-9 h-9 rounded-full bg-[#21262d] border border-[#30363d] flex items-center justify-center text-sm font-semibold">
+              {user.name.slice(0, 2).toUpperCase()}
+            </div>
+            <span className="text-sm hidden sm:block">{user.name}</span>
+            <button onClick={logout} className="p-1.5 rounded-md hover:bg-[#161b22] text-slate-400" title="Sign out"><LogOut size={16} /></button>
           </div>
-        </nav>
+        </div>
+      </header>
 
-        <div className="p-3 border-t border-slate-200">
-          {user ? (
-            <button onClick={onSignOut} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg border border-slate-200 text-sm font-medium text-slate-600 hover:bg-slate-50">
-              <Lock size={15} /> Sign out
-            </button>
-          ) : (
-            <button onClick={onSignIn} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
-              <Unlock size={15} /> Sign in with PIN
-            </button>
+      <div className="flex flex-1 min-h-0">
+        {/* Sidebar */}
+        <aside className="print:hidden w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col">
+          <nav className="space-y-1">
+            {nav.map((n) => {
+              const activeNav = view === n.id;
+              return (
+                <button
+                  key={n.id} onClick={() => setView(n.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+                >
+                  <n.icon size={18} />
+                  <span className="flex-1 text-left">{n.label}</span>
+                  {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="mt-6 pt-4 border-t border-[#30363d]">
+            <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
+            {DEPARTMENTS.map((d) => (
+              <button
+                key={d.id} onClick={() => setView(`dept:${d.id}`)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.id}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+              >
+                <d.icon size={16} /> {d.label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-auto pt-4 text-[10px] text-slate-500 tracking-wider">
+            FLOORING | BLINDS | SHUTTERS | FIREPLACES
+          </div>
+        </aside>
+
+        {/* Main */}
+        <main className="flex-1 min-w-0 p-6 overflow-auto print:p-0">
+          {error && (
+            <div className="print:hidden mb-4 rounded-xl border border-red-500/40 bg-red-500/10 text-red-300 text-sm px-4 py-3 flex items-center justify-between">
+              <span>{error}. Check the Supabase URL/key at the top of App.jsx and that the {TABLE} table exists.</span>
+              <button onClick={refresh} className="underline">Retry</button>
+            </div>
           )}
+          {loading ? (
+            <div className="text-slate-400 text-sm">Loading…</div>
+          ) : view === "home" ? (
+            <HomeView user={user} lists={lists} setView={setView} />
+          ) : view === "reports" ? (
+            <ReportsView projects={active} />
+          ) : view.startsWith("dept:") ? (
+            <CalendarView
+              dept={deptOf(view.slice(5))} projects={active.filter((p) => p.department === view.slice(5))}
+              isCoord={isCoord} user={user} save={save} onOpen={setSelected}
+            />
+          ) : (
+            <ListView
+              title={nav.find((n) => n.id === view)?.label} status={view}
+              items={lists[view].filter(matches)} onOpen={setSelected} level={level}
+            />
+          )}
+        </main>
+      </div>
+
+      {/* Modals */}
+      {(showCreate || editing) && (
+        <ProjectForm
+          initial={editing} user={user}
+          onClose={() => { setShowCreate(false); setEditing(null); }}
+          onSave={async (p) => { await save(p, editing ? "Project updated" : "Project created"); setShowCreate(false); setEditing(null); if (editing) setSelected(p); }}
+        />
+      )}
+      {selected && (
+        <ProjectDetail
+          project={projects.find((p) => p.id === selected.id) || selected}
+          user={user} isCoord={isCoord} isDev={isDev} save={save}
+          onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
+        />
+      )}
+      {toast && (
+        <div className="print:hidden fixed bottom-5 right-5 bg-[#161b22] border border-[#30363d] text-sm px-4 py-2.5 rounded-xl shadow-xl">{toast}</div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   HOME DASHBOARD
+   ========================================================= */
+function HomeView({ user, lists, setView }) {
+  const myCount = lists.placed.length + lists.received.length;
+  const cards = [
+    { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
+    { id: "placed", label: "Placed orders", count: lists.placed.length, icon: ClipboardList, color: "bg-green-600" },
+    { id: "received", label: "Received orders", count: lists.received.length, icon: Truck, color: "bg-amber-500" },
+    { id: "booked", label: "Booked orders", count: lists.booked.length, icon: CalendarDays, color: "bg-violet-600" },
+    { id: "completed", label: "Completed orders", count: lists.completed.length, icon: CheckCircle2, color: "bg-teal-600" },
+  ];
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-7">
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <div className="text-slate-400 text-sm tracking-[0.2em]">WELCOME BACK</div>
+          <h1 className="text-3xl font-bold text-white mt-1">{user.name}</h1>
+          <p className="text-slate-400 mt-2 text-sm max-w-md">Manage your orders, track progress and keep everything on schedule.</p>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-300"><Calendar size={16} /> {fmt(todayIso())}</div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,1fr)_1.6fr] gap-5">
+        <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl p-3 space-y-2">
+          {cards.map((c) => (
+            <button
+              key={c.id} onClick={() => c.id !== "signed" && setView(c.id)}
+              className="w-full flex items-center gap-4 bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-4 text-left"
+            >
+              <div className={`w-11 h-11 rounded-full ${c.color} flex items-center justify-center text-white shrink-0`}><c.icon size={20} /></div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-white">{c.label}</div>
+                {c.sub && <div className="text-xs text-slate-400">{c.sub}</div>}
+              </div>
+              <span className="w-10 h-10 rounded-full bg-[#21262d] flex items-center justify-center text-sm font-semibold">{c.count}</span>
+              <ChevronRight size={18} className="text-slate-500" />
+            </button>
+          ))}
+        </div>
+        <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl p-3 space-y-3">
+          {DEPARTMENTS.map((d) => (
+            <button
+              key={d.id} onClick={() => setView(`dept:${d.id}`)}
+              className="w-full h-24 rounded-xl border border-[#30363d] flex items-center px-6 gap-5 text-left relative overflow-hidden group"
+              style={{ background: `linear-gradient(90deg, ${d.to} 0%, ${d.to} 35%, ${d.from} 100%)` }}
+            >
+              <div
+                className="absolute inset-y-0 right-0 w-1/2 opacity-40"
+                style={{ backgroundImage: `repeating-linear-gradient(${d.id === "shutters" || d.id === "blinds" ? "180deg" : "45deg"}, rgba(255,255,255,0.08) 0 6px, transparent 6px 18px)` }}
+              />
+              <d.icon size={40} className="text-white relative" strokeWidth={1.5} />
+              <span className="text-2xl font-semibold text-white relative">{d.label}</span>
+              <ChevronRight size={24} className="ml-auto text-white/80 relative" />
+            </button>
+          ))}
         </div>
       </div>
     </div>
   );
 }
-function MenuItem({ icon: Icon, label, active, badge, danger, onClick }) {
+
+/* =========================================================
+   LIST VIEWS (placed / received / booked / completed)
+   ========================================================= */
+function ListView({ title, status, items, onOpen, level }) {
   return (
-    <button onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
-        active ? "bg-slate-100 text-slate-900" : "text-slate-600 hover:bg-slate-50"}`}>
-      <Icon size={16} className={danger && badge > 0 ? "text-red-500" : ""} />
-      <span className="flex-1 text-left">{label}</span>
-      {badge > 0 && (
-        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${danger ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>{badge}</span>
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="flex items-baseline justify-between mb-5">
+        <h1 className="text-2xl font-bold text-white">{title}</h1>
+        <span className="text-sm text-slate-400">{items.length} {items.length === 1 ? "order" : "orders"}{level === 1 && (status === "placed" || status === "received") ? " of yours" : ""}</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-slate-400 text-sm py-10 text-center border border-dashed border-[#30363d] rounded-xl">Nothing here yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((p) => {
+            const d = deptOf(p.department);
+            return (
+              <button key={p.id} onClick={() => onOpen(p)} className="w-full text-left bg-[#0d1117] hover:bg-[#12181f] border border-[#30363d] rounded-xl p-4 grid grid-cols-12 gap-3 items-center">
+                <div className="col-span-12 md:col-span-4 min-w-0">
+                  <div className="font-medium text-white truncate">{p.clientName}</div>
+                  <div className="text-xs text-slate-400 truncate">{p.address}</div>
+                </div>
+                <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
+                <div className="col-span-6 md:col-span-2 text-sm text-slate-300 truncate">{p.productType}</div>
+                <div className="col-span-6 md:col-span-2 text-xs text-slate-400">
+                  {status === "placed" || status === "received" ? <>ETA {fmtShort(p.materialEta)}</> :
+                   status === "booked" ? <>{fmtShort(p.installDate)}{p.installEndDate !== p.installDate ? ` – ${fmtShort(p.installEndDate)}` : ""} · {p.installTime}</> :
+                   <>Done {fmtShort((p.installedAt || "").slice(0, 10))}</>}
+                </div>
+                <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
+                  <span className="truncate">PO {p.po} · {p.consultant}</span>
+                  <Badge status={p.status} />
+                </div>
+              </button>
+            );
+          })}
+        </div>
       )}
-    </button>
+    </div>
   );
 }
 
-/* ============================================================
-   NEW PROJECT FORM (installation or repair)
-   ============================================================ */
-function ProjectForm({ onClose, onSave }) {
-  const [kind, setKind] = useState("installation"); // "installation" | "repair"
-  const [f, setF] = useState({
-    clientName: "", contact: "", address: "", po: "",
-    type: "", range: "", colour: "", sqm: "", repairType: "",
-    consultant: "", team: "", orderDate: todayISO(), materialEta: "", reserved: false,
+/* =========================================================
+   CREATE / EDIT PROJECT
+   ========================================================= */
+function ProjectForm({ initial, user, onClose, onSave }) {
+  const [f, setF] = useState(() => initial || {
+    clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds",
+    productType: "", materialEta: todayIso(), installDays: 1, jobCards: [],
   });
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const isRepair = kind === "repair";
-  const consultantOptions = isRepair ? REPAIR_CONSULTANTS : CONSULTANTS;
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const fileRef = useRef();
 
-  const submit = () => {
-    if (!f.clientName.trim()) return;
-    const base = {
-      id: uid(),
-      clientName: f.clientName, contact: f.contact, address: f.address, po: f.po,
-      type: f.type, consultant: f.consultant, team: f.team, orderDate: f.orderDate,
-      status: "ordered", snags: [], log: [],
-      installTime: "", installDate: "", installEndDate: "", estHours: "",
-      snagVisitDate: "", completedAt: null, createdAt: Date.now(), updatedAt: Date.now(),
-    };
-    const extra = isRepair
-      ? { kind: "repair", repairType: f.repairType, range: "", colour: "", sqm: "", materialEta: "", reserved: false }
-      : { kind: "installation", range: f.range, colour: f.colour, sqm: f.sqm, materialEta: f.materialEta, reserved: f.reserved };
-    onSave({ ...base, ...extra });
+  const addFiles = async (files) => {
+    setBusy(true);
+    const cards = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      cards.push({ id: uid(), image: await compressImage(file), createdAt: new Date().toISOString(), author: user.name });
+    }
+    set("jobCards", [...(f.jobCards || []), ...cards]);
+    setBusy(false);
+  };
+
+  const valid = f.clientName.trim() && f.po.trim() && f.materialEta;
+  const submit = async () => {
+    if (!valid) return;
+    setBusy(true);
+    const now = new Date().toISOString();
+    const p = initial
+      ? { ...f, installDays: Number(f.installDays) || 1 }
+      : { ...f, id: uid(), createdAt: now, createdBy: user.name, status: "ordered", received: false, installed: false, installDays: Number(f.installDays) || 1,
+          log: [{ id: uid(), text: "Project created", author: user.name, createdAt: now }] };
+    // keep calendar end date in sync if the duration changed on an already-booked job
+    if (p.installDate) p.installEndDate = installEnd(p.installDate, p.installDays);
+    await onSave(p);
+    setBusy(false);
   };
 
   return (
-    <Modal onClose={onClose}>
-      <div className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-lg">New {isRepair ? "repair" : "project"}</h2>
-          <button onClick={onClose} className="p-2 -m-1 rounded-lg text-slate-400 hover:bg-slate-100"><X size={20} /></button>
-        </div>
-
-        {/* Kind switch */}
-        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden mb-4">
-          <button onClick={() => setKind("installation")}
-            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${kind === "installation" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
-            <Package size={15} /> Installation
-          </button>
-          <button onClick={() => setKind("repair")}
-            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium ${kind === "repair" ? "bg-yellow-500 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}>
-            <Wrench size={15} /> Repair
-          </button>
-        </div>
-
-        <div className="space-y-3">
-          <Input label="Client name *" value={f.clientName} onChange={(v) => set("clientName", v)} autoFocus />
-          <Input label="Client contact (phone / email)" value={f.contact} onChange={(v) => set("contact", v)} />
-          <Input label="Address" value={f.address} onChange={(v) => set("address", v)} />
-          <Input label="Internal PO number" value={f.po} onChange={(v) => set("po", v)} />
-
-          {isRepair ? (
-            <>
-              <div>
-                <label className="text-xs text-slate-500 mb-1 block">Product type</label>
-                <select value={f.type} onChange={(e) => set("type", e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                  <option value="">Select…</option>
-                  {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <Input label="Repair type (what needs doing)" value={f.repairType} onChange={(v) => set("repairType", v)} />
-            </>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Type</label>
-                  <select value={f.type} onChange={(e) => { const t = e.target.value; setF((p) => ({ ...p, type: t, range: "" })); }}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                    <option value="">Select…</option>
-                    {PRODUCT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+    <Modal title={initial ? "Edit project" : "New project"} onClose={onClose} wide>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Field label="Client name"><input className={inputCls} value={f.clientName} onChange={(e) => set("clientName", e.target.value)} autoFocus /></Field>
+        <Field label="Contact number"><input className={inputCls} value={f.contact} onChange={(e) => set("contact", e.target.value)} /></Field>
+        <div className="md:col-span-2"><Field label="Address"><input className={inputCls} value={f.address} onChange={(e) => set("address", e.target.value)} /></Field></div>
+        <Field label="Purchase order number"><input className={inputCls} value={f.po} onChange={(e) => set("po", e.target.value)} /></Field>
+        <Field label="Consultant">
+          <select className={inputCls} value={f.consultant} onChange={(e) => set("consultant", e.target.value)}>
+            {CONSULTANTS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Department">
+          <select className={inputCls} value={f.department} onChange={(e) => set("department", e.target.value)}>
+            {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Product type"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Roller blinds, Belgotex Loft" /></Field>
+        <Field label="Material ETA"><input type="date" className={inputCls} value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} /></Field>
+        <Field label="Estimated install duration (working days)"><input type="number" min="1" max="30" className={inputCls} value={f.installDays} onChange={(e) => set("installDays", e.target.value)} /></Field>
+        <div className="md:col-span-2">
+          <Field label="Job cards (JPEG)">
+            <div
+              className="border border-dashed border-[#30363d] rounded-xl p-4 text-center text-sm text-slate-400 hover:border-[#1f6feb] cursor-pointer"
+              onClick={() => fileRef.current.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); addFiles([...e.dataTransfer.files]); }}
+            >
+              <Upload size={18} className="mx-auto mb-1" />
+              Click or drop images here — you can add more than one
+              <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/*" multiple hidden onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} />
+            </div>
+          </Field>
+          {(f.jobCards || []).length > 0 && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mt-3">
+              {f.jobCards.map((c) => (
+                <div key={c.id} className="relative group">
+                  <img src={c.image} alt="Job card" className="w-full h-24 object-cover rounded-lg border border-[#30363d]" />
+                  <button onClick={() => set("jobCards", f.jobCards.filter((x) => x.id !== c.id))} className="absolute top-1 right-1 p-1 rounded-md bg-black/70 text-white opacity-0 group-hover:opacity-100"><X size={12} /></button>
                 </div>
-                <Input label="Square meters (m²)" value={f.sqm} onChange={(v) => set("sqm", v)} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">Range</label>
-                  {rangesForType(f.type).length > 0 ? (
-                    <select value={f.range} onChange={(e) => set("range", e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-                      <option value="">Select…</option>
-                      {rangesForType(f.type).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
-                    </select>
-                  ) : f.type === "Turf" || f.type === "Novillon" ? (
-                    <select disabled className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-slate-50 text-slate-400">
-                      <option>Coming soon</option>
-                    </select>
-                  ) : (
-                    <input value={f.range} onChange={(e) => set("range", e.target.value)} disabled={!f.type}
-                      placeholder={f.type ? "" : "Select a type first"}
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:bg-slate-50 disabled:text-slate-400" />
-                  )}
-                </div>
-                <Input label="Colour" value={f.colour} onChange={(v) => set("colour", v)} />
-              </div>
-            </>
-          )}
-
-          <div>
-            <label className="text-xs text-slate-500 mb-1 block">Consultant{isRepair ? " / logged by" : ""}</label>
-            <select value={f.consultant} onChange={(e) => set("consultant", e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-              <option value="">Select…</option>
-              {consultantOptions.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 mb-1 block">Installation team</label>
-            <select value={f.team} onChange={(e) => set("team", e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-              <option value="">Unassigned</option>
-              {TEAMS.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
-          </div>
-          <div className={`grid ${isRepair ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
-            <div><label className="text-xs text-slate-500 mb-1 block">{isRepair ? "Logged date" : "Order date"}</label>
-              <input type="date" value={f.orderDate} onChange={(e) => set("orderDate", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
-            {!isRepair && (
-              <div><label className="text-xs text-slate-500 mb-1 block">Material ETA</label>
-                <input type="date" value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" /></div>
-            )}
-          </div>
-
-          {!isRepair && (
-            <label className="flex items-center gap-2 pt-1 cursor-pointer">
-              <input type="checkbox" checked={f.reserved} onChange={(e) => set("reserved", e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
-              <span className="text-sm text-slate-700">Pencil in as <b>Reserved</b> (material not yet arrived — shows as unconfirmed on the calendar)</span>
-            </label>
-          )}
-          {isRepair && (
-            <p className="text-xs text-slate-400 pt-1">Repairs skip the material stage. Schedule from the yellow tray on the Calendar.</p>
+              ))}
+            </div>
           )}
         </div>
-        <button onClick={submit} disabled={!f.clientName.trim()}
-          className="w-full mt-5 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-40">Create {isRepair ? "repair" : "project"}</button>
+      </div>
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={submit} disabled={!valid || busy} className={btnPrimary}>{busy ? "Saving…" : initial ? "Save changes" : "Create project"}</button>
       </div>
     </Modal>
   );
 }
 
-/* ============================================================
-   SMALL UI PIECES
-   ============================================================ */
-function Chip({ children, active, onClick, danger }) {
-  return (
-    <button onClick={onClick}
-      className={`shrink-0 flex items-center text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-        active ? (danger ? "bg-red-600 text-white border-red-600" : "bg-slate-900 text-white border-slate-900")
-               : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
-      {children}
-    </button>
-  );
-}
-function SectionTitle({ children, noMargin }) {
-  return <h3 className={`text-xs font-semibold uppercase tracking-wide text-slate-400 ${noMargin ? "" : "mb-2"}`}>{children}</h3>;
-}
-function Field({ icon: Icon, label, value, editMode, onChange, onBlur }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Icon size={12} /> {label}</label>
-      {editMode ? (
-        <input value={value || ""} onChange={(e) => onChange(e.target.value)} onBlur={onBlur}
-          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-      ) : <p className="text-sm text-slate-800">{value || "—"}</p>}
+/* =========================================================
+   PROJECT DETAIL
+   ========================================================= */
+function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit }) {
+  const d = deptOf(p.department);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [reason, setReason] = useState("");
+  const [lightbox, setLightbox] = useState(null);
+  const now = () => new Date().toISOString();
+  const log = (text) => [...(p.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
+
+  const markReceived = () => save({ ...p, status: "received", received: true, receivedAt: now(), log: log("Material received") }, "Marked as received");
+  const undoReceived = () => save({ ...p, status: "ordered", received: false, receivedAt: null, log: log("Received undone") }, "Moved back to placed");
+  const markInstalled = () => save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
+  const undoInstalled = () => save({ ...p, status: "booked", installed: false, installedAt: null, log: log("Completion undone") }, "Moved back to booked");
+  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, log: log("Booking removed") }, "Booking removed");
+  const del = () => save({ ...p, deleted: true, deletedAt: now(), deletedBy: user.name, deleteReason: reason, log: log(`Deleted: ${reason}`) }, "Project deleted");
+
+  const Row = ({ icon: I, label, value }) => (
+    <div className="flex items-start gap-3 py-2">
+      <I size={16} className="text-slate-500 mt-0.5 shrink-0" />
+      <div className="min-w-0"><div className="text-xs text-slate-500">{label}</div><div className="text-sm text-slate-100 break-words">{value || "—"}</div></div>
     </div>
   );
-}
-function DateField({ label, value, editMode, onChange, min, hint }) {
+
   return (
-    <div>
-      <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12} /> {label}</label>
-      {editMode ? (
-        <>
-          <input type="date" value={value || ""} min={min || undefined} onChange={(e) => onChange(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-          {hint && <p className="text-[11px] text-slate-400 mt-1">{hint}</p>}
-        </>
-      ) : <p className="text-sm text-slate-800">{fmtDate(value)}</p>}
-    </div>
+    <Modal title={p.clientName} onClose={onClose} wide>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <Badge status={p.status} />
+        <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
+        <span className="text-xs text-slate-400">· {p.consultant}</span>
+        {p.received && p.status === "received" && <RBadge />}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+        <Row icon={Phone} label="Contact" value={p.contact} />
+        <Row icon={Hash} label="Purchase order" value={p.po} />
+        <div className="md:col-span-2"><Row icon={MapPin} label="Address" value={p.address} /></div>
+        <Row icon={Layers} label="Product type" value={p.productType} />
+        <Row icon={Truck} label="Material ETA" value={fmt(p.materialEta)} />
+        <Row icon={Clock} label="Install duration" value={`${p.installDays || 1} working day${(p.installDays || 1) > 1 ? "s" : ""}`} />
+        {p.installDate && (
+          <Row icon={CalendarDays} label="Installation" value={`${fmt(p.installDate)}${p.installEndDate !== p.installDate ? ` → ${fmt(p.installEndDate)}` : ""} at ${p.installTime}`} />
+        )}
+      </div>
+
+      <div className="mt-4">
+        <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><ImageIcon size={14} /> Job cards ({(p.jobCards || []).length})</div>
+        {(p.jobCards || []).length === 0 ? (
+          <div className="text-sm text-slate-500">No job cards uploaded.</div>
+        ) : (
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+            {p.jobCards.map((c) => (
+              <img key={c.id} src={c.image} alt="Job card" onClick={() => setLightbox(c.image)} className="w-full h-24 object-cover rounded-lg border border-[#30363d] cursor-zoom-in" />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {isCoord && (
+        <div className="mt-6 pt-4 border-t border-[#30363d] flex flex-wrap gap-2">
+          {p.status === "ordered" && <button onClick={markReceived} className={btnPrimary}>Mark as received</button>}
+          {p.status === "received" && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
+          {p.status === "booked" && <button onClick={markInstalled} className={btnPrimary}>Mark as completed</button>}
+          {p.status === "booked" && <button onClick={unbook} className={btnGhost}>Remove booking</button>}
+          {p.status === "installed" && <button onClick={undoInstalled} className={btnGhost}>Undo completion</button>}
+          <button onClick={onEdit} className={btnGhost}>Edit details</button>
+          {isDev && !confirmDelete && <button onClick={() => setConfirmDelete(true)} className="ml-auto px-3 py-2 rounded-lg text-red-300 hover:bg-red-500/10 text-sm flex items-center gap-1"><Trash2 size={14} /> Delete</button>}
+        </div>
+      )}
+      {confirmDelete && (
+        <div className="mt-3 p-3 rounded-xl border border-red-500/40 bg-red-500/5">
+          <div className="text-sm text-red-200 mb-2">Reason for deleting this project</div>
+          <input className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Duplicate entry" autoFocus />
+          <div className="flex justify-end gap-2 mt-2">
+            <button onClick={() => setConfirmDelete(false)} className={btnGhost}>Cancel</button>
+            <button onClick={() => { del(); onClose(); }} disabled={!reason.trim()} className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm disabled:opacity-50">Delete project</button>
+          </div>
+        </div>
+      )}
+
+      {(p.log || []).length > 0 && (
+        <div className="mt-5">
+          <div className="text-xs text-slate-500 mb-1">Activity</div>
+          <ul className="text-xs text-slate-400 space-y-0.5 max-h-28 overflow-y-auto">
+            {[...p.log].reverse().map((l) => <li key={l.id}>{new Date(l.createdAt).toLocaleString("en-ZA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} — {l.text} ({l.author})</li>)}
+          </ul>
+        </div>
+      )}
+
+      {lightbox && (
+        <div className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
+          <img src={lightbox} alt="Job card" className="max-w-full max-h-full rounded-lg" />
+        </div>
+      )}
+    </Modal>
   );
 }
-function TimeField({ label, value, editMode, onChange }) {
+
+/* =========================================================
+   DEPARTMENT CALENDAR
+   ========================================================= */
+function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag }) {
+  const cls =
+    variant === "installed" ? "bg-emerald-700/70 border-emerald-500/60 text-white" :
+    variant === "booked" ? "bg-emerald-400/25 border-emerald-400/50 text-emerald-50" :
+    "bg-slate-300/15 border-slate-400/30 text-slate-200";
   return (
-    <div>
-      <label className="text-xs text-slate-500 mb-1 flex items-center gap-1"><Clock size={12} /> {label}</label>
-      {editMode ? (
-        <select value={value || ""} onChange={(e) => onChange(e.target.value)}
-          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
-          <option value="">—</option>
-          {TIME_SLOTS.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-      ) : <p className="text-sm text-slate-800">{value || "—"}</p>}
-    </div>
-  );
-}
-function Input({ label, value, onChange, autoFocus }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-500 mb-1 block">{label}</label>
-      <input autoFocus={autoFocus} value={value} onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300" />
-    </div>
-  );
-}
-function Modal({ children, onClose, wide }) {
-  return (
-    <div className="fixed inset-0 z-40 bg-black/40 flex items-start sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}
-        className={`bg-white w-full ${wide ? "max-w-2xl" : "max-w-md"} sm:rounded-2xl rounded-none min-h-screen sm:min-h-0 sm:max-h-[calc(100vh-2rem)] overflow-y-auto shadow-xl`}>
-        {children}
+    <div
+      draggable={draggable} onDragStart={onDragStart} onClick={onClick}
+      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant !== "booked" && variant !== "installed" ? "opacity-80" : ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}`}
+    >
+      <div className="flex items-center gap-1.5">
+        <span className="font-semibold truncate flex-1">{p.clientName}</span>
+        {p.status === "received" && <RBadge />}
+      </div>
+      <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
+        <span className="truncate">{p.consultant}</span>
+        {p.installTime && !dayTag && <span>{p.installTime}</span>}
+        {dayTag && <span>{dayTag}</span>}
+        {!p.installTime && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
       </div>
     </div>
   );
 }
-function EmptyState({ canCreate, onCreate, hasAny }) {
+
+function CalendarView({ dept, projects, isCoord, user, save, onOpen }) {
+  const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [booking, setBooking] = useState(null); // { project, date, reschedule }
+  const [dragOver, setDragOver] = useState(null);
+  const dragRef = useRef(null);
+
+  const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
+  const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
+  const onCal = projects.filter((p) => p.status === "booked" || p.status === "installed");
+
+  // map date → [{p, dayIndex, total}]
+  const byDay = useMemo(() => {
+    const m = {};
+    onCal.forEach((p) => {
+      if (!p.installDate) return;
+      const days = spanDays(p.installDate, p.installEndDate || p.installDate).filter((d) => !isWeekend(d) || d === p.installDate);
+      days.forEach((d, i) => { (m[d] = m[d] || []).push({ p, i, n: days.length }); });
+    });
+    Object.values(m).forEach((arr) => arr.sort((a, b) => (a.p.installTime || "").localeCompare(b.p.installTime || "")));
+    return m;
+  }, [onCal]);
+
+  // grid cells
+  const cells = useMemo(() => {
+    const first = new Date(month.getFullYear(), month.getMonth(), 1);
+    const lead = (first.getDay() + 6) % 7;
+    const start = new Date(first); start.setDate(1 - lead);
+    const out = [];
+    for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); out.push(d); }
+    if (out[35].getMonth() !== month.getMonth()) out.length = 35;
+    return out;
+  }, [month]);
+
+  const startDrag = (p) => (e) => { dragRef.current = p; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); };
+  const dropOn = (dateIso) => (e) => {
+    e.preventDefault(); setDragOver(null);
+    const p = dragRef.current; dragRef.current = null;
+    if (!p || !isCoord) return;
+    if (p.status === "received") setBooking({ project: p, date: dateIso, reschedule: false });
+    else if (p.status === "booked" && p.installDate !== dateIso) setBooking({ project: p, date: dateIso, reschedule: true });
+  };
+
+  const confirmBooking = ({ time, days }) => {
+    const { project: p, date, reschedule } = booking;
+    const end = installEnd(date, days);
+    const text = reschedule ? `Rescheduled to ${fmt(date)} at ${time}` : `Booked for ${fmt(date)} at ${time}`;
+    save({ ...p, status: "booked", installDate: date, installEndDate: end, installTime: time, installDays: days,
+      log: [...(p.log || []), { id: uid(), text, author: user.name, createdAt: new Date().toISOString() }] }, reschedule ? "Installation moved" : "Installation booked");
+    setBooking(null);
+  };
+
+  const monthLabel = month.toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
+  const today = todayIso();
+
   return (
-    <div className="text-center py-16 px-4">
-      <div className="h-14 w-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3 text-slate-400"><ClipboardList size={26} /></div>
-      <p className="font-medium text-slate-700">{hasAny ? "No projects match" : "No projects yet"}</p>
-      <p className="text-sm text-slate-400 mb-4">{hasAny ? "Try clearing the search or filter." : canCreate ? "Add your first installation to get started." : "Enter the co-ordinator or developer PIN to add projects."}</p>
-      {canCreate && !hasAny && (
-        <button onClick={onCreate} className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium"><Plus size={16} /> New Project</button>
-      )}
+    <div className="flex gap-4 h-full min-h-0">
+      {/* Left tray: ordered, by ETA */}
+      <aside className="w-56 shrink-0 bg-[#161b22] border border-[#30363d] rounded-2xl p-3 flex flex-col">
+        <div className="text-sm font-semibold text-white mb-0.5">Awaiting material</div>
+        <div className="text-[11px] text-slate-500 mb-3">In ETA order · {ordered.length}</div>
+        <div className="space-y-2 overflow-y-auto flex-1 pr-0.5">
+          {ordered.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
+          {ordered.map((p) => <Sticker key={p.id} p={p} draggable={false} onClick={() => onOpen(p)} variant="ordered" />)}
+        </div>
+        {isCoord && ordered.length > 0 && <div className="text-[11px] text-slate-500 mt-3">Open a sticker and mark it received to move it up.</div>}
+      </aside>
+
+      <div className="flex-1 min-w-0 flex flex-col gap-3">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <dept.icon size={22} className="text-slate-300" />
+            <h1 className="text-2xl font-bold text-white">{dept.label}</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronLeft size={18} /></button>
+            <span className="text-sm font-medium w-40 text-center">{monthLabel}</span>
+            <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronRight size={18} /></button>
+            <button onClick={() => { const d = new Date(); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); }} className={`${btnGhost} py-1.5`}>Today</button>
+          </div>
+        </div>
+
+        {/* Top tray: received, ready to book */}
+        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm font-semibold text-white">Received — ready to book</span>
+            <RBadge />
+            <span className="text-[11px] text-slate-500">{isCoord ? "Drag a sticker onto a date" : "Co-ordinator books these"} · {received.length}</span>
+          </div>
+          <div className="flex flex-wrap gap-2 min-h-[38px]">
+            {received.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
+            {received.map((p) => (
+              <div key={p.id} className="w-44">
+                <Sticker p={p} draggable={isCoord} onDragStart={startDrag(p)} onClick={() => onOpen(p)} variant="received" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Month grid */}
+        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3 flex-1 flex flex-col min-h-0">
+          <div className="grid grid-cols-7 text-[11px] text-slate-500 mb-1">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="px-2 py-1">{d}</div>)}
+          </div>
+          <div className="grid grid-cols-7 gap-1 flex-1 auto-rows-[minmax(110px,1fr)]">
+            {cells.map((d) => {
+              const key = iso(d);
+              const inMonth = d.getMonth() === month.getMonth();
+              const wk = isWeekend(key);
+              const items = byDay[key] || [];
+              return (
+                <div
+                  key={key}
+                  onDragOver={(e) => { if (isCoord) { e.preventDefault(); setDragOver(key); } }}
+                  onDragLeave={() => setDragOver((k) => (k === key ? null : k))}
+                  onDrop={dropOn(key)}
+                  className={`rounded-lg border p-1.5 flex flex-col gap-1 overflow-hidden ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : "border-[#30363d]"} ${inMonth ? (wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
+                >
+                  <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
+                    <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
+                  </div>
+                  {items.map(({ p, i, n }) => (
+                    <Sticker
+                      key={p.id} p={p} variant={p.status}
+                      draggable={isCoord && p.status === "booked" && i === 0}
+                      onDragStart={startDrag(p)} onClick={() => onOpen(p)}
+                      dayTag={n > 1 ? `Day ${i + 1}/${n}${i === 0 && p.installTime ? ` · ${p.installTime}` : ""}` : null}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-4 mt-2 text-[11px] text-slate-500">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /> Placed</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /><RBadge /> Received</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed</span>
+          </div>
+        </div>
+      </div>
+
+      {booking && <BookingModal booking={booking} onClose={() => setBooking(null)} onConfirm={confirmBooking} />}
+    </div>
+  );
+}
+
+function BookingModal({ booking, onClose, onConfirm }) {
+  const { project: p, date, reschedule } = booking;
+  const [time, setTime] = useState(p.installTime || "08:00");
+  const [days, setDays] = useState(p.installDays || 1);
+  const end = installEnd(date, Number(days) || 1);
+  const weekend = isWeekend(date);
+  return (
+    <Modal title={reschedule ? "Move installation" : "Book installation"} onClose={onClose}>
+      <div className="text-sm text-slate-300 mb-4">
+        <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}
+        {reschedule && <div className="text-xs text-slate-400 mt-1">Currently {fmt(p.installDate)} at {p.installTime}</div>}
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Date"><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
+        <Field label="Start time">
+          <select className={inputCls} value={time} onChange={(e) => setTime(e.target.value)}>
+            {TIMES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>
+        <Field label="Ends"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>
+      </div>
+      {weekend && <p className="text-xs text-amber-300 mt-3">This is a weekend date.</p>}
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={() => onConfirm({ time, days: Math.max(1, Number(days) || 1) })} className={btnPrimary}>{reschedule ? "Move installation" : "Book installation"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =========================================================
+   REPORTS (co-ordinator+)
+   ========================================================= */
+function ReportsView({ projects }) {
+  const [dept, setDept] = useState("blinds");
+  const [mode, setMode] = useState("daily");
+  const [date, setDate] = useState(todayIso());
+
+  const range = mode === "daily" ? [date, date] : [weekStart(date), addDays(weekStart(date), 6)];
+  const jobs = projects
+    .filter((p) => p.department === dept && (p.status === "booked" || p.status === "installed") && p.installDate)
+    .filter((p) => p.installDate <= range[1] && (p.installEndDate || p.installDate) >= range[0])
+    .sort((a, b) => (a.installDate + (a.installTime || "")).localeCompare(b.installDate + (b.installTime || "")));
+  const d = deptOf(dept);
+  const title = mode === "daily" ? `${d.label} — ${fmt(date)}` : `${d.label} — week of ${fmt(range[0])} to ${fmt(range[1])}`;
+
+  return (
+    <div>
+      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-5 mb-4">
+        <h1 className="text-2xl font-bold text-white mb-4">Reports</h1>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <Field label="Department">
+            <select className={inputCls} value={dept} onChange={(e) => setDept(e.target.value)}>
+              {DEPARTMENTS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Report">
+            <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+          </Field>
+          <Field label={mode === "daily" ? "Date" : "Any date in the week"}><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <button onClick={() => window.print()} disabled={jobs.length === 0} className={`${btnPrimary} flex items-center justify-center gap-2`}><Printer size={16} /> Save as PDF</button>
+        </div>
+        <p className="text-xs text-slate-500 mt-3">Save as PDF opens the print dialog — choose "Save as PDF" as the printer, then share the file on WhatsApp.</p>
+      </div>
+
+      {/* Printable report */}
+      <div className="report bg-white text-black rounded-2xl p-8 print:p-0 print:rounded-none">
+        <div className="flex items-baseline justify-between border-b-2 border-black pb-3 mb-4">
+          <div>
+            <div className="text-xs tracking-widest text-gray-600">NOLANS INSTALLATION SCHEDULE</div>
+            <h2 className="text-2xl font-bold">{title}</h2>
+          </div>
+          <div className="text-xs text-gray-600">{jobs.length} {jobs.length === 1 ? "installation" : "installations"}</div>
+        </div>
+        {jobs.length === 0 ? (
+          <div className="text-gray-600 text-sm py-8 text-center">No installations booked for this period.</div>
+        ) : jobs.map((p, idx) => (
+          <div key={p.id} className={`report-job ${idx > 0 ? "mt-6 pt-6 border-t border-gray-300" : ""}`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-lg font-bold">{p.clientName}</div>
+                <div className="text-sm text-gray-800">{p.address}</div>
+                <div className="text-sm text-gray-800">Contact: {p.contact || "—"}</div>
+              </div>
+              <div className="text-right text-sm">
+                <div className="font-semibold">{fmt(p.installDate)}{p.installEndDate !== p.installDate ? ` → ${fmt(p.installEndDate)}` : ""}</div>
+                <div className="text-gray-800">Start {p.installTime}</div>
+                <div className="text-gray-800">PO {p.po}</div>
+                <div className="text-gray-600">{p.productType} · {p.consultant}</div>
+              </div>
+            </div>
+            {(p.jobCards || []).length > 0 && (
+              <div className="mt-3 space-y-3">
+                {p.jobCards.map((c) => <img key={c.id} src={c.image} alt="Job card" className="w-full rounded border border-gray-300 report-img" />)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <style>{`
+        @media print {
+          @page { margin: 12mm; }
+          body { background: white !important; }
+          .report { color: black; }
+          .report-job { break-inside: avoid; page-break-inside: avoid; }
+          .report-img { max-height: 240mm; object-fit: contain; }
+        }
+      `}</style>
     </div>
   );
 }
