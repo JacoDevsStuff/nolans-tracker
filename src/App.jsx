@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Menu
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck
 } from "lucide-react";
 
 /* =========================================================
@@ -23,18 +23,37 @@ const USERS = {
 };
 const CONSULTANTS = ["Jaco", "James", "Trent", "Theo"];
 
+// `calendar` says which calendar a department's jobs land on — Shutters and Calore share one team and one calendar
 const DEPARTMENTS = [
-  { id: "blinds", label: "Blinds", icon: Blinds, from: "#3b4a63", to: "#1c2536" },
-  { id: "shutters", label: "Shutters", icon: PanelsTopLeft, from: "#5a5f6b", to: "#252a34" },
-  { id: "carpets", label: "Carpets", icon: Rows3, from: "#6b5d52", to: "#2a2420" },
-  { id: "vinyl", label: "Vinyl", icon: Layers, from: "#7a6a4f", to: "#2c261c" },
-  { id: "wood", label: "Wood", icon: Trees, from: "#8a5a34", to: "#2e1e12" },
+  { id: "blinds", label: "Blinds", icon: Blinds, calendar: "blinds", from: "#3b4a63", to: "#1c2536" },
+  { id: "shutters", label: "Shutters", icon: PanelsTopLeft, calendar: "shutters", from: "#5a5f6b", to: "#252a34" },
+  { id: "calore", label: "Calore", icon: Flame, calendar: "shutters", from: "#5a4a3a", to: "#231a14" },
+  { id: "carpets", label: "Carpets", icon: Rows3, calendar: "carpets", from: "#6b5d52", to: "#2a2420" },
+  { id: "vinyl", label: "Vinyl", icon: Layers, calendar: "vinyl", from: "#7a6a4f", to: "#2c261c" },
+  { id: "wood", label: "Wood", icon: Trees, calendar: "wood", from: "#8a5a34", to: "#2e1e12" },
 ];
 const deptOf = (id) => DEPARTMENTS.find((d) => d.id === id) || DEPARTMENTS[0];
+const CALENDARS = [
+  { id: "blinds", label: "Blinds", icon: Blinds },
+  { id: "shutters", label: "Shutters & Calore", icon: PanelsTopLeft },
+  { id: "carpets", label: "Carpets", icon: Rows3 },
+  { id: "vinyl", label: "Vinyl", icon: Layers },
+  { id: "wood", label: "Wood", icon: Trees },
+];
+const calendarOf = (deptId) => deptOf(deptId).calendar;
+const calOf = (calId) => CALENDARS.find((c) => c.id === calId) || CALENDARS[0];
 
-// Team names are placeholders until phase 3
-const TEAMS = { blinds: ["Team 1", "Team 2"], shutters: ["Team 1"], carpets: ["Team 1"], vinyl: ["Team 1", "Team 2"], wood: ["Team 1", "Team 2"] };
+// Team names are placeholders until phase 4; Calore uses the Shutters team
+const TEAMS = { blinds: ["Team 1", "Team 2"], shutters: ["Team 1"], calore: ["Team 1"], carpets: ["Team 1"], vinyl: ["Team 1", "Team 2"], wood: ["Team 1", "Team 2"] };
 const teamsOf = (dept) => TEAMS[dept] || ["Team 1"];
+
+// Snags
+const SNAG_CATEGORIES = ["Consultant boo-boo", "Installation boo-boo", "Factory boo-boo"];
+const SNAG_CAUSES = ["Consultant boo-boo", "Installation boo-boo", "Supplier boo-boo"];
+const COST_CATEGORIES = ["Labour", "Material", "Call-out", "Other"];
+const openSnags = (p) => (p.snags || []).filter((s) => !s.resolved);
+const hasOpenSnags = (p) => openSnags(p).length > 0;
+const zar = (n) => "R " + (Number(n) || 0).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Daily capacity in hours for the Availability view
 const capacityOf = (dateIso) => (fromIso(dateIso).getDay() === 5 ? 7 : 8);
@@ -70,14 +89,15 @@ const fmt = (s, opts = { weekday: "short", day: "numeric", month: "short", year:
   s ? fromIso(s).toLocaleDateString("en-ZA", opts) : "";
 const fmtShort = (s) => fmt(s, { day: "numeric", month: "short" });
 const weekStart = (s) => { const d = fromIso(s); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return iso(d); };
+const timeLt = (a, b) => !!a && !!b && a < b; // "HH:MM" strings compare correctly as text
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
 
 /* =========================================================
    INSTALL SCHEDULE — one entry per install day, each movable
    ========================================================= */
 // Build a fresh schedule of N working days from a start date
-const buildSchedule = (start, days, time) => {
-  const out = [{ dayIndex: 1, date: start, time }];
+const buildSchedule = (start, days, time, endTime) => {
+  const out = [{ dayIndex: 1, date: start, time, endTime: endTime || null }];
   let cur = start;
   for (let i = 2; i <= Math.max(1, days || 1); i++) {
     do { cur = addDays(cur, 1); } while (isWeekend(cur));
@@ -88,7 +108,7 @@ const buildSchedule = (start, days, time) => {
 // Legacy fallback: phase-1 records only have installDate + installDays (number)
 const scheduleOf = (p) => {
   if (Array.isArray(p.installSchedule) && p.installSchedule.length) return p.installSchedule;
-  if (p.installDate) return buildSchedule(p.installDate, Number(p.installDays) || 1, p.installTime);
+  if (p.installDate) return buildSchedule(p.installDate, Number(p.installDays) || 1, p.installTime, p.installEndTime);
   return [];
 };
 // Keep the sortable top-level dates in sync with the schedule
@@ -167,6 +187,10 @@ const RBadge = () => (
 const PartialBadge = () => (
   <span title="Received, but not in full" className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 text-black text-[11px] font-bold leading-none">!</span>
 );
+const SnagFlag = ({ small }) => (
+  <span title="Open snag" className={`inline-flex items-center justify-center rounded-full bg-red-600 text-white ${small ? "w-4 h-4" : "w-5 h-5"}`}><Flag size={small ? 9 : 11} strokeWidth={3} /></span>
+);
+const snagCardCls = (p) => (hasOpenSnags(p) ? "border-red-500/70 ring-1 ring-red-500/40" : "border-[#30363d]");
 const Field = ({ label, children }) => (
   <label className="block">
     <span className="block text-xs text-slate-400 mb-1">{label}</span>
@@ -261,7 +285,6 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const level = user?.level ?? 0;
   const isCoord = level >= 2;
@@ -309,7 +332,14 @@ export default function App() {
     booked: active.filter((p) => p.status === "booked").sort((a, b) => (a.installDate || "").localeCompare(b.installDate || "")),
     completed: active.filter((p) => p.status === "installed" && !p.invoiced).sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
     history: active.filter((p) => p.status === "installed" && p.invoiced).sort((a, b) => (b.invoicedAt || "").localeCompare(a.invoicedAt || "")),
+    snags: active.filter(hasOpenSnags).sort((a, b) => {
+      const la = Math.max(...openSnags(a).map((s) => s.createdAt || "")), lb = Math.max(...openSnags(b).map((s) => s.createdAt || ""));
+      return String(lb).localeCompare(String(la));
+    }),
   }), [active, level, user]);
+  // Unacknowledged open snags — badge for co-ordinator+
+  const newSnagCount = useMemo(() => active.reduce((n, p) => n + openSnags(p).filter((s) => !s.acknowledged).length, 0), [active]);
+  const reviewCount = useMemo(() => active.reduce((n, p) => n + (p.snags || []).filter((s) => s.resolved && !(s.review && s.review.cause)).length, 0), [active]);
 
   // Global search: consultants only see their own placed/received orders
   const searchResults = useMemo(() => {
@@ -328,8 +358,10 @@ export default function App() {
     { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
     { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
+    ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
+    ...(level >= 1 ? [{ id: "review", label: "Snag review", icon: ClipboardCheck, count: isCoord ? reviewCount : null }] : []),
     ...(isCoord ? [
       { id: "availability", label: "Availability", icon: CalendarCheck },
       { id: "reports", label: "Reports", icon: FileText },
@@ -337,14 +369,13 @@ export default function App() {
   ];
 
   const logout = () => { sessionStorage.removeItem("nolans_user"); setUser(null); setView("home"); };
-  const openDept = (id, month) => { setCalMonth(month || null); setView(`dept:${id}`); };
+  const openDept = (id, month) => { setCalMonth(month || null); setView(`dept:${calendarOf(id)}`); };
   const openProject = (p) => { setSelected(p); setSearch(""); };
 
   return (
     <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black">
       {/* Top bar */}
       <header className="print:hidden h-16 flex items-center gap-4 px-5 border-b border-[#30363d] bg-[#0d1117]">
-        <button onClick={() => setSidebarOpen(true)} className="md:hidden p-2 -ml-2 rounded-lg hover:bg-[#161b22] text-slate-300 shrink-0"><Menu size={20} /></button>
         <button onClick={() => setView("home")} className="shrink-0"><Logo /></button>
         <div className="flex-1 max-w-2xl mx-auto relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -376,20 +407,20 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 min-h-0 relative">
-        {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-30 md:hidden" onClick={() => setSidebarOpen(false)} />}
+      <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        <aside className={`print:hidden fixed md:static inset-y-0 left-0 z-40 w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col bg-[#0d1117] transform transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <aside className="print:hidden w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col">
           <nav className="space-y-1">
             {nav.map((n) => {
               const activeNav = view === n.id;
               return (
                 <button
-                  key={n.id} onClick={() => { setView(n.id); setSidebarOpen(false); }}
+                  key={n.id} onClick={() => setView(n.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
                 >
                   <n.icon size={18} />
                   <span className="flex-1 text-left">{n.label}</span>
+                  {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{n.alert} new</span>}
                   {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
                 </button>
               );
@@ -399,8 +430,8 @@ export default function App() {
             <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
             {DEPARTMENTS.map((d) => (
               <button
-                key={d.id} onClick={() => { openDept(d.id); setSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.id}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+                key={d.id} onClick={() => openDept(d.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.calendar}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
               >
                 <d.icon size={16} /> {d.label}
               </button>
@@ -427,13 +458,17 @@ export default function App() {
             <ReportsView projects={active} />
           ) : view === "availability" ? (
             <AvailabilityView projects={active} openDept={openDept} />
+          ) : view === "snags" ? (
+            <SnagsView items={lists.snags} onOpen={setSelected} />
+          ) : view === "review" ? (
+            <SnagReviewView projects={active} user={user} isCoord={isCoord} save={save} onOpen={setSelected} />
           ) : view === "completed" ? (
-            <CompletedView items={lists.completed} isCoord={isCoord} user={user} save={save} onOpen={setSelected} setToast={setToast} />
+            <CompletedView items={lists.completed} isCoord={isCoord} isDev={isDev} user={user} save={save} onOpen={setSelected} setToast={setToast} />
           ) : view === "history" ? (
             <HistoryView items={lists.history} deleted={deletedList} isCoord={isCoord} isDev={isDev} user={user} save={save} onOpen={setSelected} />
           ) : view.startsWith("dept:") ? (
             <CalendarView
-              key={view} dept={deptOf(view.slice(5))} projects={active.filter((p) => p.department === view.slice(5))}
+              key={view} cal={calOf(view.slice(5))} projects={active.filter((p) => calendarOf(p.department) === view.slice(5))}
               isCoord={isCoord} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
             />
           ) : (
@@ -456,7 +491,7 @@ export default function App() {
       {selected && (
         <ProjectDetail
           project={projects.find((p) => p.id === selected.id) || selected}
-          user={user} isCoord={isCoord} isDev={isDev} save={save}
+          user={user} level={level} isCoord={isCoord} isDev={isDev} save={save}
           onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
         />
       )}
@@ -491,6 +526,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
               <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              {hasOpenSnags(p) && <SnagFlag />}
               {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
               <Badge status={p.status} />
               {p.invoiced && <span className="text-[10px] text-slate-500">Invoiced</span>}
@@ -580,7 +616,7 @@ function ListView({ title, status, items, onOpen, level }) {
           {items.map((p) => {
             const d = deptOf(p.department);
             return (
-              <button key={p.id} onClick={() => onOpen(p)} className="w-full text-left bg-[#0d1117] hover:bg-[#12181f] border border-[#30363d] rounded-xl p-4 grid grid-cols-12 gap-3 items-center">
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-4 grid grid-cols-12 gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
                   <div className="font-medium text-white truncate">{p.clientName}</div>
                   <div className="text-xs text-slate-400 truncate">{p.address}</div>
@@ -594,6 +630,7 @@ function ListView({ title, status, items, onOpen, level }) {
                 </div>
                 <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
                   <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                  {hasOpenSnags(p) && <SnagFlag />}
                   {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
                   <Badge status={p.status} />
                 </div>
@@ -735,26 +772,67 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
 /* =========================================================
    PROJECT DETAIL
    ========================================================= */
-function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit }) {
+function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose, onEdit }) {
   const d = deptOf(p.department);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [reason, setReason] = useState("");
   const [lightbox, setLightbox] = useState(null);
+  const [snagModal, setSnagModal] = useState(false);
+  const [resolving, setResolving] = useState(null); // snag being resolved
+  const [addingDay, setAddingDay] = useState(false);
   const now = () => new Date().toISOString();
-  const log = (text) => [...(p.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
+  const log = (text, base = p) => [...(base.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
   const schedule = scheduleOf(p);
   const lineItems = p.lineItems || [];
+  const snags = p.snags || [];
+  const open = openSnags(p);
+  const canSnag = level >= 1;
+
+  // Co-ordinator opening the job acknowledges its new snags (clears the "new" badge)
+  useEffect(() => {
+    if (isCoord && open.some((s) => !s.acknowledged)) {
+      save({ ...p, snags: snags.map((s) => (s.resolved ? s : { ...s, acknowledged: true })) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.id]);
 
   const markReceived = () => save({ ...p, status: "received", received: true, receivedAt: now(), log: log("Main item received") }, "Marked as received");
   const undoReceived = () => save({ ...p, status: "ordered", received: false, receivedAt: null, log: log("Received undone") }, "Moved back to placed");
   const markInstalled = () => save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
   const undoInstalled = () => save({ ...p, status: "booked", installed: false, installedAt: null, log: log("Completion undone") }, "Moved back to booked");
-  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
+  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, installEndTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
   const del = () => save({ ...p, deleted: true, deletedAt: now(), deletedBy: user.name, deleteReason: reason, log: log(`Deleted: ${reason}`) }, "Project deleted");
   const toggleLine = (li) => {
     const received = !li.received;
     const items = lineItems.map((x) => (x.id === li.id ? { ...x, received, receivedAt: received ? now() : null, receivedBy: received ? user.name : null } : x));
     save({ ...p, lineItems: items, log: log(`${li.description}: ${received ? "received" : "marked not received"}`) });
+  };
+
+  // Add one extra install day on a chosen date (from the sticker, no full edit needed)
+  const addDay = (date) => {
+    const next = [...schedule, { dayIndex: schedule.length + 1, date, time: null }];
+    save(withSchedule({ ...p, installDays: next.length, log: log(`Day ${next.length} added on ${fmt(date)}`) }, next), "Day added");
+    setAddingDay(false);
+  };
+  const removeDay = (dayIndex) => {
+    if (schedule.length <= 1) return;
+    const next = schedule.filter((s) => s.dayIndex !== dayIndex).map((s, i) => ({ ...s, dayIndex: i + 1 }));
+    save(withSchedule({ ...p, installDays: next.length, log: log(`Day ${dayIndex} removed`) }, next), "Day removed");
+  };
+
+  // Snags
+  const logSnag = (snag) => {
+    const wasDone = p.status === "installed";
+    const next = { ...p, snags: [...snags, snag], log: log(`Snag logged (${snag.category}): ${snag.description}`) };
+    if (wasDone) next.snagReturn = true; // re-launch a return-visit sticker above the calendar
+    save(next, wasDone ? "Snag logged — return visit ready to book" : "Snag logged");
+    setSnagModal(false);
+  };
+  const resolveSnag = (snag, note) => {
+    const next = snags.map((s) => (s.id === snag.id ? { ...s, resolved: true, resolvedAt: now(), resolvedBy: user.name, resolveReason: note } : s));
+    const stillOpen = next.some((s) => !s.resolved);
+    save({ ...p, snags: next, snagReturn: stillOpen ? p.snagReturn : false, log: log(`Snag resolved (${snag.category}) by ${user.name}: ${note}`) }, "Snag resolved");
+    setResolving(null);
   };
 
   const Row = ({ icon: I, label, value }) => (
@@ -763,6 +841,7 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
       <div className="min-w-0"><div className="text-xs text-slate-500">{label}</div><div className="text-sm text-slate-100 break-words">{value || "—"}</div></div>
     </div>
   );
+  const returnVisits = p.returnVisits || [];
 
   return (
     <Modal title={p.clientName} onClose={onClose} wide>
@@ -774,6 +853,7 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
         {p.team && <span className="text-xs text-slate-400">· {p.team}</span>}
         {p.received && p.status === "received" && <RBadge />}
         {partiallyReceived(p) && <span className="flex items-center gap-1 text-xs text-yellow-300"><PartialBadge /> not received in full</span>}
+        {open.length > 0 && <span className="flex items-center gap-1 text-xs text-red-300"><SnagFlag /> {open.length} open snag{open.length > 1 ? "s" : ""}</span>}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
         <Row icon={Phone} label="Contact" value={p.contact} />
@@ -784,11 +864,28 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
         {schedule.length > 0 && (
           <div className="md:col-span-2">
             <Row icon={CalendarDays} label="Installation days" value={
-              <div className="flex flex-wrap gap-1.5 mt-1">
+              <div className="flex flex-wrap gap-1.5 mt-1 items-center">
                 {[...schedule].sort((a, b) => a.date.localeCompare(b.date)).map((s) => (
-                  <span key={s.dayIndex} className="text-xs px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-100">
-                    {s.dayIndex}/{schedule.length} · {fmt(s.date)}{s.time ? ` at ${s.time}` : ""}
+                  <span key={s.dayIndex} className="text-xs px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-100 flex items-center gap-1.5">
+                    {s.dayIndex}/{schedule.length} · {fmt(s.date)}{s.time ? ` ${s.time}` : ""}{s.endTime ? `–${s.endTime}` : ""}
+                    {isCoord && p.status === "booked" && schedule.length > 1 && (
+                      <button onClick={() => removeDay(s.dayIndex)} title="Remove this day" className="text-emerald-300/70 hover:text-red-300"><X size={11} /></button>
+                    )}
                   </span>
+                ))}
+                {isCoord && p.status === "booked" && (
+                  <button onClick={() => setAddingDay(true)} className="text-xs px-2 py-1 rounded-lg border border-dashed border-[#30363d] text-slate-300 hover:border-[#1f6feb] flex items-center gap-1"><Plus size={12} /> Add day</button>
+                )}
+              </div>
+            } />
+          </div>
+        )}
+        {returnVisits.length > 0 && (
+          <div className="md:col-span-2">
+            <Row icon={Flag} label="Snag return visits" value={
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {returnVisits.map((v) => (
+                  <span key={v.id} className="text-xs px-2 py-1 rounded-lg bg-red-500/15 border border-red-500/40 text-red-100">{fmt(v.date)}{v.time ? ` ${v.time}` : ""}{v.endTime ? `–${v.endTime}` : ""}</span>
                 ))}
               </div>
             } />
@@ -816,6 +913,32 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
           </div>
         ))}
         {lineItems.length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
+      </div>
+
+      {/* Snags */}
+      <div className={`mt-4 border rounded-xl p-3 ${open.length ? "border-red-500/50" : "border-[#30363d]"}`}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs text-slate-500 flex items-center gap-1"><Flag size={14} /> Snags ({snags.length})</div>
+          {canSnag && <button onClick={() => setSnagModal(true)} className="text-xs px-2 py-1 rounded-lg border border-red-500/40 text-red-300 hover:bg-red-500/10 flex items-center gap-1"><Plus size={12} /> Log snag</button>}
+        </div>
+        {snags.length === 0 && <div className="text-xs text-slate-500">No snags logged.</div>}
+        {[...snags].sort((a, b) => (a.resolved === b.resolved ? (b.createdAt || "").localeCompare(a.createdAt || "") : a.resolved ? 1 : -1)).map((s) => (
+          <div key={s.id} className={`py-2 border-t border-[#30363d] first:border-0 ${s.resolved ? "opacity-70" : ""}`}>
+            <div className="flex items-start gap-3">
+              {s.photo && <img src={s.photo} alt="Snag" onClick={() => setLightbox(s.photo)} className="w-14 h-14 object-cover rounded-lg border border-[#30363d] cursor-zoom-in shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full border ${s.resolved ? "border-emerald-500/40 text-emerald-300" : "border-red-500/40 text-red-300"}`}>{s.resolved ? "Resolved" : "Open"}</span>
+                  <span className="text-xs font-medium text-slate-200">{s.category}</span>
+                  <span className="text-[11px] text-slate-500">· {s.author}, {fmtShort((s.createdAt || "").slice(0, 10))}</span>
+                </div>
+                <div className="text-sm text-slate-300 mt-1">{s.description}</div>
+                {s.resolved && <div className="text-xs text-emerald-200/80 mt-1">Resolved by {s.resolvedBy} on {fmtShort((s.resolvedAt || "").slice(0, 10))}: {s.resolveReason}</div>}
+              </div>
+              {!s.resolved && canSnag && <button onClick={() => setResolving(s)} className="text-xs px-2 py-1 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 shrink-0">Resolve</button>}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="mt-4">
@@ -864,9 +987,86 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
 
       {lightbox && (
         <div className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
-          <img src={lightbox} alt="Job card" className="max-w-full max-h-full rounded-lg" />
+          <img src={lightbox} alt="" className="max-w-full max-h-full rounded-lg" />
         </div>
       )}
+      {snagModal && <SnagLogModal user={user} onClose={() => setSnagModal(false)} onSave={logSnag} />}
+      {resolving && <SnagResolveModal snag={resolving} onClose={() => setResolving(null)} onConfirm={(note) => resolveSnag(resolving, note)} />}
+      {addingDay && <AddDayModal project={p} schedule={schedule} onClose={() => setAddingDay(false)} onConfirm={addDay} />}
+    </Modal>
+  );
+}
+
+function SnagLogModal({ user, onClose, onSave }) {
+  const [category, setCategory] = useState(SNAG_CATEGORIES[0]);
+  const [description, setDescription] = useState("");
+  const [photo, setPhoto] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef();
+  const pick = async (file) => { if (!file || !file.type.startsWith("image/")) return; setBusy(true); setPhoto(await compressImage(file, 1200, 0.75)); setBusy(false); };
+  return (
+    <Modal title="Log a snag" onClose={onClose}>
+      <div className="space-y-4">
+        <Field label="What went wrong">
+          <select className={inputCls} value={category} onChange={(e) => setCategory(e.target.value)}>
+            {SNAG_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Description">
+          <textarea className={`${inputCls} min-h-[90px]`} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What happened, what the client reported, what needs fixing" autoFocus />
+        </Field>
+        <Field label="Photo (optional)">
+          <div className="flex items-center gap-3">
+            <button onClick={() => fileRef.current.click()} className={`${btnGhost} flex items-center gap-1.5`}><Upload size={14} /> {photo ? "Change photo" : "Add photo"}</button>
+            {photo && <img src={photo} alt="Snag" className="h-14 w-14 object-cover rounded-lg border border-[#30363d]" />}
+            {photo && <button onClick={() => setPhoto(null)} className="text-xs text-slate-400 hover:text-red-300">Remove</button>}
+            <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { pick(e.target.files[0]); e.target.value = ""; }} />
+          </div>
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button
+          disabled={!description.trim() || busy}
+          onClick={() => onSave({ id: uid(), category, description: description.trim(), photo, createdAt: new Date().toISOString(), author: user.name, resolved: false, acknowledged: false })}
+          className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm disabled:opacity-50"
+        >Log snag</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SnagResolveModal({ snag, onClose, onConfirm }) {
+  const [note, setNote] = useState("");
+  return (
+    <Modal title="Resolve snag" onClose={onClose}>
+      <div className="text-sm text-slate-300 mb-3"><span className="font-medium text-white">{snag.category}</span> — {snag.description}</div>
+      <Field label="How was it resolved? (required)">
+        <textarea className={`${inputCls} min-h-[80px]`} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Inspected on site, re-aligned the blind, client happy" autoFocus />
+      </Field>
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={() => onConfirm(note.trim())} disabled={!note.trim()} className={btnPrimary}>Mark resolved</button>
+      </div>
+    </Modal>
+  );
+}
+
+function AddDayModal({ project: p, schedule, onClose, onConfirm }) {
+  const last = [...schedule].sort((a, b) => a.date.localeCompare(b.date)).pop();
+  let suggested = last ? addDays(last.date, 1) : todayIso();
+  while (isWeekend(suggested)) suggested = addDays(suggested, 1);
+  const [date, setDate] = useState(suggested);
+  const clash = schedule.some((s) => s.date === date);
+  return (
+    <Modal title={`Add day ${schedule.length + 1} — ${p.clientName}`} onClose={onClose}>
+      <Field label="Date for the extra day"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} autoFocus /></Field>
+      {isWeekend(date) && <p className="text-xs text-amber-300 mt-2">This is a weekend date.</p>}
+      {clash && <p className="text-xs text-red-300 mt-2">This job already has a day on that date.</p>}
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={() => onConfirm(date)} disabled={!date || clash} className={btnPrimary}>Add day</button>
+      </div>
     </Modal>
   );
 }
@@ -874,55 +1074,68 @@ function ProjectDetail({ project: p, user, isCoord, isDev, save, onClose, onEdit
 /* =========================================================
    DEPARTMENT CALENDAR
    ========================================================= */
-function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time }) {
-  const cls =
-    variant === "installed" ? "bg-emerald-700/70 border-emerald-500/60 text-white" :
-    variant === "booked" ? "bg-emerald-400/25 border-emerald-400/50 text-emerald-50" :
-    "bg-slate-300/15 border-slate-400/30 text-slate-200";
+// Sticker colour: Shutters orange, Calore blue, everything else green. Snag returns are red.
+const stickerCls = (p, variant) => {
+  if (variant === "return") return "bg-red-500/20 border-red-500/60 text-red-50";
+  if (variant === "booked" || variant === "installed") {
+    const done = variant === "installed";
+    if (p.department === "shutters") return done ? "bg-orange-700/70 border-orange-500/60 text-white" : "bg-orange-400/25 border-orange-400/60 text-orange-50";
+    if (p.department === "calore") return done ? "bg-blue-700/70 border-blue-500/60 text-white" : "bg-blue-400/25 border-blue-400/60 text-blue-50";
+    return done ? "bg-emerald-700/70 border-emerald-500/60 text-white" : "bg-emerald-400/25 border-emerald-400/50 text-emerald-50";
+  }
+  return "bg-slate-300/15 border-slate-400/30 text-slate-200";
+};
+
+function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, endTime }) {
+  const cls = stickerCls(p, variant);
+  const flagged = hasOpenSnags(p);
   return (
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={onClick}
-      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant !== "booked" && variant !== "installed" ? "opacity-80" : ""}`}
-      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}`}
+      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${flagged && variant !== "return" ? "ring-1 ring-red-500/60" : ""} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}${variant === "return" ? " · Snag return visit" : ""}`}
     >
       <div className="flex items-center gap-1.5">
         <span className="font-semibold truncate flex-1">{p.clientName}</span>
         {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
+        {(flagged || variant === "return") && <SnagFlag small />}
         {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
-        {p.status === "received" && <RBadge />}
+        {p.status === "received" && variant !== "return" && <RBadge />}
       </div>
       <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
-        <span className="truncate">{p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
-        {time && <span>{time}</span>}
+        <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+        {time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
         {!time && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
       </div>
     </div>
   );
 }
 
-function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMonth }) {
+function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth }) {
   const [month, setMonth] = useState(() => {
     const d = initialMonth ? fromIso(initialMonth) : new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
-  const [booking, setBooking] = useState(null); // { project, date, mode: "book" | "moveDay", dayIndex }
+  const [booking, setBooking] = useState(null); // { project, date, mode: "book" | "moveDay" | "return" | "moveReturn", dayIndex | visitId }
   const [dragOver, setDragOver] = useState(null);
-  const dragRef = useRef(null); // { p, dayIndex }
+  const dragRef = useRef(null); // { p, kind: "received" | "day" | "return" | "moveReturn", dayIndex, visitId }
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
+  const returns = projects.filter((p) => p.snagReturn); // completed jobs with a snag, waiting for a return visit to be booked
   const onCal = projects.filter((p) => p.status === "booked" || p.status === "installed");
 
-  // map date → [{ p, day, total }]
+  // map date → items: install days and snag return visits
   const byDay = useMemo(() => {
     const m = {};
     onCal.forEach((p) => {
       const sched = scheduleOf(p);
-      sched.forEach((s) => { (m[s.date] = m[s.date] || []).push({ p, day: s, total: sched.length }); });
+      sched.forEach((s) => { (m[s.date] = m[s.date] || []).push({ kind: "day", p, day: s, total: sched.length }); });
     });
-    Object.values(m).forEach((arr) => arr.sort((a, b) => (a.day.time || "99").localeCompare(b.day.time || "99")));
+    projects.forEach((p) => (p.returnVisits || []).forEach((v) => { (m[v.date] = m[v.date] || []).push({ kind: "return", p, visit: v }); }));
+    Object.values(m).forEach((arr) => arr.sort((a, b) => ((a.day || a.visit).time || "99").localeCompare((b.day || b.visit).time || "99")));
     return m;
-  }, [onCal]);
+  }, [onCal, projects]);
 
   const cells = useMemo(() => {
     const first = new Date(month.getFullYear(), month.getMonth(), 1);
@@ -934,38 +1147,50 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
     return out;
   }, [month]);
 
-  const startDrag = (p, dayIndex) => (e) => { dragRef.current = { p, dayIndex }; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", p.id); };
+  const startDrag = (info) => (e) => { dragRef.current = info; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", info.p.id); };
   const dropOn = (dateIso) => (e) => {
     e.preventDefault(); setDragOver(null);
     const drag = dragRef.current; dragRef.current = null;
     if (!drag || !isCoord) return;
-    const { p, dayIndex } = drag;
-    if (p.status === "received") setBooking({ project: p, date: dateIso, mode: "book" });
-    else if (p.status === "booked") {
+    const { p, kind, dayIndex, visitId } = drag;
+    if (kind === "received") setBooking({ project: p, date: dateIso, mode: "book" });
+    else if (kind === "day") {
       const cur = scheduleOf(p).find((s) => s.dayIndex === dayIndex);
       if (cur && cur.date !== dateIso) setBooking({ project: p, date: dateIso, mode: "moveDay", dayIndex });
+    } else if (kind === "return") setBooking({ project: p, date: dateIso, mode: "return" });
+    else if (kind === "moveReturn") {
+      const cur = (p.returnVisits || []).find((v) => v.id === visitId);
+      if (cur && cur.date !== dateIso) setBooking({ project: p, date: dateIso, mode: "moveReturn", visitId });
     }
   };
 
   const logLine = (text) => ({ id: uid(), text, author: user.name, createdAt: new Date().toISOString() });
 
-  const confirmBooking = ({ time, days }) => {
-    const { project: p, date, mode, dayIndex } = booking;
+  const confirmBooking = ({ time, endTime, days }) => {
+    const { project: p, date, mode, dayIndex, visitId } = booking;
     if (mode === "book") {
-      const schedule = buildSchedule(date, days, time);
-      save(withSchedule({ ...p, status: "booked", installTime: time, installDays: days, log: [...(p.log || []), logLine(`Booked for ${fmt(date)} at ${time} (${days} day${days > 1 ? "s" : ""})`)] }, schedule), "Installation booked");
-    } else {
-      const schedule = scheduleOf(p).map((s) => (s.dayIndex === dayIndex ? { ...s, date, time: time || s.time } : s));
+      const schedule = buildSchedule(date, days, time, endTime);
+      save(withSchedule({ ...p, status: "booked", installTime: time, installEndTime: endTime || null, installDays: days,
+        log: [...(p.log || []), logLine(`Booked for ${fmt(date)} ${time}${endTime ? `–${endTime}` : ""} (${days} day${days > 1 ? "s" : ""})`)] }, schedule), "Installation booked");
+    } else if (mode === "moveDay") {
+      const schedule = scheduleOf(p).map((s) => (s.dayIndex === dayIndex ? { ...s, date, time: time || s.time, endTime: endTime || null } : s));
       const total = schedule.length;
       const next = withSchedule({ ...p, log: [...(p.log || []), logLine(`Day ${dayIndex}/${total} moved to ${fmt(date)}${time ? ` at ${time}` : ""}`)] }, schedule);
-      if (dayIndex === 1 && time) next.installTime = time;
+      if (dayIndex === 1 && time) { next.installTime = time; next.installEndTime = endTime || null; }
       save(next, `Day ${dayIndex}/${total} moved`);
+    } else if (mode === "return") {
+      const visit = { id: uid(), date, time: time || null, endTime: endTime || null, createdAt: new Date().toISOString(), author: user.name };
+      save({ ...p, snagReturn: false, returnVisits: [...(p.returnVisits || []), visit], log: [...(p.log || []), logLine(`Snag return visit booked for ${fmt(date)}${time ? ` at ${time}` : ""}`)] }, "Return visit booked");
+    } else if (mode === "moveReturn") {
+      const visits = (p.returnVisits || []).map((v) => (v.id === visitId ? { ...v, date, time: time || v.time, endTime: endTime || null } : v));
+      save({ ...p, returnVisits: visits, log: [...(p.log || []), logLine(`Snag return visit moved to ${fmt(date)}${time ? ` at ${time}` : ""}`)] }, "Return visit moved");
     }
     setBooking(null);
   };
 
   const monthLabel = month.toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
   const today = todayIso();
+  const isShutters = cal.id === "shutters";
 
   return (
     <div className="flex gap-4 h-full min-h-0">
@@ -983,8 +1208,8 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
       <div className="flex-1 min-w-0 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <dept.icon size={22} className="text-slate-300" />
-            <h1 className="text-2xl font-bold text-white">{dept.label}</h1>
+            <cal.icon size={22} className="text-slate-300" />
+            <h1 className="text-2xl font-bold text-white">{cal.label}</h1>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronLeft size={18} /></button>
@@ -994,18 +1219,24 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
           </div>
         </div>
 
-        {/* Top tray: received, ready to book */}
+        {/* Top tray: received + snag returns, ready to book */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-sm font-semibold text-white">Received — ready to book</span>
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-sm font-semibold text-white">Ready to book</span>
             <RBadge />
-            <span className="text-[11px] text-slate-500">{isCoord ? "Drag a sticker onto a date" : "Co-ordinator books these"} · {received.length}</span>
+            <span className="text-[11px] text-slate-500">{isCoord ? "Drag a sticker onto a date" : "Co-ordinator books these"} · {received.length + returns.length}</span>
+            {returns.length > 0 && <span className="text-[11px] text-red-300 flex items-center gap-1 ml-2"><SnagFlag small /> {returns.length} snag return{returns.length > 1 ? "s" : ""} to rebook</span>}
           </div>
           <div className="flex flex-wrap gap-2 min-h-[38px]">
-            {received.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
+            {received.length + returns.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
+            {returns.map((p) => (
+              <div key={`r-${p.id}`} className="w-44">
+                <Sticker p={p} draggable={isCoord} onDragStart={startDrag({ p, kind: "return" })} onClick={() => onOpen(p)} variant="return" />
+              </div>
+            ))}
             {received.map((p) => (
               <div key={p.id} className="w-44">
-                <Sticker p={p} draggable={isCoord} onDragStart={startDrag(p, 1)} onClick={() => onOpen(p)} variant="received" />
+                <Sticker p={p} draggable={isCoord} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
               </div>
             ))}
           </div>
@@ -1033,13 +1264,20 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
                   <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
                     <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
                   </div>
-                  {items.map(({ p, day, total }) => (
+                  {items.map((it) => it.kind === "day" ? (
                     <Sticker
-                      key={`${p.id}-${day.dayIndex}`} p={p} variant={p.status}
-                      draggable={isCoord && p.status === "booked"}
-                      onDragStart={startDrag(p, day.dayIndex)} onClick={() => onOpen(p)}
-                      dayTag={total > 1 ? `${day.dayIndex}/${total}` : null}
-                      time={day.time}
+                      key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={it.p.status}
+                      draggable={isCoord && it.p.status === "booked"}
+                      onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
+                      dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
+                      time={it.day.time} endTime={it.day.endTime}
+                    />
+                  ) : (
+                    <Sticker
+                      key={`${it.p.id}-${it.visit.id}`} p={it.p} variant="return"
+                      draggable={isCoord}
+                      onDragStart={startDrag({ p: it.p, kind: "moveReturn", visitId: it.visit.id })} onClick={() => onOpen(it.p)}
+                      time={it.visit.time} endTime={it.visit.endTime}
                     />
                   ))}
                 </div>
@@ -1049,10 +1287,18 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
           <div className="flex items-center gap-4 mt-2 text-[11px] text-slate-500 flex-wrap">
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /> Placed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /><RBadge /> Received</span>
-            <span className="flex items-center gap-1.5"><PartialBadge /> Not received in full</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed</span>
-            <span className="ml-auto">Each day of a multi-day job (1/3, 2/3…) can be dragged on its own.</span>
+            <span className="flex items-center gap-1.5"><PartialBadge /> Not in full</span>
+            {isShutters ? (
+              <>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-orange-400/25 border border-orange-400/60" /> Shutters</span>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-400/25 border border-blue-400/60" /> Calore</span>
+              </>
+            ) : (
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
+            )}
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
+            <span className="ml-auto">Each day (1/3, 2/3…) drags on its own.</span>
           </div>
         </div>
       </div>
@@ -1063,35 +1309,54 @@ function CalendarView({ dept, projects, isCoord, user, save, onOpen, initialMont
 }
 
 function BookingModal({ booking, onClose, onConfirm }) {
-  const { project: p, date, mode, dayIndex } = booking;
-  const isMove = mode === "moveDay";
-  const current = isMove ? scheduleOf(p).find((s) => s.dayIndex === dayIndex) : null;
-  const total = isMove ? scheduleOf(p).length : 0;
-  const [time, setTime] = useState(isMove ? (current?.time || "") : (p.installTime || "08:00"));
+  const { project: p, date, mode, dayIndex, visitId } = booking;
+  const isBook = mode === "book";
+  const isMoveDay = mode === "moveDay";
+  const isReturn = mode === "return";
+  const isMoveReturn = mode === "moveReturn";
+  const current = isMoveDay ? scheduleOf(p).find((s) => s.dayIndex === dayIndex) : isMoveReturn ? (p.returnVisits || []).find((v) => v.id === visitId) : null;
+  const total = isMoveDay ? scheduleOf(p).length : 0;
+  const [time, setTime] = useState(isBook ? (p.installTime || "08:00") : (current?.time || (isReturn ? "08:00" : "")));
+  const [endTime, setEndTime] = useState(current?.endTime || (isBook ? (p.installEndTime || "") : ""));
   const [days, setDays] = useState(p.installDays || 1);
-  const end = !isMove ? installEnd(date, Number(days) || 1) : null;
+  const end = isBook ? installEnd(date, Number(days) || 1) : null;
   const weekend = isWeekend(date);
+  const badTime = timeLt(endTime, time) || (!!endTime && !!time && endTime === time);
+  const title = isBook ? "Book installation" : isMoveDay ? `Move day ${dayIndex}/${total}` : isReturn ? "Book snag return visit" : "Move snag return visit";
+  const timeRequired = isBook || isReturn;
+
   return (
-    <Modal title={isMove ? `Move day ${dayIndex}/${total}` : "Book installation"} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <div className="text-sm text-slate-300 mb-4">
         <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}{p.team ? ` · ${p.team}` : ""}
-        {isMove && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}. Only this day moves; the other days stay where they are.</div>}
+        {isMoveDay && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}. Only this day moves; the other days stay where they are.</div>}
+        {isMoveReturn && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}.</div>}
+        {isReturn && <div className="text-xs text-red-300 mt-1 flex items-center gap-1"><SnagFlag small /> Return visit for {openSnags(p).length} open snag{openSnags(p).length > 1 ? "s" : ""}.</div>}
       </div>
       <div className="grid grid-cols-2 gap-4">
-        <Field label="New date"><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
-        <Field label={isMove ? "Start time (optional)" : "Start time"}>
+        <Field label={isBook || isReturn ? "Date" : "New date"}><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
+        {isBook && <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>}
+        <Field label={timeRequired ? "Start time" : "Start time (optional)"}>
           <select className={inputCls} value={time} onChange={(e) => setTime(e.target.value)}>
-            {isMove && <option value="">No time</option>}
+            {!timeRequired && <option value="">No time</option>}
             {TIMES.map((t) => <option key={t}>{t}</option>)}
           </select>
         </Field>
-        {!isMove && <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>}
-        {!isMove && <Field label="Ends"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>}
+        <Field label="Expected finish (optional)">
+          <select className={`${inputCls} ${badTime ? "border-red-500" : ""}`} value={endTime} onChange={(e) => setEndTime(e.target.value)}>
+            <option value="">Not set</option>
+            {TIMES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+        {isBook && <Field label="Last day"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>}
       </div>
+      {badTime && <p className="text-xs text-red-300 mt-3 flex items-center gap-1"><AlertTriangle size={12} /> Finish time must be later than the start time.</p>}
       {weekend && <p className="text-xs text-amber-300 mt-3">This is a weekend date.</p>}
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className={btnGhost}>Cancel</button>
-        <button onClick={() => onConfirm({ time, days: Math.max(1, Number(days) || 1) })} className={btnPrimary}>{isMove ? "Move this day" : "Book installation"}</button>
+        <button onClick={() => onConfirm({ time, endTime, days: Math.max(1, Number(days) || 1) })} disabled={badTime} className={btnPrimary}>
+          {isBook ? "Book installation" : isMoveDay ? "Move this day" : isReturn ? "Book return visit" : "Move visit"}
+        </button>
       </div>
     </Modal>
   );
@@ -1100,10 +1365,11 @@ function BookingModal({ booking, onClose, onConfirm }) {
 /* =========================================================
    COMPLETED (ready to invoice) + INVOICE LIST
    ========================================================= */
-function CompletedView({ items, isCoord, user, save, onOpen, setToast }) {
+function CompletedView({ items, isCoord, isDev, user, save, onOpen, setToast }) {
   const [printing, setPrinting] = useState(false);
   const ticked = items.filter((p) => p.readyToInvoice);
   const toggle = (p) => save({ ...p, readyToInvoice: !p.readyToInvoice });
+  const locked = (p) => hasOpenSnags(p) && !isDev; // open snag blocks invoicing unless developer
   const confirmInvoiced = () => {
     const at = new Date().toISOString();
     ticked.forEach((p) => save({ ...p, invoiced: true, invoicedAt: at, readyToInvoice: false, log: [...(p.log || []), { id: uid(), text: "Invoiced — moved to history", author: user.name, createdAt: at }] }));
@@ -1161,10 +1427,10 @@ function CompletedView({ items, isCoord, user, save, onOpen, setToast }) {
           {items.map((p) => {
             const d = deptOf(p.department);
             return (
-              <div key={p.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4 flex items-center gap-4">
+              <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-4 flex items-center gap-4`}>
                 {isCoord && (
-                  <label className="flex items-center gap-2 text-xs text-slate-300 shrink-0 select-none cursor-pointer">
-                    <input type="checkbox" checked={!!p.readyToInvoice} onChange={() => toggle(p)} className="w-4 h-4" />
+                  <label className={`flex items-center gap-2 text-xs shrink-0 select-none ${locked(p) ? "text-slate-500 cursor-not-allowed" : "text-slate-300 cursor-pointer"}`} title={locked(p) ? "Resolve the open snag before invoicing" : ""}>
+                    <input type="checkbox" checked={!!p.readyToInvoice} disabled={locked(p)} onChange={() => toggle(p)} className="w-4 h-4" />
                     Ready to invoice
                   </label>
                 )}
@@ -1174,7 +1440,10 @@ function CompletedView({ items, isCoord, user, save, onOpen, setToast }) {
                     <div className="text-xs text-slate-400 truncate">{p.address}</div>
                   </div>
                   <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}{p.team ? ` · ${p.team}` : ""}</div>
-                  <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right">PO {p.po} · {p.consultant} · done {fmtShort((p.installedAt || "").slice(0, 10))}</div>
+                  <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right flex items-center justify-end gap-2">
+                    {hasOpenSnags(p) && <span className="flex items-center gap-1 text-red-300"><SnagFlag small /> {openSnags(p).length} open</span>}
+                    <span>PO {p.po} · {p.consultant} · done {fmtShort((p.installedAt || "").slice(0, 10))}</span>
+                  </div>
                 </button>
               </div>
             );
@@ -1215,10 +1484,10 @@ function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
               {list.map((p) => {
                 const d = deptOf(p.department);
                 return (
-                  <div key={p.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4 flex items-center gap-4">
+                  <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-4 flex items-center gap-4`}>
                     <button onClick={() => onOpen(p)} className="flex-1 min-w-0 text-left grid grid-cols-12 gap-3 items-center">
                       <div className="col-span-12 md:col-span-5 min-w-0">
-                        <div className="font-medium text-white truncate">{p.clientName}</div>
+                        <div className="font-medium text-white truncate flex items-center gap-2">{p.clientName}{hasOpenSnags(p) && <SnagFlag small />}</div>
                         <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
                       </div>
                       <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
@@ -1263,13 +1532,15 @@ function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
    ========================================================= */
 function AvailabilityView({ projects, openDept }) {
   const [dept, setDept] = useState("all");
-  const booked = projects.filter((p) => (p.status === "booked" || p.status === "installed") && (dept === "all" || p.department === dept));
+  const inScope = projects.filter((p) => dept === "all" || calendarOf(p.department) === dept);
+  const booked = inScope.filter((p) => p.status === "booked" || p.status === "installed");
 
   const hoursByDay = useMemo(() => {
     const m = {};
     booked.forEach((p) => scheduleOf(p).forEach((s) => { m[s.date] = (m[s.date] || 0) + hoursPerDay(p); }));
+    inScope.forEach((p) => (p.returnVisits || []).forEach((v) => { m[v.date] = (m[v.date] || 0) + DEFAULT_HOURS_PER_DAY; }));
     return m;
-  }, [booked]);
+  }, [booked, inScope]);
 
   const months = useMemo(() => {
     const now = new Date();
@@ -1304,7 +1575,7 @@ function AvailabilityView({ projects, openDept }) {
         <div className="flex items-center gap-3">
           <select className={`${inputCls} w-44`} value={dept} onChange={(e) => setDept(e.target.value)}>
             <option value="all">All departments</option>
-            {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+            {CALENDARS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
           <div className="flex items-center gap-3 text-[11px] text-slate-400">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-emerald-500/40" /> Free</span>
@@ -1350,11 +1621,13 @@ function ReportsView({ projects }) {
 
   const range = mode === "daily" ? [date, date] : [weekStart(date), addDays(weekStart(date), 6)];
   // one row per install day that falls in the range
-  const rows = projects
-    .filter((p) => p.department === dept && (p.status === "booked" || p.status === "installed"))
-    .flatMap((p) => scheduleOf(p).filter((s) => s.date >= range[0] && s.date <= range[1]).map((s) => ({ p, day: s, total: scheduleOf(p).length })))
-    .sort((a, b) => (a.day.date + (a.day.time || "99")).localeCompare(b.day.date + (b.day.time || "99")));
-  const d = deptOf(dept);
+  const inScope = projects.filter((p) => calendarOf(p.department) === dept);
+  const rows = [
+    ...inScope.filter((p) => p.status === "booked" || p.status === "installed")
+      .flatMap((p) => scheduleOf(p).filter((s) => s.date >= range[0] && s.date <= range[1]).map((s) => ({ p, day: s, total: scheduleOf(p).length }))),
+    ...inScope.flatMap((p) => (p.returnVisits || []).filter((v) => v.date >= range[0] && v.date <= range[1]).map((v) => ({ p, day: { dayIndex: 1, date: v.date, time: v.time, endTime: v.endTime }, total: 1, isReturn: true }))),
+  ].sort((a, b) => (a.day.date + (a.day.time || "99")).localeCompare(b.day.date + (b.day.time || "99")));
+  const d = calOf(dept);
   const title = mode === "daily" ? `${d.label} — ${fmt(date)}` : `${d.label} — week of ${fmt(range[0])} to ${fmt(range[1])}`;
 
   return (
@@ -1364,7 +1637,7 @@ function ReportsView({ projects }) {
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <Field label="Department">
             <select className={inputCls} value={dept} onChange={(e) => setDept(e.target.value)}>
-              {DEPARTMENTS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+              {CALENDARS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
             </select>
           </Field>
           <Field label="Report">
@@ -1389,22 +1662,28 @@ function ReportsView({ projects }) {
         </div>
         {rows.length === 0 ? (
           <div className="text-gray-600 text-sm py-8 text-center">No installations booked for this period.</div>
-        ) : rows.map(({ p, day, total }, idx) => (
-          <div key={`${p.id}-${day.dayIndex}`} className={`report-job ${idx > 0 ? "mt-6 pt-6 border-t border-gray-300" : ""}`}>
+        ) : rows.map(({ p, day, total, isReturn }, idx) => (
+          <div key={`${p.id}-${day.dayIndex}-${day.date}`} className={`report-job ${idx > 0 ? "mt-6 pt-6 border-t border-gray-300" : ""}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-lg font-bold">{p.clientName}{total > 1 ? <span className="text-sm font-normal text-gray-600"> · day {day.dayIndex} of {total}</span> : null}</div>
+                <div className="text-lg font-bold">
+                  {p.clientName}
+                  {total > 1 ? <span className="text-sm font-normal text-gray-600"> · day {day.dayIndex} of {total}</span> : null}
+                  {isReturn ? <span className="text-sm font-bold text-red-700"> · SNAG RETURN VISIT</span> : null}
+                  {(p.department === "shutters" || p.department === "calore") ? <span className="text-sm font-normal text-gray-600"> · {deptOf(p.department).label}</span> : null}
+                </div>
+                {isReturn && openSnags(p).map((s) => <div key={s.id} className="text-sm text-red-800">{s.category}: {s.description}</div>)}
                 <div className="text-sm text-gray-800">{p.address}</div>
                 <div className="text-sm text-gray-800">Contact: {p.contact || "—"}</div>
               </div>
               <div className="text-right text-sm">
                 <div className="font-semibold">{fmt(day.date)}</div>
-                <div className="text-gray-800">{day.time ? `Start ${day.time}` : "Continuation"}</div>
+                <div className="text-gray-800">{day.time ? `${day.time}${day.endTime ? ` – ${day.endTime}` : ""}` : "Continuation"}</div>
                 <div className="text-gray-800">PO {p.po}</div>
                 <div className="text-gray-600">{p.productType} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
               </div>
             </div>
-            {(p.jobCards || []).length > 0 && day.dayIndex === 1 && (
+            {(p.jobCards || []).length > 0 && day.dayIndex === 1 && !isReturn && (
               <div className="mt-3 space-y-3">
                 {p.jobCards.map((c) => <img key={c.id} src={c.image} alt="Job card" className="w-full rounded border border-gray-300 report-img" />)}
               </div>
@@ -1422,6 +1701,195 @@ function ReportsView({ projects }) {
           .report-img { max-height: 240mm; object-fit: contain; }
         }
       `}</style>
+    </div>
+  );
+}
+
+/* =========================================================
+   SNAGS TAB — jobs with open snags, any status
+   ========================================================= */
+function SnagsView({ items, onOpen }) {
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="flex items-baseline justify-between mb-5">
+        <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Flag size={22} className="text-red-400" /> Snags</h1>
+        <span className="text-sm text-slate-400">{items.length} job{items.length === 1 ? "" : "s"} with open snags</span>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-slate-400 text-sm py-10 text-center border border-dashed border-[#30363d] rounded-xl">No open snags. Nice.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((p) => {
+            const d = deptOf(p.department);
+            const open = openSnags(p);
+            return (
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-4`}>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <SnagFlag />
+                  <span className="font-medium text-white">{p.clientName}</span>
+                  <span className="text-xs text-slate-400">PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                  <span className="ml-auto flex items-center gap-2">
+                    {p.snagReturn && <span className="text-[11px] text-red-300">Return visit to book</span>}
+                    {(p.returnVisits || []).length > 0 && !p.snagReturn && <span className="text-[11px] text-slate-400">Return {fmtShort([...p.returnVisits].sort((a, b) => b.date.localeCompare(a.date))[0].date)}</span>}
+                    <Badge status={p.status} />
+                  </span>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {open.map((s) => (
+                    <div key={s.id} className="text-sm text-slate-300 flex items-start gap-2">
+                      <span className="text-[11px] px-1.5 py-0.5 rounded border border-red-500/40 text-red-300 shrink-0 mt-0.5">{s.category}</span>
+                      <span className="flex-1">{s.description}</span>
+                      <span className="text-[11px] text-slate-500 shrink-0">{s.author}, {fmtShort((s.createdAt || "").slice(0, 10))}{!s.acknowledged ? " · NEW" : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   SNAG REVIEW — resolved snags: cause + cost to company
+   Level 2+ edits; consultants can view and add notes.
+   ========================================================= */
+function SnagReviewView({ projects, user, isCoord, save, onOpen }) {
+  const [filter, setFilter] = useState("pending"); // pending | all
+  const [noteDraft, setNoteDraft] = useState({});
+  const rows = useMemo(() => projects
+    .flatMap((p) => (p.snags || []).filter((s) => s.resolved).map((s) => ({ p, s })))
+    .filter(({ s }) => filter === "all" || !(s.review && s.review.cause))
+    .sort((a, b) => (b.s.resolvedAt || "").localeCompare(a.s.resolvedAt || "")), [projects, filter]);
+
+  const patchReview = (p, s, patch) => {
+    const review = { cause: null, costs: [], notes: [], ...(s.review || {}), ...patch };
+    save({ ...p, snags: p.snags.map((x) => (x.id === s.id ? { ...x, review } : x)) });
+  };
+  const addCost = (p, s) => patchReview(p, s, { costs: [...((s.review && s.review.costs) || []), { id: uid(), category: COST_CATEGORIES[0], amount: "", note: "" }] });
+  const updCost = (p, s, id, patch) => patchReview(p, s, { costs: (s.review.costs || []).map((c) => (c.id === id ? { ...c, ...patch } : c)) });
+  const delCost = (p, s, id) => patchReview(p, s, { costs: (s.review.costs || []).filter((c) => c.id !== id) });
+  const addNote = (p, s) => {
+    const text = (noteDraft[s.id] || "").trim();
+    if (!text) return;
+    patchReview(p, s, { notes: [...((s.review && s.review.notes) || []), { id: uid(), text, author: user.name, createdAt: new Date().toISOString() }] });
+    setNoteDraft((d) => ({ ...d, [s.id]: "" }));
+  };
+  const totalOf = (s) => ((s.review && s.review.costs) || []).reduce((n, c) => n + (Number(c.amount) || 0), 0);
+
+  // Simple totals — proper filtered reporting comes in phase 4
+  const totals = useMemo(() => {
+    const all = projects.flatMap((p) => (p.snags || []).filter((s) => s.resolved).map((s) => ({ p, s })));
+    const byCause = {}, byCal = {};
+    let grand = 0;
+    all.forEach(({ p, s }) => {
+      const t = totalOf(s); grand += t;
+      const c = (s.review && s.review.cause) || "Not yet allocated"; byCause[c] = (byCause[c] || 0) + t;
+      const k = calOf(calendarOf(p.department)).label; byCal[k] = (byCal[k] || 0) + t;
+    });
+    return { grand, byCause, byCal, count: all.length };
+  }, [projects]);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2"><ClipboardCheck size={22} className="text-slate-300" /> Snag review</h1>
+            <div className="text-sm text-slate-400">{isCoord ? "Allocate the cause and cost to company for each resolved snag." : "View only — you can add notes."}</div>
+          </div>
+          <select className={`${inputCls} w-44`} value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="pending">Needs allocation</option>
+            <option value="all">All resolved snags</option>
+          </select>
+        </div>
+
+        {rows.length === 0 ? (
+          <div className="text-slate-400 text-sm py-10 text-center border border-dashed border-[#30363d] rounded-xl">{filter === "pending" ? "Everything has been allocated." : "No resolved snags yet."}</div>
+        ) : (
+          <div className="space-y-3">
+            {rows.map(({ p, s }) => {
+              const d = deptOf(p.department);
+              const r = s.review || { cause: null, costs: [], notes: [] };
+              return (
+                <div key={s.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4">
+                  <div className="flex items-start gap-3 flex-wrap">
+                    {s.photo && <img src={s.photo} alt="Snag" className="w-14 h-14 object-cover rounded-lg border border-[#30363d] shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <button onClick={() => onOpen(p)} className="font-medium text-white hover:underline">{p.clientName}</button>
+                      <span className="text-xs text-slate-400"> · PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.productType} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                      <div className="text-sm text-slate-300 mt-1"><span className="text-[11px] px-1.5 py-0.5 rounded border border-slate-500/40 text-slate-400 mr-2">Logged as {s.category}</span>{s.description}</div>
+                      <div className="text-xs text-emerald-200/80 mt-1">Resolved by {s.resolvedBy} on {fmtShort((s.resolvedAt || "").slice(0, 10))}: {s.resolveReason}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[11px] text-slate-500">Cost to company</div>
+                      <div className={`text-lg font-semibold ${totalOf(s) > 0 ? "text-red-300" : "text-slate-400"}`}>{zar(totalOf(s))}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 mt-4">
+                    <Field label="Cause">
+                      <select className={inputCls} value={r.cause || ""} disabled={!isCoord} onChange={(e) => patchReview(p, s, { cause: e.target.value || null })}>
+                        <option value="">Not yet allocated</option>
+                        {SNAG_CAUSES.map((c) => <option key={c}>{c}</option>)}
+                      </select>
+                    </Field>
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Cost lines (ZAR)</div>
+                      <div className="space-y-2">
+                        {(r.costs || []).map((c) => (
+                          <div key={c.id} className="flex items-center gap-2">
+                            <select className={`${inputCls} w-32`} value={c.category} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
+                              {COST_CATEGORIES.map((x) => <option key={x}>{x}</option>)}
+                            </select>
+                            <input type="number" min="0" step="0.01" className={`${inputCls} w-32`} placeholder="0.00" value={c.amount} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
+                            <input className={inputCls} placeholder="Note (optional)" value={c.note || ""} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
+                            {isCoord && <button onClick={() => delCost(p, s, c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
+                          </div>
+                        ))}
+                        {(r.costs || []).length === 0 && <div className="text-xs text-slate-500">No costs recorded.</div>}
+                      </div>
+                      {isCoord && <button onClick={() => addCost(p, s)} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add cost line</button>}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-[#30363d]">
+                    {(r.notes || []).map((n) => (
+                      <div key={n.id} className="text-xs text-slate-400 mb-1"><span className="text-slate-300">{n.author}</span> · {fmtShort((n.createdAt || "").slice(0, 10))}: {n.text}</div>
+                    ))}
+                    <div className="flex items-center gap-2 mt-1">
+                      <input className={`${inputCls} text-xs`} placeholder="Add a note" value={noteDraft[s.id] || ""} onChange={(e) => setNoteDraft((dft) => ({ ...dft, [s.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && addNote(p, s)} />
+                      <button onClick={() => addNote(p, s)} className={`${btnGhost} py-1.5 text-xs shrink-0`}>Add note</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {isCoord && totals.count > 0 && (
+        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-lg font-semibold text-white">Cost to company — all resolved snags</h2>
+            <span className="text-xl font-bold text-red-300">{zar(totals.grand)}</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <div className="text-xs text-slate-500 mb-1">By cause</div>
+              {Object.entries(totals.byCause).sort((a, b) => b[1] - a[1]).map(([k, v]) => <div key={k} className="flex justify-between py-0.5 text-slate-300"><span>{k}</span><span>{zar(v)}</span></div>)}
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 mb-1">By department</div>
+              {Object.entries(totals.byCal).sort((a, b) => b[1] - a[1]).map(([k, v]) => <div key={k} className="flex justify-between py-0.5 text-slate-300"><span>{k}</span><span>{zar(v)}</span></div>)}
+            </div>
+          </div>
+          <div className="text-[11px] text-slate-500 mt-3">Filtering by product type, consultant and team comes in phase 4.</div>
+        </div>
+      )}
     </div>
   );
 }
