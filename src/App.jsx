@@ -117,6 +117,10 @@ const withSchedule = (p, schedule) => {
   return { ...p, installSchedule: schedule, installDate: sorted[0]?.date || null, installEndDate: sorted[sorted.length - 1]?.date || null };
 };
 const hoursPerDay = (p) => Number(p.estHours) || DEFAULT_HOURS_PER_DAY;
+// Two-step booking: a job can sit on the calendar as "planned" (no lines) or "reserved" (one line)
+// before it is confirmed as booked (two lines). While planned/reserved it stays in its tray.
+const isReserved = (p) => !!p.reserveStage && p.status !== "booked" && p.status !== "installed";
+const onCalendar = (p) => p.status === "booked" || p.status === "installed" || isReserved(p);
 // Received but some line items still outstanding
 const partiallyReceived = (p) => p.received && (p.lineItems || []).some((li) => !li.received);
 
@@ -527,6 +531,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {hasOpenSnags(p) && <SnagFlag />}
+              {isReserved(p) && <span className={`text-[10px] ${p.received ? "text-slate-300" : "text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"}</span>}
               {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
               <Badge status={p.status} />
               {p.invoiced && <span className="text-[10px] text-slate-500">Invoiced</span>}
@@ -631,6 +636,7 @@ function ListView({ title, status, items, onOpen, level }) {
                 <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
                   <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
                   {hasOpenSnags(p) && <SnagFlag />}
+                  {isReserved(p) && <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span>}
                   {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
                   <Badge status={p.status} />
                 </div>
@@ -800,7 +806,12 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
   const undoReceived = () => save({ ...p, status: "ordered", received: false, receivedAt: null, log: log("Received undone") }, "Moved back to placed");
   const markInstalled = () => save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
   const undoInstalled = () => save({ ...p, status: "booked", installed: false, installedAt: null, log: log("Completion undone") }, "Moved back to booked");
-  const unbook = () => save({ ...p, status: "received", installDate: null, installEndDate: null, installTime: null, installEndTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
+  const unbook = () => save({ ...p, status: "received", reserveStage: null, installDate: null, installEndDate: null, installTime: null, installEndTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
+  // Two-step booking controls
+  const reserve = () => save({ ...p, reserveStage: "reserved", log: log(`Reserved for ${fmt(p.installDate)}${p.received ? "" : " (material not yet received)"}`) }, "Reserved");
+  const unreserve = () => save({ ...p, reserveStage: "planned", log: log("Reservation removed — still planned") }, "Back to planned");
+  const unplan = () => save({ ...p, reserveStage: null, installDate: null, installEndDate: null, installTime: null, installEndTime: null, installSchedule: [], log: log("Removed from calendar") }, "Removed from calendar");
+  const confirmBooking = () => save({ ...p, status: "booked", reserveStage: null, log: log(`Booking confirmed for ${fmt(p.installDate)}`) }, "Booking confirmed");
   const del = () => save({ ...p, deleted: true, deletedAt: now(), deletedBy: user.name, deleteReason: reason, log: log(`Deleted: ${reason}`) }, "Project deleted");
   const toggleLine = (li) => {
     const received = !li.received;
@@ -853,6 +864,11 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
         {p.team && <span className="text-xs text-slate-400">· {p.team}</span>}
         {p.received && p.status === "received" && <RBadge />}
         {partiallyReceived(p) && <span className="flex items-center gap-1 text-xs text-yellow-300"><PartialBadge /> not received in full</span>}
+        {isReserved(p) && (
+          <span className={`text-xs px-2 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>
+            {p.reserveStage === "reserved" ? "Reserved" : "Planned"} · {fmt(p.installDate)}{p.received ? "" : " · no stock yet"}
+          </span>
+        )}
         {open.length > 0 && <span className="flex items-center gap-1 text-xs text-red-300"><SnagFlag /> {open.length} open snag{open.length > 1 ? "s" : ""}</span>}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
@@ -868,12 +884,12 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
                 {[...schedule].sort((a, b) => a.date.localeCompare(b.date)).map((s) => (
                   <span key={s.dayIndex} className="text-xs px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-100 flex items-center gap-1.5">
                     {s.dayIndex}/{schedule.length} · {fmt(s.date)}{s.time ? ` ${s.time}` : ""}{s.endTime ? `–${s.endTime}` : ""}
-                    {isCoord && p.status === "booked" && schedule.length > 1 && (
+                    {isCoord && (p.status === "booked" || isReserved(p)) && schedule.length > 1 && (
                       <button onClick={() => removeDay(s.dayIndex)} title="Remove this day" className="text-emerald-300/70 hover:text-red-300"><X size={11} /></button>
                     )}
                   </span>
                 ))}
-                {isCoord && p.status === "booked" && (
+                {isCoord && (p.status === "booked" || isReserved(p)) && (
                   <button onClick={() => setAddingDay(true)} className="text-xs px-2 py-1 rounded-lg border border-dashed border-[#30363d] text-slate-300 hover:border-[#1f6feb] flex items-center gap-1"><Plus size={12} /> Add day</button>
                 )}
               </div>
@@ -956,8 +972,16 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
 
       {isCoord && (
         <div className="mt-6 pt-4 border-t border-[#30363d] flex flex-wrap gap-2">
-          {p.status === "ordered" && <button onClick={markReceived} className={btnPrimary}>Mark main item received</button>}
-          {p.status === "received" && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
+          {isReserved(p) && (
+            <>
+              {p.reserveStage === "planned" && <button onClick={reserve} className={`${btnGhost} border-slate-400/60`}>Reserve this date</button>}
+              {p.reserveStage === "reserved" && <button onClick={unreserve} className={btnGhost}>Back to planned</button>}
+              <button onClick={confirmBooking} disabled={!p.received} title={p.received ? "" : "Mark the main item received before confirming"} className={btnPrimary}>Confirm booking</button>
+              <button onClick={unplan} className={btnGhost}>Remove from calendar</button>
+            </>
+          )}
+          {p.status === "ordered" && <button onClick={markReceived} className={isReserved(p) ? btnGhost : btnPrimary}>Mark main item received</button>}
+          {p.status === "received" && !isReserved(p) && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
           {p.status === "booked" && <button onClick={markInstalled} className={btnPrimary}>Mark as completed</button>}
           {p.status === "booked" && <button onClick={unbook} className={btnGhost}>Remove booking</button>}
           {p.status === "installed" && !p.invoiced && <button onClick={undoInstalled} className={btnGhost}>Undo completion</button>}
@@ -1077,6 +1101,8 @@ function AddDayModal({ project: p, schedule, onClose, onConfirm }) {
 // Sticker colour: Shutters orange, Calore blue, everything else green. Snag returns are red.
 const stickerCls = (p, variant) => {
   if (variant === "return") return "bg-red-500/20 border-red-500/60 text-red-50";
+  // White sticker while planned/reserved; red outline until the material has actually arrived
+  if (variant === "reserved") return p.received ? "bg-white border-slate-300 text-slate-900" : "bg-white border-red-500 border-2 text-slate-900";
   if (variant === "booked" || variant === "installed") {
     const done = variant === "installed";
     if (p.department === "shutters") return done ? "bg-orange-700/70 border-orange-500/60 text-white" : "bg-orange-400/25 border-orange-400/60 text-orange-50";
@@ -1086,9 +1112,23 @@ const stickerCls = (p, variant) => {
   return "bg-slate-300/15 border-slate-400/30 text-slate-200";
 };
 
-function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, endTime }) {
+// One bar = reserved, two bars = confirmed (booked). Nothing while only planned.
+const StageBars = ({ p, dark }) => {
+  const n = p.status === "booked" || p.status === "installed" ? 2 : p.reserveStage === "reserved" ? 1 : 0;
+  if (!n) return null;
+  return (
+    <span className="flex flex-col gap-[3px] shrink-0" title={n === 2 ? "Confirmed" : "Reserved"}>
+      {Array.from({ length: n }).map((_, i) => <span key={i} className={`block w-6 h-[3px] rounded ${dark ? "bg-slate-900" : "bg-white"}`} />)}
+    </span>
+  );
+};
+
+function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, endTime, inTray }) {
+  // A planned/reserved job shows white in its tray too, so the tray and calendar match
+  if (inTray && isReserved(p)) variant = "reserved";
   const cls = stickerCls(p, variant);
   const flagged = hasOpenSnags(p);
+  const white = variant === "reserved";
   return (
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={onClick}
@@ -1104,8 +1144,11 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
       </div>
       <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
         <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
-        {time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
-        {!time && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
+        {inTray && isReserved(p) && p.installDate ? <span className="text-[10px] font-semibold">{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span> : null}
+        {!inTray && time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
+        {!inTray && !time && p.materialEta && p.status === "ordered" && !isReserved(p) && <span>ETA {fmtShort(p.materialEta)}</span>}
+        {inTray && !isReserved(p) && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
+        {!inTray && (variant === "reserved" || variant === "booked" || variant === "installed") && <StageBars p={p} dark={white} />}
       </div>
     </div>
   );
@@ -1123,7 +1166,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const returns = projects.filter((p) => p.snagReturn); // completed jobs with a snag, waiting for a return visit to be booked
-  const onCal = projects.filter((p) => p.status === "booked" || p.status === "installed");
+  const onCal = projects.filter(onCalendar); // booked, installed, or planned/reserved
 
   // map date → items: install days and snag return visits
   const byDay = useMemo(() => {
@@ -1153,7 +1196,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
     const drag = dragRef.current; dragRef.current = null;
     if (!drag || !isCoord) return;
     const { p, kind, dayIndex, visitId } = drag;
-    if (kind === "received") setBooking({ project: p, date: dateIso, mode: "book" });
+    if (kind === "received" || kind === "ordered") setBooking({ project: p, date: dateIso, mode: "book" });
     else if (kind === "day") {
       const cur = scheduleOf(p).find((s) => s.dayIndex === dayIndex);
       if (cur && cur.date !== dateIso) setBooking({ project: p, date: dateIso, mode: "moveDay", dayIndex });
@@ -1166,16 +1209,19 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
 
   const logLine = (text) => ({ id: uid(), text, author: user.name, createdAt: new Date().toISOString() });
 
-  const confirmBooking = ({ time, endTime, days }) => {
+  const confirmBooking = ({ time, endTime, days, reason }) => {
     const { project: p, date, mode, dayIndex, visitId } = booking;
     if (mode === "book") {
+      // Step 1 of the two-step booking: the job is only PLANNED on this date. Status does not change
+      // and the sticker stays in its tray until the co-ordinator confirms it.
       const schedule = buildSchedule(date, days, time, endTime);
-      save(withSchedule({ ...p, status: "booked", installTime: time, installEndTime: endTime || null, installDays: days,
-        log: [...(p.log || []), logLine(`Booked for ${fmt(date)} ${time}${endTime ? `–${endTime}` : ""} (${days} day${days > 1 ? "s" : ""})`)] }, schedule), "Installation booked");
+      save(withSchedule({ ...p, reserveStage: "planned", installTime: time, installEndTime: endTime || null, installDays: days,
+        log: [...(p.log || []), logLine(`Planned for ${fmt(date)} ${time}${endTime ? `–${endTime}` : ""} (${days} day${days > 1 ? "s" : ""})${p.received ? "" : " — material not yet received"}`)] }, schedule), "Planned on calendar — open the job to reserve or confirm");
     } else if (mode === "moveDay") {
       const schedule = scheduleOf(p).map((s) => (s.dayIndex === dayIndex ? { ...s, date, time: time || s.time, endTime: endTime || null } : s));
       const total = schedule.length;
-      const next = withSchedule({ ...p, log: [...(p.log || []), logLine(`Day ${dayIndex}/${total} moved to ${fmt(date)}${time ? ` at ${time}` : ""}`)] }, schedule);
+      const why = p.status === "booked" && reason ? ` — ${reason}` : "";
+      const next = withSchedule({ ...p, log: [...(p.log || []), logLine(`Day ${dayIndex}/${total} moved to ${fmt(date)}${time ? ` at ${time}` : ""}${why}`)] }, schedule);
       if (dayIndex === 1 && time) { next.installTime = time; next.installEndTime = endTime || null; }
       save(next, `Day ${dayIndex}/${total} moved`);
     } else if (mode === "return") {
@@ -1200,9 +1246,9 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
         <div className="text-[11px] text-slate-500 mb-3">In ETA order · {ordered.length}</div>
         <div className="space-y-2 overflow-y-auto flex-1 pr-0.5">
           {ordered.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
-          {ordered.map((p) => <Sticker key={p.id} p={p} draggable={false} onClick={() => onOpen(p)} variant="ordered" />)}
+          {ordered.map((p) => <Sticker key={p.id} p={p} inTray draggable={isCoord && !isReserved(p)} onDragStart={startDrag({ p, kind: "ordered" })} onClick={() => onOpen(p)} variant="ordered" />)}
         </div>
-        {isCoord && ordered.length > 0 && <div className="text-[11px] text-slate-500 mt-3">Open a sticker and mark it received to move it up.</div>}
+        {isCoord && ordered.length > 0 && <div className="text-[11px] text-slate-500 mt-3">Drag onto a date to plan it before stock arrives (white sticker, red outline). Mark received to move it up.</div>}
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col gap-3">
@@ -1236,7 +1282,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
             ))}
             {received.map((p) => (
               <div key={p.id} className="w-44">
-                <Sticker p={p} draggable={isCoord} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
+                <Sticker p={p} inTray draggable={isCoord && !isReserved(p)} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
               </div>
             ))}
           </div>
@@ -1266,8 +1312,8 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
                   </div>
                   {items.map((it) => it.kind === "day" ? (
                     <Sticker
-                      key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={it.p.status}
-                      draggable={isCoord && it.p.status === "booked"}
+                      key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={isReserved(it.p) ? "reserved" : it.p.status}
+                      draggable={isCoord && (it.p.status === "booked" || isReserved(it.p))}
                       onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
                       dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
                       time={it.day.time} endTime={it.day.endTime}
@@ -1297,6 +1343,10 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
               <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
             )}
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
             <span className="ml-auto">Each day (1/3, 2/3…) drags on its own.</span>
           </div>
@@ -1319,16 +1369,19 @@ function BookingModal({ booking, onClose, onConfirm }) {
   const [time, setTime] = useState(isBook ? (p.installTime || "08:00") : (current?.time || (isReturn ? "08:00" : "")));
   const [endTime, setEndTime] = useState(current?.endTime || (isBook ? (p.installEndTime || "") : ""));
   const [days, setDays] = useState(p.installDays || 1);
+  const [reason, setReason] = useState("");
+  const needsReason = isMoveDay && p.status === "booked"; // confirmed jobs only move with a reason
   const end = isBook ? installEnd(date, Number(days) || 1) : null;
   const weekend = isWeekend(date);
   const badTime = timeLt(endTime, time) || (!!endTime && !!time && endTime === time);
-  const title = isBook ? "Book installation" : isMoveDay ? `Move day ${dayIndex}/${total}` : isReturn ? "Book snag return visit" : "Move snag return visit";
+  const title = isBook ? "Plan installation" : isMoveDay ? `Move day ${dayIndex}/${total}` : isReturn ? "Book snag return visit" : "Move snag return visit";
   const timeRequired = isBook || isReturn;
 
   return (
     <Modal title={title} onClose={onClose}>
       <div className="text-sm text-slate-300 mb-4">
         <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}{p.team ? ` · ${p.team}` : ""}
+        {isBook && <div className="text-xs text-slate-400 mt-1">This plans the job on the date. It stays in its tray until you reserve or confirm it from the job screen.{!p.received ? " Material has not been received yet, so it will show with a red outline." : ""}</div>}
         {isMoveDay && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}. Only this day moves; the other days stay where they are.</div>}
         {isMoveReturn && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}.</div>}
         {isReturn && <div className="text-xs text-red-300 mt-1 flex items-center gap-1"><SnagFlag small /> Return visit for {openSnags(p).length} open snag{openSnags(p).length > 1 ? "s" : ""}.</div>}
@@ -1350,12 +1403,19 @@ function BookingModal({ booking, onClose, onConfirm }) {
         </Field>
         {isBook && <Field label="Last day"><div className={`${inputCls} bg-[#21262d]`}>{fmt(end)}</div></Field>}
       </div>
+      {needsReason && (
+        <div className="mt-4">
+          <Field label="Reason for moving a confirmed installation (required)">
+            <input className={inputCls} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Client away, installer sick" autoFocus />
+          </Field>
+        </div>
+      )}
       {badTime && <p className="text-xs text-red-300 mt-3 flex items-center gap-1"><AlertTriangle size={12} /> Finish time must be later than the start time.</p>}
       {weekend && <p className="text-xs text-amber-300 mt-3">This is a weekend date.</p>}
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className={btnGhost}>Cancel</button>
-        <button onClick={() => onConfirm({ time, endTime, days: Math.max(1, Number(days) || 1) })} disabled={badTime} className={btnPrimary}>
-          {isBook ? "Book installation" : isMoveDay ? "Move this day" : isReturn ? "Book return visit" : "Move visit"}
+        <button onClick={() => onConfirm({ time, endTime, days: Math.max(1, Number(days) || 1), reason: reason.trim() })} disabled={badTime || (needsReason && !reason.trim())} className={btnPrimary}>
+          {isBook ? "Plan on this date" : isMoveDay ? "Move this day" : isReturn ? "Book return visit" : "Move visit"}
         </button>
       </div>
     </Modal>
@@ -1533,7 +1593,7 @@ function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
 function AvailabilityView({ projects, openDept }) {
   const [dept, setDept] = useState("all");
   const inScope = projects.filter((p) => dept === "all" || calendarOf(p.department) === dept);
-  const booked = inScope.filter((p) => p.status === "booked" || p.status === "installed");
+  const booked = inScope.filter(onCalendar); // includes planned/reserved days so the capacity picture is honest
 
   const hoursByDay = useMemo(() => {
     const m = {};
