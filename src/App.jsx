@@ -47,6 +47,63 @@ const calOf = (calId) => CALENDARS.find((c) => c.id === calId) || CALENDARS[0];
 const TEAMS = { blinds: ["Team 1", "Team 2"], shutters: ["Team 1"], calore: ["Team 1"], carpets: ["Team 1"], vinyl: ["Team 1", "Team 2"], wood: ["Team 1", "Team 2"] };
 const teamsOf = (dept) => TEAMS[dept] || ["Team 1"];
 
+// Phase 5 — product catalogue: Department -> Category -> Supplier -> Range
+const PRODUCT_CATALOG = {
+  "Carpets": {
+    "Belgotex": ["Arabica", "Conqueror", "Textured", "Aqua", "Softology Light", "Softology", "Softology Ultra", "Sensology Aural", "Serengeti", "Sensology Lush", "Westminster", "Baltimore", "Sensology Tactual", "Influence", "Inclusive", "Coexist", "CO-Create", "Merino", "Grace", "Latte", "Mood", "Longevity - Grandeur", "Longevity - Serenity", "Immerse", "Fliptile", "Mindful", "Attuned", "Perpetual", "City Life", "Rustic Grain", "Panthera", "Highlands", "Color Rib (Needlepunch)", "Garage Carpet (Needlepunch)", "Hercules (Needlepunch)", "Berber Point 650 (Needlepunch)", "Berber Point 920 (Needlepunch)", "Timbavati (Needlepunch)", "Color Rib (Resinbac)", "Hercules (Resinbac)", "Berber Point 650 (Resinbac)", "Berber Point 920 (Resinbac)", "Metro (Resinbac)", "Main Street (Resinbac)", "Diagonals (Resinbac)", "Berber Point 920 (Nexbac)", "Sportec Rubber Flooring"],
+    "Nouwens": ["Berber Look", "Rustique", "Copenhagen", "Kirman", "Natural Flair", "Attitude", "Entertainer", "Icon", "Creations", "Harbour"],
+    "Floornet": ["Carlton", "Manhattan Xtreme", "Prestige", "Imago", "Stockholm", "Palermo", "Etosha", "Islay", "Sorrento", "Saturnus", "Taurus", "Lewis", "Amber", "Ultimate Twist", "ART Fusion", "Passion", "Alexandria", "Nature", "Chambord", "Luxor", "Romeo", "Pinning Board", "Powerpoint", "Dirt Off", "Florpoint"],
+    "Rowley & Hughes": ["Seagrass Beijing", "Coir Herringbone", "Coir Boucle", "Gold Hemp Platted", "Silver Hemp Platted", "Gold Hemp Ribbed Boucle", "Silver Hemp Ribbed Boucle", "Sisal Wild Honey", "Sisal Harvest Moon", "Sisal Grey Beard", "Sisal Artichoke", "Sisal Olive Bark", "Sisal Saffron", "Sisal Storm Cloud", "Sisal Monsoon Sky", "Sisal Oriental Topaz", "Sisal Honeyguide", "Sisal Francolin", "Sisal Buttonquail", "Sisal Nightjar", "Sisal Sand Grouse", "Sisal Partridge", "Sisal Groundscraper", "Sisal Arrowmarked", "Wool Sandpiper", "Coir PVC Backed 17mm", "Coir PVC Backed 20mm", "Seagrass Basic Natural", "Seagrass 4 X 4 Natural", "Seagrass Herringbone", "Coir Boucle Natural", "Coir Herringbone Natural", "Jute Xtra Heavy Boucle Natural", "Jute Xtra Heavy Panama Natural", "Sisal Fine Boucle Gunmetal", "Sisal Fine Boucle Oatmeal", "Sisal Fine Boucle Pewter", "Sisal Fine Boucle Sahara Sands", "Sisal Fine Boucle Zanzibar", "Sisal Panama Allegro", "Sisal Panama Cobblestone", "Sisal Panama Cocoa", "Sisal Panama Puma", "Sisal Panama Sable", "Sisal Panama Sandy Cove", "Sisal Fine Panama Gunmetal", "Sisal Fine Panama Namib Sands", "Sisal Fine Panama Silver", "Sisal Herringbone Ash Grey", "Sisal Longweave Natural", "Sisal Longweave Silver", "Sisal Togo Silver Gray", "Wool & Sisal Trellis Galena", "Wool & Sisal Kalahari Pearl Grey", "Wool & Sisal Chuncky weave Graphite", "Wool & Sisal Jacquard Clifton", "Wool & Sisal Chunky Karringmelk", "Wool & Sisal Chunky Smokey", "Multi-Use Fine Boucle Baltic", "Multi-Use Fine Boucle Storm Cloud", "Multi-Use Fine Boucle Light Grey/ Scoria", "Multi-use Flatweave Buiscuit", "Multi-Use Flatweave Anthracite,Clay Court", "Multi-Use Flatweave Pebble, Urban", "Multi-Use Flatweave Cayman", "Multi-Use Flatweave Zodiac", "Multi-Use Flatweave Amber", "Coir Brushed 17mm Black/ Burgandy/ Charcoal", "Coir Brushed 17mm Natural"],
+  },
+  "Glue Down Vinyl": {
+    "Azura": ["Dezign Series S120", "Dezign Series S200", "Dezign Series S250", "Dezign Series XL", "Dezign Series Herringbone"],
+    "FinFloor": ["Aurora Dryback Vinyl Flooring Panel", "Aurora Herringbone", "GalaxyDryback Textured Finish", "Fincrete"],
+    "Belgotex": ["Hilton", "Bayport", "Select Home", "Select Plus", "Portland", "Archetypes", "Oak Tri Fecta Medium", "Oak Tri Fecta Large", "Oak Tri-Fecta XL", "Select Pro", "Penninsula", "Sylvan", "Fortitude", "Elite 55", "Retreat", "Strata", "Aggeregate"],
+    "Fotakis": ["Allegro X", "Nordica"],
+    "Global Streams": ["Numi 2.0", "Lake", "Bonsai 2.0", "Dessert", "Mountain", "Mineral", "Bonsai 1.0", "Fire"],
+    "KBAC": ["Natures Look", "Versatilles", "Plantation", "Woodlands", "Flagstone"],
+    "Lalegno": ["Lalegno Ultra LVP"],
+    "Likewise": ["LG Hausys Penthouse", "LG Hausys Symmetry", "Cascade", "Dune", "Peak", "Highlands Flow", "Highlands Weave", "Primary"],
+    "Mazista": ["Lifestyle", "Living", "Project", "Premium (Micro Bevel)", "Premium (Painted Bevel)", "Herringbone"],
+    "MacNeil": ["Twig Base", "Twigg Core"],
+    "Floornet": ["Rococo Wide Plank Light Commercial", "Rococo Wide Plank Medium Commercial", "Illusions", "Rococo Wide Plank Heavy Commercial"],
+    "Wannabiwood": ["Wanabiwood Classic Micro Bevelled", "Wanabiwood Echo Tile Micro Bevelled", "Wanabiwood Carribbean LVT", "Wanabiwoood Desire Dryback"],
+  },
+  "Click Vinyl": {
+    "Belgotex": ["Hardwood"],
+    "Traviata": ["Firmfit", "Travi-Lock XL", "Travi-Lock XL Dryback", "Mfloor Contact", "Travi-Lock XL Dryback Grandeur", "Travi-Lock Industrial Black", "Travi-Lock Instustrial Colours"],
+    "FinFloor": ["Diamond Core SPC", "Sapphire"],
+    "Azura": ["Dezign S540", "Pergo Gloma Pro 4"],
+    "Global Streams": ["Numi SPC", "Como Artica Premium"],
+    "Mazista": ["SPC Ridgid Core 6mm"],
+    "Likewise": ["GreenTouch Atomic", "GreenTouch Core", "GreenTouch Elements"],
+    "MacNeil": ["Renew SPC 5,5", "Renew SPC 6,5", "Herringbone 8mm"],
+    "Floornet": ["Milano"],
+    "Wannabiwood": ["Desire"],
+  },
+  "Laminates": {
+    "Traviata": ["Silver", "Tru-Wood XL", "Tru-Wood", "Klasik", "Cadenza BerryAlloc"],
+    "FinFloor": ["Parador", "AGT Bella Neo", "AGT Natura", "Armonia Large", "Authentic Herringbone", "Black Forest+"],
+    "Likewise": ["Woodline", "Quickstep Classic", "Quickstep Impressive Pattern", "Quickstep Impressive", "Quickstep Impressive Design", "Essential", "Home", "Loc Floor Plus", "Loc Floor Extra", "Hydro Safe", "Manor Herringbone", "Grande XXL"],
+    "Global Streams": ["Atlantic", "Altitude"],
+    "Azura": ["Mandal", "Dalen", "Odense", "Vibrance 0V", "Vibrance 4V", "Vibrance Wide", "Berry Alloc Ocean 8", "Berry Alloc Ocean 12", "FloorPlan Fix", "FloorPlan Classic", "FloorPlan Street"],
+    "MacNeil": ["Advance", "Basic", "Exquisit", "Exquisit Plus", "Mega Plus"],
+  },
+};
+
+// Which catalogue categories each department may pick from. Departments not listed
+// keep the old free-text product field until their product lists are loaded.
+const DEPT_CATEGORIES = {
+  carpets: ["Carpets"],
+  vinyl: ["Glue Down Vinyl", "Click Vinyl", "Laminates"],
+};
+const categoriesOf = (dept) => DEPT_CATEGORIES[dept] || [];
+const hasCatalog = (dept) => categoriesOf(dept).length > 0;
+const suppliersOf = (cat) => Object.keys(PRODUCT_CATALOG[cat] || {});
+const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
+// The label written into productType so stickers, reports and search keep working unchanged
+const composeProduct = (sup, rng) => [sup, rng].filter(Boolean).join(" ");
+
 // Snags
 const SNAG_CATEGORIES = ["Consultant boo-boo", "Installation boo-boo", "Factory boo-boo"];
 const SNAG_CAUSES = ["Consultant boo-boo", "Installation boo-boo", "Supplier boo-boo"];
@@ -328,7 +385,7 @@ export default function App() {
   const deletedList = useMemo(() => projects.filter((p) => p.deleted).sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || "")), [projects]);
   const mine = (list) => (level === 1 ? list.filter((p) => p.consultant === user.name) : list);
   const q = search.trim().toLowerCase();
-  const matches = (p) => !q || [p.clientName, p.po, p.address, p.productType, p.consultant, p.contact].some((v) => (v || "").toLowerCase().includes(q));
+  const matches = (p) => !q || [p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact].some((v) => (v || "").toLowerCase().includes(q));
 
   const lists = useMemo(() => ({
     placed: mine(active.filter((p) => p.status === "ordered")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
@@ -652,16 +709,56 @@ function ListView({ title, status, items, onOpen, level }) {
 /* =========================================================
    CREATE / EDIT PROJECT
    ========================================================= */
+// Older projects were saved before the product catalogue existed. When one is opened for
+// editing we fill in what we can: single-category departments pick themselves, and a typed
+// product label is matched back to a supplier and range where the wording lines up.
+function catalogBackfill(p) {
+  if (!hasCatalog(p.department)) return {};
+  if (p.productRange && p.supplier) return {};
+  const cats = categoriesOf(p.department);
+  const label = (p.productType || "").trim().toLowerCase();
+  if (label) {
+    for (const cat of cats) {
+      for (const sup of suppliersOf(cat)) {
+        for (const rng of rangesOf(cat, sup)) {
+          if (composeProduct(sup, rng).toLowerCase() === label || rng.toLowerCase() === label) {
+            return { productCategory: cat, supplier: sup, productRange: rng, productType: composeProduct(sup, rng) };
+          }
+        }
+      }
+    }
+  }
+  return { productCategory: cats.length === 1 ? cats[0] : (p.productCategory || ""), supplier: p.supplier || "", productRange: "" };
+}
+
 function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
-  const [f, setF] = useState(() => initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0] } : {
+  const [f, setF] = useState(() => initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0], ...catalogBackfill(initial) } : {
     clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds", team: "Team 1",
-    productType: "", lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
+    productType: "", productCategory: "", supplier: "", productRange: "",
+    lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const fileRef = useRef();
 
-  const setDept = (dept) => setF((s) => ({ ...s, department: dept, team: teamsOf(dept).includes(s.team) ? s.team : teamsOf(dept)[0] }));
+  const setDept = (dept) => setF((s) => {
+    const cats = categoriesOf(dept);
+    const keep = cats.includes(s.productCategory);
+    return {
+      ...s,
+      department: dept,
+      team: teamsOf(dept).includes(s.team) ? s.team : teamsOf(dept)[0],
+      productCategory: keep ? s.productCategory : (cats.length === 1 ? cats[0] : ""),
+      supplier: keep ? s.supplier : "",
+      productRange: keep ? s.productRange : "",
+      productType: keep ? s.productType : (hasCatalog(dept) ? "" : s.productType),
+    };
+  });
+
+  // Catalogue pickers — each level clears the ones below it and rewrites the product label
+  const setCategory = (cat) => setF((s) => ({ ...s, productCategory: cat, supplier: "", productRange: "", productType: "" }));
+  const setSupplier = (sup) => setF((s) => ({ ...s, supplier: sup, productRange: "", productType: "" }));
+  const setRange = (rng) => setF((s) => ({ ...s, productRange: rng, productType: composeProduct(s.supplier, rng) }));
 
   const addLine = () => set("lineItems", [...f.lineItems, { id: uid(), description: "", received: false }]);
   const updLine = (id, patch) => set("lineItems", f.lineItems.map((li) => (li.id === id ? { ...li, ...patch } : li)));
@@ -678,7 +775,7 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
     setBusy(false);
   };
 
-  const valid = f.clientName.trim() && f.po.trim() && f.productType.trim() && f.materialEta;
+  const valid = f.clientName.trim() && f.po.trim() && f.materialEta;
   const submit = async () => {
     if (!valid) return;
     setBusy(true);
@@ -723,7 +820,37 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
 
         {/* Line items */}
         <div className="md:col-span-2 border border-[#30363d] rounded-xl p-4">
-          <Field label="Main line item (product)"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Engineered oak flooring 45m²" /></Field>
+          {hasCatalog(f.department) ? (
+            <div className="space-y-3">
+              {categoriesOf(f.department).length > 1 && (
+                <Field label="Product category">
+                  <select className={inputCls} value={f.productCategory || ""} onChange={(e) => setCategory(e.target.value)}>
+                    <option value="">Select a category…</option>
+                    {categoriesOf(f.department).map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </Field>
+              )}
+              <Field label="Supplier">
+                <select className={inputCls} value={f.supplier || ""} onChange={(e) => setSupplier(e.target.value)} disabled={!f.productCategory}>
+                  <option value="">{f.productCategory ? "Select a supplier…" : "Pick a product category first"}</option>
+                  {suppliersOf(f.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </Field>
+              <Field label="Range (main line item)">
+                <select className={inputCls} value={f.productRange || ""} onChange={(e) => setRange(e.target.value)} disabled={!f.supplier}>
+                  <option value="">{f.supplier ? "Select a range…" : "Pick a supplier first"}</option>
+                  {rangesOf(f.productCategory, f.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </Field>
+              {f.productType && !f.productRange && (
+                <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                  Existing entry: <span className="text-amber-100">{f.productType}</span> — this was typed in by hand. Pick a category, supplier and range above to replace it, or leave it as it is.
+                </div>
+              )}
+            </div>
+          ) : (
+            <Field label="Main line item (product)"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Engineered oak flooring 45m²" /></Field>
+          )}
           <div className="text-xs text-slate-400 mt-4 mb-2">Additional line items — trims, adhesive, moisture barrier, etc.</div>
           <div className="space-y-2">
             {f.lineItems.map((li) => (
