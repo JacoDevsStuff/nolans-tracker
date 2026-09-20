@@ -18,7 +18,11 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Co-ordinator", level: 2 },
+  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"] },
+  "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments
+  "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood
+  "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
+  "0009": { name: "Chanel", level: 2, depts: ["blinds"] },
   "2222": { name: "Developer", level: 3 },
 };
 const CONSULTANTS = ["Jaco", "James", "Trent", "Theo"];
@@ -355,7 +359,13 @@ function Logo({ small }) {
    ========================================================= */
 export default function App() {
   const [user, setUser] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem("nolans_user")) || null; } catch { return null; }
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("nolans_user"));
+      if (!saved) return null;
+      // Re-resolve against the current user table so name/level/department permissions stay fresh
+      const current = saved.pin && USERS[saved.pin];
+      return current ? { ...current, pin: saved.pin } : saved;
+    } catch { return null; }
   });
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -372,6 +382,11 @@ export default function App() {
   const level = user?.level ?? 0;
   const isCoord = level >= 2;
   const isDev = level >= 3;
+  // Which departments this user may make changes to. null/undefined depts = all (owners, developer).
+  const canEditDept = (deptId) => isDev || (isCoord && (!user?.depts || user.depts.includes(deptId)));
+  const canEdit = (p) => canEditDept(p?.department);
+  // Departments a co-ordinator is allowed to create/pick in the form (null = all)
+  const allowedDepts = (isDev || !user?.depts) ? null : user.depts;
 
   useEffect(() => { if (user) sessionStorage.setItem("nolans_user", JSON.stringify(user)); }, [user]);
 
@@ -549,15 +564,15 @@ export default function App() {
           ) : view === "snags" ? (
             <SnagsView items={lists.snags} onOpen={setSelected} />
           ) : view === "review" ? (
-            <SnagReviewView projects={active} user={user} isCoord={isCoord} save={save} onOpen={setSelected} />
+            <SnagReviewView projects={active} user={user} isCoord={isCoord} canEdit={canEdit} save={save} onOpen={setSelected} />
           ) : view === "completed" ? (
-            <CompletedView items={lists.completed} isCoord={isCoord} isDev={isDev} user={user} save={save} onOpen={setSelected} setToast={setToast} />
+            <CompletedView items={lists.completed} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} setToast={setToast} />
           ) : view === "history" ? (
-            <HistoryView items={lists.history} deleted={deletedList} isCoord={isCoord} isDev={isDev} user={user} save={save} onOpen={setSelected} />
+            <HistoryView items={lists.history} deleted={deletedList} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} />
           ) : view.startsWith("dept:") ? (
             <CalendarView
               key={view} cal={calOf(view.slice(5))} projects={active.filter((p) => calendarOf(p.department) === view.slice(5))}
-              isCoord={isCoord} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
+              isCoord={isCoord} canEdit={canEdit} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
             />
           ) : (
             <ListView
@@ -571,7 +586,7 @@ export default function App() {
       {/* Modals */}
       {(showCreate || showTest || editing) && (
         <ProjectForm
-          initial={editing} user={user} isCoord={isCoord} isTest={showTest && !editing}
+          initial={editing} user={user} isCoord={isCoord} isTest={showTest && !editing} allowedDepts={allowedDepts}
           onClose={() => { setShowCreate(false); setShowTest(false); setEditing(null); }}
           onSave={async (p) => { await save(p, editing ? "Project updated" : (p.isTest ? "Test project created" : "Project created")); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
         />
@@ -579,7 +594,7 @@ export default function App() {
       {selected && (
         <ProjectDetail
           project={projects.find((p) => p.id === selected.id) || selected}
-          user={user} level={level} isCoord={isCoord} isDev={isDev} save={save}
+          user={user} level={level} isCoord={isCoord} canEdit={canEdit(projects.find((p) => p.id === selected.id) || selected)} isDev={isDev} save={save}
           onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
         />
       )}
@@ -760,10 +775,12 @@ function catalogBackfill(p) {
   return { productCategory: cats.length === 1 ? cats[0] : (p.productCategory || ""), supplier: p.supplier || "", productRange: "" };
 }
 
-function ProjectForm({ initial, user, isCoord, isTest, onClose, onSave }) {
+function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave }) {
+  const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
   const [f, setF] = useState(() => {
+    const defaultDept = (allowedDepts && allowedDepts.length) ? allowedDepts[0] : "blinds";
     const base = initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0] } : {
-      clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds", team: "Team 1",
+      clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: defaultDept, team: teamsOf(defaultDept)[0],
       productType: "", productCategory: "", supplier: "", productRange: "",
       productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
     };
@@ -869,7 +886,7 @@ function ProjectForm({ initial, user, isCoord, isTest, onClose, onSave }) {
         </Field>
         <Field label="Department">
           <select className={inputCls} value={f.department} onChange={(e) => setDept(e.target.value)}>
-            {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+            {deptOptions.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
           </select>
         </Field>
         <Field label="Install team">
@@ -984,7 +1001,7 @@ function ProjectForm({ initial, user, isCoord, isTest, onClose, onSave }) {
 /* =========================================================
    PROJECT DETAIL
    ========================================================= */
-function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose, onEdit }) {
+function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit }) {
   const d = deptOf(p.department);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [reason, setReason] = useState("");
@@ -1000,9 +1017,9 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
   const open = openSnags(p);
   const canSnag = level >= 1;
 
-  // Co-ordinator opening the job acknowledges its new snags (clears the "new" badge)
+  // A co-ordinator for this job's department acknowledges its new snags (clears the "new" badge)
   useEffect(() => {
-    if (isCoord && open.some((s) => !s.acknowledged)) {
+    if (canEdit && open.some((s) => !s.acknowledged)) {
       save({ ...p, snags: snags.map((s) => (s.resolved ? s : { ...s, acknowledged: true })) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1091,12 +1108,12 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
                 {[...schedule].sort((a, b) => a.date.localeCompare(b.date)).map((s) => (
                   <span key={s.dayIndex} className="text-xs px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-100 flex items-center gap-1.5">
                     {s.dayIndex}/{schedule.length} · {fmt(s.date)}{s.time ? ` ${s.time}` : ""}{s.endTime ? `–${s.endTime}` : ""}
-                    {isCoord && (p.status === "booked" || isReserved(p)) && schedule.length > 1 && (
+                    {canEdit && (p.status === "booked" || isReserved(p)) && schedule.length > 1 && (
                       <button onClick={() => removeDay(s.dayIndex)} title="Remove this day" className="text-emerald-300/70 hover:text-red-300"><X size={11} /></button>
                     )}
                   </span>
                 ))}
-                {isCoord && (p.status === "booked" || isReserved(p)) && (
+                {canEdit && (p.status === "booked" || isReserved(p)) && (
                   <button onClick={() => setAddingDay(true)} className="text-xs px-2 py-1 rounded-lg border border-dashed border-[#30363d] text-slate-300 hover:border-[#1f6feb] flex items-center gap-1"><Plus size={12} /> Add day</button>
                 )}
               </div>
@@ -1133,7 +1150,7 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
         {lineItems.map((li) => (
           <div key={li.id} className="flex items-center justify-between py-1.5 text-sm border-t border-[#30363d]">
             <span className="text-slate-200">{li.description}{(li.qty != null && li.qty !== "") ? <span className="text-slate-400 text-xs"> · qty {li.qty}</span> : null}</span>
-            {isCoord ? (
+            {canEdit ? (
               <button onClick={() => toggleLine(li)} className={`text-xs px-2 py-1 rounded-lg border ${li.received ? "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10" : "border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10"}`}>
                 {li.received ? "Received" : "Mark received"}
               </button>
@@ -1184,7 +1201,7 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
         )}
       </div>
 
-      {isCoord && (
+      {canEdit ? (
         <div className="mt-6 pt-4 border-t border-[#30363d] flex flex-wrap gap-2">
           {isReserved(p) && (
             <>
@@ -1202,7 +1219,9 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
           <button onClick={onEdit} className={btnGhost}>Edit details</button>
           {isDev && !confirmDelete && <button onClick={() => setConfirmDelete(true)} className="ml-auto px-3 py-2 rounded-lg text-red-300 hover:bg-red-500/10 text-sm flex items-center gap-1"><Trash2 size={14} /> Delete</button>}
         </div>
-      )}
+      ) : isCoord ? (
+        <div className="mt-6 pt-4 border-t border-[#30363d] text-xs text-slate-500">View only — {deptOf(p.department).label} is managed by another co-ordinator.</div>
+      ) : null}
       {confirmDelete && (
         <div className="mt-3 p-3 rounded-xl border border-red-500/40 bg-red-500/5">
           <div className="text-sm text-red-200 mb-2">Reason for deleting this project</div>
@@ -1326,17 +1345,19 @@ const stickerCls = (p, variant) => {
   return "bg-slate-300/15 border-slate-400/30 text-slate-200";
 };
 
-// 3-bar progress: 1 filled = planned, 2 = reserved, 3 = confirmed (booked/installed). Fills bottom-up.
+// 3-bar progress: 1 = planned, 2 = reserved, 3 = confirmed. Fills bottom-up.
+// Planned = all grey, Reserved = bottom two yellow, Confirmed = all green.
 const stageLevel = (p) => (p.status === "booked" || p.status === "installed") ? 3 : p.reserveStage === "reserved" ? 2 : p.reserveStage === "planned" ? 1 : 0;
-const StageBars = ({ p, dark }) => {
+const StageBars = ({ p }) => {
   const n = stageLevel(p);
   if (!n) return null;
   const label = n === 3 ? "Confirmed booking" : n === 2 ? "Reserved" : "Planned";
-  const on = dark ? "bg-slate-900" : "bg-white";
-  const off = dark ? "bg-slate-900/25" : "bg-white/30";
+  // colour of a filled bar depends on the stage; empty bars are faint grey
+  const fill = n === 3 ? "bg-[#5aa515]" : n === 2 ? "bg-[#c9a227]" : "bg-slate-400";
+  const empty = "bg-slate-400/30";
   return (
     <span className="flex flex-col gap-[2px] shrink-0" title={label}>
-      {[3, 2, 1].map((lvl) => <span key={lvl} className={`block w-6 h-[3px] rounded ${lvl <= n ? on : off}`} />)}
+      {[3, 2, 1].map((lvl) => <span key={lvl} className={`block w-6 h-[3px] rounded ${lvl <= n ? fill : empty}`} />)}
     </span>
   );
 };
@@ -1346,7 +1367,6 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   if (inTray && isReserved(p)) variant = "reserved";
   const cls = stickerCls(p, variant);
   const flagged = hasOpenSnags(p);
-  const white = variant === "reserved";
   const test = !!p.isTest;
   const compact = expandable && !expanded;
   const ringCls = test ? "ring-2 ring-orange-500 border-orange-500" : (flagged && variant !== "return" ? "ring-1 ring-red-500/60" : "");
@@ -1362,7 +1382,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           <span className="font-semibold truncate flex-1">{p.clientName}</span>
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
-          {showBars && <StageBars p={p} dark={white} />}
+          {showBars && <StageBars p={p} />}
         </div>
       ) : (
         <>
@@ -1379,7 +1399,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
             {!inTray && time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
             {!inTray && !time && p.materialEta && p.status === "ordered" && !isReserved(p) && <span>ETA {fmtShort(p.materialEta)}</span>}
             {inTray && !isReserved(p) && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
-            {!inTray && showBars && <StageBars p={p} dark={white} />}
+            {!inTray && showBars && <StageBars p={p} />}
           </div>
           {expandable && expanded && (
             <>
@@ -1393,7 +1413,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   );
 }
 
-function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth }) {
+function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, initialMonth }) {
   const [month, setMonth] = useState(() => {
     const d = initialMonth ? fromIso(initialMonth) : new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -1435,7 +1455,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
   const dropOn = (dateIso) => (e) => {
     e.preventDefault(); setDragOver(null);
     const drag = dragRef.current; dragRef.current = null;
-    if (!drag || !isCoord) return;
+    if (!drag || !canEdit(drag.p)) return;
     const { p, kind, dayIndex, visitId } = drag;
     if (kind === "received" || kind === "ordered") setBooking({ project: p, date: dateIso, mode: "book" });
     else if (kind === "day") {
@@ -1487,7 +1507,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
         <div className="text-[11px] text-slate-500 mb-3">In ETA order · {ordered.length}</div>
         <div className="space-y-2 overflow-y-auto flex-1 pr-0.5">
           {ordered.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
-          {ordered.map((p) => <Sticker key={p.id} p={p} inTray draggable={isCoord && !isReserved(p)} onDragStart={startDrag({ p, kind: "ordered" })} onClick={() => onOpen(p)} variant="ordered" />)}
+          {ordered.map((p) => <Sticker key={p.id} p={p} inTray draggable={canEdit(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "ordered" })} onClick={() => onOpen(p)} variant="ordered" />)}
         </div>
         {isCoord && ordered.length > 0 && <div className="text-[11px] text-slate-500 mt-3">Drag onto a date to plan it before stock arrives (white sticker, red outline). Mark received to move it up.</div>}
       </aside>
@@ -1518,12 +1538,12 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
             {received.length + returns.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
             {returns.map((p) => (
               <div key={`r-${p.id}`} className="w-44">
-                <Sticker p={p} draggable={isCoord} onDragStart={startDrag({ p, kind: "return" })} onClick={() => onOpen(p)} variant="return" />
+                <Sticker p={p} draggable={canEdit(p)} onDragStart={startDrag({ p, kind: "return" })} onClick={() => onOpen(p)} variant="return" />
               </div>
             ))}
             {received.map((p) => (
               <div key={p.id} className="w-44">
-                <Sticker p={p} inTray draggable={isCoord && !isReserved(p)} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
+                <Sticker p={p} inTray draggable={canEdit(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
               </div>
             ))}
           </div>
@@ -1554,7 +1574,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
                   {items.map((it) => it.kind === "day" ? (
                     <Sticker
                       key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={isReserved(it.p) ? "reserved" : it.p.status}
-                      draggable={isCoord && (it.p.status === "booked" || isReserved(it.p))}
+                      draggable={canEdit(it.p) && (it.p.status === "booked" || isReserved(it.p))}
                       onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
                       dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
                       time={it.day.time} endTime={it.day.endTime}
@@ -1565,7 +1585,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
                   ) : (
                     <Sticker
                       key={`${it.p.id}-${it.visit.id}`} p={it.p} variant="return"
-                      draggable={isCoord}
+                      draggable={canEdit(it.p)}
                       onDragStart={startDrag({ p: it.p, kind: "moveReturn", visitId: it.visit.id })} onClick={() => onOpen(it.p)}
                       time={it.visit.time} endTime={it.visit.endTime}
                     />
@@ -1671,7 +1691,7 @@ function BookingModal({ booking, onClose, onConfirm }) {
 /* =========================================================
    COMPLETED (ready to invoice) + INVOICE LIST
    ========================================================= */
-function CompletedView({ items, isCoord, isDev, user, save, onOpen, setToast }) {
+function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, setToast }) {
   const [printing, setPrinting] = useState(false);
   const ticked = items.filter((p) => p.readyToInvoice);
   const toggle = (p) => save({ ...p, readyToInvoice: !p.readyToInvoice });
@@ -1734,7 +1754,7 @@ function CompletedView({ items, isCoord, isDev, user, save, onOpen, setToast }) 
             const d = deptOf(p.department);
             return (
               <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-4 flex items-center gap-4`}>
-                {isCoord && (
+                {canEdit(p) && (
                   <label className={`flex items-center gap-2 text-xs shrink-0 select-none ${locked(p) ? "text-slate-500 cursor-not-allowed" : "text-slate-300 cursor-pointer"}`} title={locked(p) ? "Resolve the open snag before invoicing" : ""}>
                     <input type="checkbox" checked={!!p.readyToInvoice} disabled={locked(p)} onChange={() => toggle(p)} className="w-4 h-4" />
                     Ready to invoice
@@ -1763,7 +1783,7 @@ function CompletedView({ items, isCoord, isDev, user, save, onOpen, setToast }) 
 /* =========================================================
    HISTORY (invoiced) + DELETED
    ========================================================= */
-function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
+function HistoryView({ items, deleted, isCoord, canEdit, isDev, user, save, onOpen }) {
   const [showDeleted, setShowDeleted] = useState(false);
   const groups = useMemo(() => {
     const m = {};
@@ -1799,7 +1819,7 @@ function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
                       <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
                       <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right">Installed {fmtShort(p.installDate)} · invoiced {fmtShort((p.invoicedAt || "").slice(0, 10))}</div>
                     </button>
-                    {isCoord && <button onClick={() => moveBack(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`} title="Move back to Completed"><RotateCcw size={12} /> Move back</button>}
+                    {canEdit(p) && <button onClick={() => moveBack(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`} title="Move back to Completed"><RotateCcw size={12} /> Move back</button>}
                   </div>
                 );
               })}
@@ -2070,7 +2090,7 @@ function SnagsView({ items, onOpen }) {
    SNAG REVIEW — resolved snags: cause + cost to company
    Level 2+ edits; consultants can view and add notes.
    ========================================================= */
-function SnagReviewView({ projects, user, isCoord, save, onOpen }) {
+function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
   const [filter, setFilter] = useState("pending"); // pending | all
   const [noteDraft, setNoteDraft] = useState({});
   const rows = useMemo(() => projects
@@ -2127,6 +2147,7 @@ function SnagReviewView({ projects, user, isCoord, save, onOpen }) {
             {rows.map(({ p, s }) => {
               const d = deptOf(p.department);
               const r = s.review || { cause: null, costs: [], notes: [] };
+              const rowEdit = canEdit(p);
               return (
                 <div key={s.id} className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4">
                   <div className="flex items-start gap-3 flex-wrap">
@@ -2145,7 +2166,7 @@ function SnagReviewView({ projects, user, isCoord, save, onOpen }) {
 
                   <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 mt-4">
                     <Field label="Cause">
-                      <select className={inputCls} value={r.cause || ""} disabled={!isCoord} onChange={(e) => patchReview(p, s, { cause: e.target.value || null })}>
+                      <select className={inputCls} value={r.cause || ""} disabled={!rowEdit} onChange={(e) => patchReview(p, s, { cause: e.target.value || null })}>
                         <option value="">Not yet allocated</option>
                         {SNAG_CAUSES.map((c) => <option key={c}>{c}</option>)}
                       </select>
@@ -2155,17 +2176,17 @@ function SnagReviewView({ projects, user, isCoord, save, onOpen }) {
                       <div className="space-y-2">
                         {(r.costs || []).map((c) => (
                           <div key={c.id} className="flex items-center gap-2">
-                            <select className={`${inputCls} w-32`} value={c.category} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
+                            <select className={`${inputCls} w-32`} value={c.category} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
                               {COST_CATEGORIES.map((x) => <option key={x}>{x}</option>)}
                             </select>
-                            <input type="number" min="0" step="0.01" className={`${inputCls} w-32`} placeholder="0.00" value={c.amount} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
-                            <input className={inputCls} placeholder="Note (optional)" value={c.note || ""} disabled={!isCoord} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
-                            {isCoord && <button onClick={() => delCost(p, s, c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
+                            <input type="number" min="0" step="0.01" className={`${inputCls} w-32`} placeholder="0.00" value={c.amount} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
+                            <input className={inputCls} placeholder="Note (optional)" value={c.note || ""} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
+                            {rowEdit && <button onClick={() => delCost(p, s, c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
                           </div>
                         ))}
                         {(r.costs || []).length === 0 && <div className="text-xs text-slate-500">No costs recorded.</div>}
                       </div>
-                      {isCoord && <button onClick={() => addCost(p, s)} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add cost line</button>}
+                      {rowEdit && <button onClick={() => addCost(p, s)} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add cost line</button>}
                     </div>
                   </div>
 
