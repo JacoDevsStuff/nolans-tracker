@@ -104,6 +104,27 @@ const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
 // The label written into productType so stickers, reports and search keep working unchanged
 const composeProduct = (sup, rng) => [sup, rng].filter(Boolean).join(" ");
 
+// Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
+// A fresh, empty product line for a department (auto-picks the only category where there is just one).
+const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", area: "" }; };
+// All product lines for a job. Falls back to a single synthesised line for older records that only
+// stored the top-level product fields, so nothing built before Phase 6 breaks.
+const productLinesOf = (p) => {
+  if (Array.isArray(p.productLines) && p.productLines.length) return p.productLines;
+  if (hasCatalog(p.department) && (p.productRange || p.productType)) {
+    return [{ id: (p.id || "") + "-pl0", productCategory: p.productCategory || "", supplier: p.supplier || "", productRange: p.productRange || "", productType: p.productType || "", area: p.area ?? "" }];
+  }
+  return [];
+};
+const areaFmt = (a) => { const n = Number(a); return (a === "" || a == null || isNaN(n)) ? "" : `${n} m²`; };
+const totalArea = (p) => productLinesOf(p).reduce((sum, l) => sum + (Number(l.area) || 0), 0);
+// One string holding everything searchable on a job, including every product line and item.
+const searchText = (p) => [
+  p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact,
+  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType]),
+  ...(p.lineItems || []).map((li) => li.description),
+].filter(Boolean).join(" ").toLowerCase();
+
 // Snags
 const SNAG_CATEGORIES = ["Consultant boo-boo", "Installation boo-boo", "Factory boo-boo"];
 const SNAG_CAUSES = ["Consultant boo-boo", "Installation boo-boo", "Supplier boo-boo"];
@@ -343,6 +364,7 @@ export default function App() {
   const [calMonth, setCalMonth] = useState(null); // month the calendar should open on (from Availability)
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [showTest, setShowTest] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState("");
@@ -381,11 +403,11 @@ export default function App() {
     catch (e) { setError(e.message); }
   };
 
-  const active = useMemo(() => projects.filter((p) => !p.deleted), [projects]);
+  const active = useMemo(() => projects.filter((p) => !p.deleted && (isDev || !p.isTest)), [projects, isDev]);
   const deletedList = useMemo(() => projects.filter((p) => p.deleted).sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || "")), [projects]);
   const mine = (list) => (level === 1 ? list.filter((p) => p.consultant === user.name) : list);
   const q = search.trim().toLowerCase();
-  const matches = (p) => !q || [p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact].some((v) => (v || "").toLowerCase().includes(q));
+  const matches = (p) => !q || searchText(p).includes(q);
 
   const lists = useMemo(() => ({
     placed: mine(active.filter((p) => p.status === "ordered")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
@@ -453,6 +475,11 @@ export default function App() {
           {isCoord && (
             <button onClick={() => setShowCreate(true)} className={`${btnPrimary} flex items-center gap-1.5`}>
               <Plus size={16} /> New project
+            </button>
+          )}
+          {isDev && (
+            <button onClick={() => setShowTest(true)} className="px-4 py-2 rounded-lg border-2 border-orange-500 text-orange-300 hover:bg-orange-500/10 text-sm font-medium flex items-center gap-1.5" title="Developer only — a fully working test project, hidden from everyone else and dropped from reports and searches once deleted">
+              <Plus size={16} /> New test project
             </button>
           )}
           <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 3)">
@@ -542,11 +569,11 @@ export default function App() {
       </div>
 
       {/* Modals */}
-      {(showCreate || editing) && (
+      {(showCreate || showTest || editing) && (
         <ProjectForm
-          initial={editing} user={user} isCoord={isCoord}
-          onClose={() => { setShowCreate(false); setEditing(null); }}
-          onSave={async (p) => { await save(p, editing ? "Project updated" : "Project created"); setShowCreate(false); setEditing(null); if (editing) setSelected(p); }}
+          initial={editing} user={user} isCoord={isCoord} isTest={showTest && !editing}
+          onClose={() => { setShowCreate(false); setShowTest(false); setEditing(null); }}
+          onSave={async (p) => { await save(p, editing ? "Project updated" : (p.isTest ? "Test project created" : "Project created")); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
         />
       )}
       {selected && (
@@ -585,8 +612,10 @@ function SearchDropdown({ results, onOpen, onClose }) {
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-white truncate">{p.clientName} <span className="text-slate-500 font-normal">· PO {p.po}</span></div>
               <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
+              {(p.productType || totalArea(p) > 0) && <div className="text-[11px] text-slate-500 truncate">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1} more` : ""}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              {p.isTest && <span className="text-[10px] text-orange-300 font-semibold">TEST</span>}
               {hasOpenSnags(p) && <SnagFlag />}
               {isReserved(p) && <span className={`text-[10px] ${p.received ? "text-slate-300" : "text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"}</span>}
               {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
@@ -731,36 +760,51 @@ function catalogBackfill(p) {
   return { productCategory: cats.length === 1 ? cats[0] : (p.productCategory || ""), supplier: p.supplier || "", productRange: "" };
 }
 
-function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
-  const [f, setF] = useState(() => initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0], ...catalogBackfill(initial) } : {
-    clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds", team: "Team 1",
-    productType: "", productCategory: "", supplier: "", productRange: "",
-    lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
+function ProjectForm({ initial, user, isCoord, isTest, onClose, onSave }) {
+  const [f, setF] = useState(() => {
+    const base = initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0] } : {
+      clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: "blinds", team: "Team 1",
+      productType: "", productCategory: "", supplier: "", productRange: "",
+      productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
+    };
+    // Seed the product-line list for catalogued departments (carries old single-product jobs across)
+    if (hasCatalog(base.department)) {
+      let lines = (Array.isArray(base.productLines) && base.productLines.length) ? base.productLines : productLinesOf(base);
+      if (!lines.length) lines = [newLine(base.department)];
+      base.productLines = lines.map((l) => ({ ...l, id: l.id || uid() }));
+    } else {
+      base.productLines = [];
+    }
+    return base;
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const fileRef = useRef();
+  const testMode = isTest || !!(initial && initial.isTest);
 
   const setDept = (dept) => setF((s) => {
     const cats = categoriesOf(dept);
-    const keep = cats.includes(s.productCategory);
-    return {
-      ...s,
-      department: dept,
-      team: teamsOf(dept).includes(s.team) ? s.team : teamsOf(dept)[0],
-      productCategory: keep ? s.productCategory : (cats.length === 1 ? cats[0] : ""),
-      supplier: keep ? s.supplier : "",
-      productRange: keep ? s.productRange : "",
-      productType: keep ? s.productType : (hasCatalog(dept) ? "" : s.productType),
-    };
+    const next = { ...s, department: dept, team: teamsOf(dept).includes(s.team) ? s.team : teamsOf(dept)[0] };
+    if (hasCatalog(dept)) {
+      // keep the current lines only if every one still belongs to this department's categories
+      const keep = (s.productLines || []).length > 0 && (s.productLines || []).every((l) => !l.productCategory || cats.includes(l.productCategory));
+      next.productLines = keep ? s.productLines : [newLine(dept)];
+      next.productType = ""; next.productCategory = ""; next.supplier = ""; next.productRange = "";
+    } else {
+      next.productLines = [];
+    }
+    return next;
   });
 
-  // Catalogue pickers — each level clears the ones below it and rewrites the product label
-  const setCategory = (cat) => setF((s) => ({ ...s, productCategory: cat, supplier: "", productRange: "", productType: "" }));
-  const setSupplier = (sup) => setF((s) => ({ ...s, supplier: sup, productRange: "", productType: "" }));
-  const setRange = (rng) => setF((s) => ({ ...s, productRange: rng, productType: composeProduct(s.supplier, rng) }));
+  // Per-line catalogue pickers — each level clears the ones below it and rewrites that line's label
+  const updProdLine = (id, patch) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, ...patch } : l)) }));
+  const setLineCategory = (id, cat) => updProdLine(id, { productCategory: cat, supplier: "", productRange: "", productType: "" });
+  const setLineSupplier = (id, sup) => updProdLine(id, { supplier: sup, productRange: "", productType: "" });
+  const setLineRange = (id, rng) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productRange: rng, productType: composeProduct(l.supplier, rng) } : l)) }));
+  const addProdLine = () => setF((s) => ({ ...s, productLines: [...s.productLines, newLine(s.department)] }));
+  const delProdLine = (id) => setF((s) => ({ ...s, productLines: s.productLines.length > 1 ? s.productLines.filter((l) => l.id !== id) : s.productLines }));
 
-  const addLine = () => set("lineItems", [...f.lineItems, { id: uid(), description: "", received: false }]);
+  const addLine = () => set("lineItems", [...f.lineItems, { id: uid(), description: "", qty: "", received: false }]);
   const updLine = (id, patch) => set("lineItems", f.lineItems.map((li) => (li.id === id ? { ...li, ...patch } : li)));
   const delLine = (id) => set("lineItems", f.lineItems.filter((li) => li.id !== id));
 
@@ -780,18 +824,39 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
     if (!valid) return;
     setBusy(true);
     const now = new Date().toISOString();
-    const lineItems = f.lineItems.filter((li) => li.description.trim());
+    const lineItems = f.lineItems.filter((li) => li.description.trim())
+      .map((li) => ({ ...li, qty: (li.qty === "" || li.qty == null) ? null : Number(li.qty) }));
     const base = { ...f, lineItems, installDays: Number(f.installDays) || 1, estHours: f.estHours === "" ? null : Number(f.estHours) };
+    if (hasCatalog(f.department)) {
+      // keep only lines that actually have a product; store area as a number
+      const lines = (f.productLines || []).filter((l) => l.productRange || l.productType)
+        .map((l) => ({ ...l, area: (l.area === "" || l.area == null) ? null : Number(l.area) }));
+      base.productLines = lines;
+      const first = lines[0];
+      base.productType = first ? first.productType : "";
+      base.supplier = first ? first.supplier : "";
+      base.productRange = first ? first.productRange : "";
+      base.productCategory = first ? first.productCategory : "";
+      base.area = first ? first.area : null;
+    } else {
+      base.productLines = [];
+    }
     const p = initial
       ? base
       : { ...base, id: uid(), createdAt: now, createdBy: user.name, status: "ordered", received: false, installed: false,
-          log: [{ id: uid(), text: "Project created", author: user.name, createdAt: now }] };
+          ...(isTest ? { isTest: true } : {}),
+          log: [{ id: uid(), text: isTest ? "Test project created" : "Project created", author: user.name, createdAt: now }] };
     await onSave(p);
     setBusy(false);
   };
 
   return (
-    <Modal title={initial ? "Edit project" : "New project"} onClose={onClose} wide>
+    <Modal title={initial ? (initial.isTest ? "Edit test project" : "Edit project") : (isTest ? "New test project" : "New project")} onClose={onClose} wide>
+      {testMode && (
+        <div className="mb-4 text-xs text-orange-200 bg-orange-500/10 border border-orange-500/40 rounded-lg px-3 py-2 flex items-center gap-2">
+          <AlertTriangle size={14} /> Test project — visible to developers only, and dropped from reports and searches once deleted.
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Client name"><input className={inputCls} value={f.clientName} onChange={(e) => set("clientName", e.target.value)} autoFocus /></Field>
         <Field label="Contact number"><input className={inputCls} value={f.contact} onChange={(e) => set("contact", e.target.value)} /></Field>
@@ -818,35 +883,48 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
           <Field label="Estimated hours on site per day (used by Availability; blank = 4h)"><input type="number" min="1" max="10" step="0.5" className={inputCls} value={f.estHours ?? ""} onChange={(e) => set("estHours", e.target.value)} placeholder="4" /></Field>
         </div>
 
-        {/* Line items */}
+        {/* Products + line items */}
         <div className="md:col-span-2 border border-[#30363d] rounded-xl p-4">
           {hasCatalog(f.department) ? (
             <div className="space-y-3">
-              {categoriesOf(f.department).length > 1 && (
-                <Field label="Product category">
-                  <select className={inputCls} value={f.productCategory || ""} onChange={(e) => setCategory(e.target.value)}>
-                    <option value="">Select a category…</option>
-                    {categoriesOf(f.department).map((c) => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </Field>
-              )}
-              <Field label="Supplier">
-                <select className={inputCls} value={f.supplier || ""} onChange={(e) => setSupplier(e.target.value)} disabled={!f.productCategory}>
-                  <option value="">{f.productCategory ? "Select a supplier…" : "Pick a product category first"}</option>
-                  {suppliersOf(f.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </Field>
-              <Field label="Range (main line item)">
-                <select className={inputCls} value={f.productRange || ""} onChange={(e) => setRange(e.target.value)} disabled={!f.supplier}>
-                  <option value="">{f.supplier ? "Select a range…" : "Pick a supplier first"}</option>
-                  {rangesOf(f.productCategory, f.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </Field>
-              {f.productType && !f.productRange && (
-                <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-                  Existing entry: <span className="text-amber-100">{f.productType}</span> — this was typed in by hand. Pick a category, supplier and range above to replace it, or leave it as it is.
+              <div className="text-xs text-slate-400">Products — add a line for each range or colour (e.g. one per room)</div>
+              {f.productLines.map((l, idx) => (
+                <div key={l.id} className="border border-[#30363d] rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-500">{idx === 0 ? "Main product" : `Product ${idx + 1}`}</span>
+                    {f.productLines.length > 1 && <button onClick={() => delProdLine(l.id)} className="p-1 rounded-md hover:bg-[#21262d] text-slate-400" title="Remove this product"><X size={13} /></button>}
+                  </div>
+                  {categoriesOf(f.department).length > 1 && (
+                    <Field label="Product category">
+                      <select className={inputCls} value={l.productCategory || ""} onChange={(e) => setLineCategory(l.id, e.target.value)}>
+                        <option value="">Select a category…</option>
+                        {categoriesOf(f.department).map((c) => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </Field>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Field label="Supplier">
+                      <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineSupplier(l.id, e.target.value)} disabled={!l.productCategory}>
+                        <option value="">{l.productCategory ? "Select a supplier…" : "Pick a category first"}</option>
+                        {suppliersOf(l.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Range">
+                      <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineRange(l.id, e.target.value)} disabled={!l.supplier}>
+                        <option value="">{l.supplier ? "Select a range…" : "Pick a supplier first"}</option>
+                        {rangesOf(l.productCategory, l.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                  <Field label="Area (m²)"><input type="number" min="0" step="0.01" className={inputCls} value={l.area ?? ""} onChange={(e) => updProdLine(l.id, { area: e.target.value })} placeholder="e.g. 24.5" /></Field>
+                  {l.productType && !l.productRange && (
+                    <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+                      Existing entry: <span className="text-amber-100">{l.productType}</span> — typed in by hand. Pick a supplier and range above to replace it, or leave it as it is.
+                    </div>
+                  )}
                 </div>
-              )}
+              ))}
+              <button onClick={addProdLine} className={`${btnGhost} flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add product line</button>
             </div>
           ) : (
             <Field label="Main line item (product)"><input className={inputCls} value={f.productType} onChange={(e) => set("productType", e.target.value)} placeholder="e.g. Engineered oak flooring 45m²" /></Field>
@@ -855,7 +933,8 @@ function ProjectForm({ initial, user, isCoord, onClose, onSave }) {
           <div className="space-y-2">
             {f.lineItems.map((li) => (
               <div key={li.id} className="flex items-center gap-2">
-                <input className={inputCls} value={li.description} onChange={(e) => updLine(li.id, { description: e.target.value })} placeholder="Item description" />
+                <input className={`${inputCls} flex-1`} value={li.description} onChange={(e) => updLine(li.id, { description: e.target.value })} placeholder="Item description" />
+                <input type="number" min="0" step="1" className={`${inputCls} w-20 shrink-0`} value={li.qty ?? ""} onChange={(e) => updLine(li.id, { qty: e.target.value })} placeholder="Qty" title="Quantity" />
                 {isCoord && (
                   <label className="flex items-center gap-1.5 text-xs text-slate-300 shrink-0 select-none">
                     <input type="checkbox" checked={!!li.received} onChange={(e) => updLine(li.id, { received: e.target.checked, receivedAt: e.target.checked ? new Date().toISOString() : null, receivedBy: e.target.checked ? user.name : null })} />
@@ -985,6 +1064,7 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
     <Modal title={p.clientName} onClose={onClose} wide>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Badge status={p.status} />
+        {p.isTest && <span className="text-xs px-2 py-0.5 rounded-full border-2 border-orange-500 text-orange-300 font-semibold">TEST</span>}
         {p.invoiced && <span className="text-xs px-2 py-0.5 rounded-full border border-slate-500/30 text-slate-400">Invoiced</span>}
         <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
         <span className="text-xs text-slate-400">· {p.consultant}</span>
@@ -1039,13 +1119,20 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
       {/* Line items */}
       <div className="mt-4 border border-[#30363d] rounded-xl p-3">
         <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><Layers size={14} /> Line items</div>
-        <div className="flex items-center justify-between py-1.5 text-sm">
-          <span className="text-slate-100">{p.productType} <span className="text-slate-500 text-xs">(main)</span></span>
-          {p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>}
-        </div>
+        {productLinesOf(p).length > 0 ? productLinesOf(p).map((l, i) => (
+          <div key={l.id || i} className={`flex items-center justify-between py-1.5 text-sm ${i > 0 ? "border-t border-[#30363d]" : ""}`}>
+            <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{areaFmt(l.area) && <span className="text-slate-400 text-xs"> · {areaFmt(l.area)}</span>}</span>
+            {i === 0 && (p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>)}
+          </div>
+        )) : (
+          <div className="flex items-center justify-between py-1.5 text-sm">
+            <span className="text-slate-100">{p.productType || "—"} <span className="text-slate-500 text-xs">(main)</span></span>
+            {p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>}
+          </div>
+        )}
         {lineItems.map((li) => (
           <div key={li.id} className="flex items-center justify-between py-1.5 text-sm border-t border-[#30363d]">
-            <span className="text-slate-200">{li.description}</span>
+            <span className="text-slate-200">{li.description}{(li.qty != null && li.qty !== "") ? <span className="text-slate-400 text-xs"> · qty {li.qty}</span> : null}</span>
             {isCoord ? (
               <button onClick={() => toggleLine(li)} className={`text-xs px-2 py-1 rounded-lg border ${li.received ? "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10" : "border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10"}`}>
                 {li.received ? "Received" : "Mark received"}
@@ -1055,7 +1142,7 @@ function ProjectDetail({ project: p, user, level, isCoord, isDev, save, onClose,
             )}
           </div>
         ))}
-        {lineItems.length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
+        {lineItems.length === 0 && productLinesOf(p).length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
       </div>
 
       {/* Snags */}
@@ -1239,44 +1326,69 @@ const stickerCls = (p, variant) => {
   return "bg-slate-300/15 border-slate-400/30 text-slate-200";
 };
 
-// One bar = reserved, two bars = confirmed (booked). Nothing while only planned.
+// 3-bar progress: 1 filled = planned, 2 = reserved, 3 = confirmed (booked/installed). Fills bottom-up.
+const stageLevel = (p) => (p.status === "booked" || p.status === "installed") ? 3 : p.reserveStage === "reserved" ? 2 : p.reserveStage === "planned" ? 1 : 0;
 const StageBars = ({ p, dark }) => {
-  const n = p.status === "booked" || p.status === "installed" ? 2 : p.reserveStage === "reserved" ? 1 : 0;
+  const n = stageLevel(p);
   if (!n) return null;
+  const label = n === 3 ? "Confirmed booking" : n === 2 ? "Reserved" : "Planned";
+  const on = dark ? "bg-slate-900" : "bg-white";
+  const off = dark ? "bg-slate-900/25" : "bg-white/30";
   return (
-    <span className="flex flex-col gap-[3px] shrink-0" title={n === 2 ? "Confirmed" : "Reserved"}>
-      {Array.from({ length: n }).map((_, i) => <span key={i} className={`block w-6 h-[3px] rounded ${dark ? "bg-slate-900" : "bg-white"}`} />)}
+    <span className="flex flex-col gap-[2px] shrink-0" title={label}>
+      {[3, 2, 1].map((lvl) => <span key={lvl} className={`block w-6 h-[3px] rounded ${lvl <= n ? on : off}`} />)}
     </span>
   );
 };
 
-function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, endTime, inTray }) {
+function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, endTime, inTray, expandable, expanded, onToggle }) {
   // A planned/reserved job shows white in its tray too, so the tray and calendar match
   if (inTray && isReserved(p)) variant = "reserved";
   const cls = stickerCls(p, variant);
   const flagged = hasOpenSnags(p);
   const white = variant === "reserved";
+  const test = !!p.isTest;
+  const compact = expandable && !expanded;
+  const ringCls = test ? "ring-2 ring-orange-500 border-orange-500" : (flagged && variant !== "return" ? "ring-1 ring-red-500/60" : "");
+  const showBars = variant === "reserved" || variant === "booked" || variant === "installed";
   return (
     <div
-      draggable={draggable} onDragStart={onDragStart} onClick={onClick}
-      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${flagged && variant !== "return" ? "ring-1 ring-red-500/60" : ""} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
+      draggable={draggable} onDragStart={onDragStart} onClick={expandable ? onToggle : onClick}
+      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${ringCls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
       title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}${variant === "return" ? " · Snag return visit" : ""}`}
     >
-      <div className="flex items-center gap-1.5">
-        <span className="font-semibold truncate flex-1">{p.clientName}</span>
-        {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
-        {(flagged || variant === "return") && <SnagFlag small />}
-        {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
-        {p.status === "received" && variant !== "return" && <RBadge />}
-      </div>
-      <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
-        <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
-        {inTray && isReserved(p) && p.installDate ? <span className="text-[10px] font-semibold">{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span> : null}
-        {!inTray && time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
-        {!inTray && !time && p.materialEta && p.status === "ordered" && !isReserved(p) && <span>ETA {fmtShort(p.materialEta)}</span>}
-        {inTray && !isReserved(p) && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
-        {!inTray && (variant === "reserved" || variant === "booked" || variant === "installed") && <StageBars p={p} dark={white} />}
-      </div>
+      {compact ? (
+        <div className="flex items-center gap-1.5">
+          <span className="font-semibold truncate flex-1">{p.clientName}</span>
+          {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
+          {time && <span className="opacity-80">{time}</span>}
+          {showBars && <StageBars p={p} dark={white} />}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5">
+            <span className="font-semibold truncate flex-1">{p.clientName}</span>
+            {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
+            {(flagged || variant === "return") && <SnagFlag small />}
+            {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
+            {p.status === "received" && variant !== "return" && <RBadge />}
+          </div>
+          <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
+            <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+            {inTray && isReserved(p) && p.installDate ? <span className="text-[10px] font-semibold">{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span> : null}
+            {!inTray && time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
+            {!inTray && !time && p.materialEta && p.status === "ordered" && !isReserved(p) && <span>ETA {fmtShort(p.materialEta)}</span>}
+            {inTray && !isReserved(p) && p.materialEta && p.status === "ordered" && <span>ETA {fmtShort(p.materialEta)}</span>}
+            {!inTray && showBars && <StageBars p={p} dark={white} />}
+          </div>
+          {expandable && expanded && (
+            <>
+              {p.productType && <div className="opacity-70 truncate mt-0.5">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1}` : ""}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
+              <button onClick={(e) => { e.stopPropagation(); onClick && onClick(); }} className="mt-1 text-[10px] underline opacity-80 hover:opacity-100">Open full details ›</button>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -1288,7 +1400,9 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
   });
   const [booking, setBooking] = useState(null); // { project, date, mode: "book" | "moveDay" | "return" | "moveReturn", dayIndex | visitId }
   const [dragOver, setDragOver] = useState(null);
+  const [expandedKey, setExpandedKey] = useState(null); // which calendar sticker is expanded to full detail
   const dragRef = useRef(null); // { p, kind: "received" | "day" | "return" | "moveReturn", dayIndex, visitId }
+  useEffect(() => { setExpandedKey(null); }, [month]);
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
@@ -1420,7 +1534,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
           <div className="grid grid-cols-7 text-[11px] text-slate-500 mb-1">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="px-2 py-1">{d}</div>)}
           </div>
-          <div className="grid grid-cols-7 gap-1 flex-1 auto-rows-[minmax(110px,1fr)]">
+          <div className="grid grid-cols-7 gap-1 flex-1 auto-rows-[minmax(110px,auto)]">
             {cells.map((d) => {
               const key = iso(d);
               const inMonth = d.getMonth() === month.getMonth();
@@ -1432,7 +1546,7 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
                   onDragOver={(e) => { if (isCoord) { e.preventDefault(); setDragOver(key); } }}
                   onDragLeave={() => setDragOver((k) => (k === key ? null : k))}
                   onDrop={dropOn(key)}
-                  className={`rounded-lg border p-1.5 flex flex-col gap-1 overflow-hidden ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : "border-[#30363d]"} ${inMonth ? (wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
+                  className={`rounded-lg border p-1.5 flex flex-col gap-1 ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : "border-[#30363d]"} ${inMonth ? (wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
                 >
                   <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
                     <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
@@ -1444,6 +1558,9 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
                       onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
                       dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
                       time={it.day.time} endTime={it.day.endTime}
+                      expandable={it.day.dayIndex === 1}
+                      expanded={expandedKey === `${it.p.id}-${it.day.dayIndex}`}
+                      onToggle={() => setExpandedKey((k) => (k === `${it.p.id}-${it.day.dayIndex}` ? null : `${it.p.id}-${it.day.dayIndex}`))}
                     />
                   ) : (
                     <Sticker
@@ -1472,10 +1589,12 @@ function CalendarView({ cal, projects, isCoord, user, save, onOpen, initialMonth
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
-            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
-            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Planned</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
-            <span className="ml-auto">Each day (1/3, 2/3…) drags on its own.</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-orange-500 border border-orange-500" /> Test (dev only)</span>
+            <span className="ml-auto">Tap a sticker to expand it. Each day (1/3, 2/3…) drags on its own.</span>
           </div>
         </div>
       </div>
@@ -1700,7 +1819,7 @@ function HistoryView({ items, deleted, isCoord, isDev, user, save, onOpen }) {
               {deleted.map((p) => (
                 <div key={p.id} className="bg-[#0d1117] border border-orange-500/30 rounded-xl p-4 flex items-center gap-4">
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-white truncate">{p.clientName} <span className="text-xs text-slate-500 font-normal">· PO {p.po} · {deptOf(p.department).label} · {p.consultant}</span></div>
+                    <div className="font-medium text-white truncate flex items-center gap-2">{p.clientName}{p.isTest && <span className="text-[10px] px-1.5 rounded-full border border-orange-500 text-orange-300 font-semibold">TEST</span>} <span className="text-xs text-slate-500 font-normal">· PO {p.po} · {deptOf(p.department).label} · {p.consultant}</span></div>
                     <div className="text-xs text-orange-200/80 mt-0.5">Reason: {p.deleteReason || "—"} · by {p.deletedBy} on {fmtShort((p.deletedAt || "").slice(0, 10))}</div>
                   </div>
                   <button onClick={() => restore(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`}><RotateCcw size={12} /> Restore</button>
@@ -1862,12 +1981,20 @@ function ReportsView({ projects }) {
                 {isReturn && openSnags(p).map((s) => <div key={s.id} className="text-sm text-red-800">{s.category}: {s.description}</div>)}
                 <div className="text-sm text-gray-800">{p.address}</div>
                 <div className="text-sm text-gray-800">Contact: {p.contact || "—"}</div>
+                {day.dayIndex === 1 && !isReturn && productLinesOf(p).length > 0 && (
+                  <div className="text-sm text-gray-800 mt-1">
+                    {productLinesOf(p).map((l, i) => (
+                      <div key={l.id || i}>• {l.productType || l.productRange}{areaFmt(l.area) ? ` — ${areaFmt(l.area)}` : ""}</div>
+                    ))}
+                    {totalArea(p) > 0 && productLinesOf(p).length > 1 && <div className="font-semibold">Total: {totalArea(p)} m²</div>}
+                  </div>
+                )}
               </div>
               <div className="text-right text-sm">
                 <div className="font-semibold">{fmt(day.date)}</div>
                 <div className="text-gray-800">{day.time ? `${day.time}${day.endTime ? ` – ${day.endTime}` : ""}` : "Continuation"}</div>
                 <div className="text-gray-800">PO {p.po}</div>
-                <div className="text-gray-600">{p.productType} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
+                <div className="text-gray-600">{productLinesOf(p).length === 0 && p.productType ? `${p.productType} · ` : ""}{p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
               </div>
             </div>
             {(p.jobCards || []).length > 0 && day.dayIndex === 1 && !isReturn && (
