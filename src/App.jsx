@@ -18,7 +18,7 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"] },
+  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"], bookAny: true },
   "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments
   "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood
   "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
@@ -156,6 +156,62 @@ const fromIso = (s) => { const [y, m, d] = s.split("-").map(Number); return new 
 const todayIso = () => iso(new Date());
 const addDays = (s, n) => { const d = fromIso(s); d.setDate(d.getDate() + n); return iso(d); };
 const isWeekend = (s) => { const w = fromIso(s).getDay(); return w === 0 || w === 6; };
+
+/* =========================================================
+   SOUTH AFRICAN PUBLIC HOLIDAYS
+   Fixed-date holidays + Easter (Good Friday & Family Day) computed per year.
+   SA Public Holidays Act: a holiday falling on a Sunday moves to the Monday.
+   Computed once per year and cached. Custom dates come from app settings.
+   ========================================================= */
+function easterSunday(year) {
+  // Anonymous Gregorian ("Meeus/Jones/Butcher") algorithm
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+const _saHolidayCache = {};
+function saHolidayMap(year) {
+  if (_saHolidayCache[year]) return _saHolidayCache[year];
+  const map = {};
+  const put = (d, name) => { map[iso(d)] = name; };
+  // Fixed-date public holidays
+  const fixed = [
+    [0, 1, "New Year's Day"],
+    [2, 21, "Human Rights Day"],
+    [3, 27, "Freedom Day"],
+    [4, 1, "Workers' Day"],
+    [5, 16, "Youth Day"],
+    [7, 9, "National Women's Day"],
+    [8, 24, "Heritage Day"],
+    [11, 16, "Day of Reconciliation"],
+    [11, 25, "Christmas Day"],
+    [11, 26, "Day of Goodwill"],
+  ];
+  fixed.forEach(([mo, day, name]) => put(new Date(year, mo, day), name));
+  // Easter-linked holidays
+  const easter = easterSunday(year);
+  const goodFriday = new Date(easter); goodFriday.setDate(easter.getDate() - 2);
+  const familyDay = new Date(easter); familyDay.setDate(easter.getDate() + 1);
+  put(goodFriday, "Good Friday");
+  put(familyDay, "Family Day");
+  // Sunday -> observed on Monday (does not remove the Sunday itself)
+  Object.entries({ ...map }).forEach(([dateIso, name]) => {
+    if (fromIso(dateIso).getDay() === 0) put(fromIso(addDays(dateIso, 1)), `${name} (observed)`);
+  });
+  _saHolidayCache[year] = map;
+  return map;
+}
+// name of the holiday on a given ISO date, or null. `custom` = [{date, name}] from settings.
+const holidayName = (dateIso, custom = []) => {
+  const c = custom.find((h) => h.date === dateIso);
+  if (c) return c.name || "Company holiday";
+  return saHolidayMap(fromIso(dateIso).getFullYear())[dateIso] || null;
+};
 // install spans working days only (Mon–Fri)
 const installEnd = (start, days) => {
   let cur = start, left = Math.max(1, days || 1) - 1;
@@ -202,7 +258,7 @@ const hoursPerDay = (p) => Number(p.estHours) || DEFAULT_HOURS_PER_DAY;
 // Two-step booking: a job can sit on the calendar as "planned" (no lines) or "reserved" (one line)
 // before it is confirmed as booked (two lines). While planned/reserved it stays in its tray.
 const isReserved = (p) => !!p.reserveStage && p.status !== "booked" && p.status !== "installed";
-const onCalendar = (p) => p.status === "booked" || p.status === "installed" || isReserved(p);
+const onCalendar = (p) => !p.invoiced && (p.status === "booked" || p.status === "installed" || isReserved(p));
 // Received but some line items still outstanding
 const partiallyReceived = (p) => p.received && (p.lineItems || []).some((li) => !li.received);
 
@@ -214,11 +270,27 @@ const headers = {
   Authorization: `Bearer ${SUPABASE_KEY}`,
   "Content-Type": "application/json",
 };
+const SETTINGS_ID = "__app_settings__"; // reserved row in projects_v2 for app-wide settings (holidays etc.)
 async function dbLoad() {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data`, { headers });
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
-  return rows.map((row) => ({ ...row.data, id: row.id }));
+  return rows.filter((row) => row.id !== SETTINGS_ID).map((row) => ({ ...row.data, id: row.id }));
+}
+async function dbLoadSettings() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${SETTINGS_ID}&select=data`, { headers });
+  if (!r.ok) throw new Error(`Settings load failed (${r.status})`);
+  const rows = await r.json();
+  return (rows[0] && rows[0].data) || { customHolidays: [] };
+}
+async function dbSaveSettings(settings) {
+  const body = [{ id: SETTINGS_ID, data: settings, updated_at: new Date().toISOString() }];
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Settings save failed (${r.status})`);
 }
 async function dbSave(project) {
   const body = [{ id: project.id, data: project, updated_at: new Date().toISOString() }];
@@ -368,6 +440,7 @@ export default function App() {
     } catch { return null; }
   });
   const [projects, setProjects] = useState([]);
+  const [settings, setSettings] = useState({ customHolidays: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [view, setView] = useState("home"); // home | placed | received | booked | completed | history | availability | reports | dept:<id>
@@ -375,6 +448,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTest, setShowTest] = useState(false);
+  const [showHolidays, setShowHolidays] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState("");
@@ -385,16 +459,27 @@ export default function App() {
   // Which departments this user may make changes to. null/undefined depts = all (owners, developer).
   const canEditDept = (deptId) => isDev || (isCoord && (!user?.depts || user.depts.includes(deptId)));
   const canEdit = (p) => canEditDept(p?.department);
+  // Booking (drag onto a calendar, reschedule, add/remove day) — some co-ordinators may book any department even where they can't otherwise edit
+  const canBook = (p) => canEdit(p) || !!user?.bookAny;
   // Departments a co-ordinator is allowed to create/pick in the form (null = all)
   const allowedDepts = (isDev || !user?.depts) ? null : user.depts;
 
   useEffect(() => { if (user) sessionStorage.setItem("nolans_user", JSON.stringify(user)); }, [user]);
 
   const refresh = async () => {
-    try { setProjects(await dbLoad()); setError(""); }
+    try {
+      const [ps, st] = await Promise.all([dbLoad(), dbLoadSettings()]);
+      setProjects(ps); setSettings(st); setError("");
+    }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
   };
+  const saveSettings = async (next) => {
+    setSettings(next);
+    try { await dbSaveSettings(next); }
+    catch (e) { setError(e.message); }
+  };
+  const customHolidays = settings.customHolidays || [];
   useEffect(() => {
     if (!user) return;
     refresh();
@@ -497,6 +582,11 @@ export default function App() {
               <Plus size={16} /> New test project
             </button>
           )}
+          {isDev && (
+            <button onClick={() => setShowHolidays(true)} className="px-4 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#161b22] text-sm font-medium flex items-center gap-1.5" title="Developer only — manage custom public holidays shown on every calendar">
+              <Calendar size={16} /> Public holidays
+            </button>
+          )}
           <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 3)">
             <Bell size={18} />
           </button>
@@ -572,7 +662,7 @@ export default function App() {
           ) : view.startsWith("dept:") ? (
             <CalendarView
               key={view} cal={calOf(view.slice(5))} projects={active.filter((p) => calendarOf(p.department) === view.slice(5))}
-              isCoord={isCoord} canEdit={canEdit} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
+              isCoord={isCoord} canEdit={canEdit} canBook={canBook} customHolidays={customHolidays} user={user} save={save} onOpen={setSelected} initialMonth={calMonth}
             />
           ) : (
             <ListView
@@ -597,6 +687,9 @@ export default function App() {
           user={user} level={level} isCoord={isCoord} canEdit={canEdit(projects.find((p) => p.id === selected.id) || selected)} isDev={isDev} save={save}
           onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
         />
+      )}
+      {showHolidays && (
+        <HolidaysModal custom={customHolidays} onSave={(list) => saveSettings({ ...settings, customHolidays: list })} onClose={() => setShowHolidays(false)} />
       )}
       {toast && (
         <div className="print:hidden fixed bottom-5 right-5 bg-[#161b22] border border-[#30363d] text-sm px-4 py-2.5 rounded-xl shadow-xl">{toast}</div>
@@ -1413,7 +1506,77 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   );
 }
 
-function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, initialMonth }) {
+/* =========================================================
+   PUBLIC HOLIDAYS MANAGER (Developer only)
+   ========================================================= */
+function HolidaysModal({ custom, onSave, onClose }) {
+  const [list, setList] = useState(() => [...(custom || [])].sort((a, b) => a.date.localeCompare(b.date)));
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+  const year = new Date().getFullYear();
+  const base = Object.entries(saHolidayMap(year)).sort((a, b) => a[0].localeCompare(b[0]));
+
+  const add = () => {
+    if (!date) return;
+    const next = [...list.filter((h) => h.date !== date), { date, name: name.trim() || "Company holiday" }].sort((a, b) => a.date.localeCompare(b.date));
+    setList(next); setDate(""); setName("");
+  };
+  const remove = (d) => setList(list.filter((h) => h.date !== d));
+  const commit = () => { onSave(list); onClose(); };
+
+  return (
+    <Modal title="Public holidays" onClose={onClose}>
+      <p className="text-sm text-slate-400 mb-4">South African public holidays are built in automatically. Add custom dates below (for example a company shutdown day). They show on every calendar but do not block booking.</p>
+
+      <div className="border border-[#30363d] rounded-xl p-3 mb-4">
+        <div className="text-xs text-slate-500 mb-2">Add a custom date</div>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <div className="text-[11px] text-slate-500 mb-1">Date</div>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+          </div>
+          <div className="flex-1 min-w-[160px]">
+            <div className="text-[11px] text-slate-500 mb-1">Name</div>
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Company shutdown" className={inputCls} />
+          </div>
+          <button onClick={add} disabled={!date} className={btnPrimary}>Add</button>
+        </div>
+      </div>
+
+      <div className="text-xs text-slate-500 mb-1">Custom holidays</div>
+      {list.length === 0 ? (
+        <div className="text-sm text-slate-500 mb-4">None added.</div>
+      ) : (
+        <div className="mb-4 space-y-1">
+          {list.map((h) => (
+            <div key={h.date} className="flex items-center justify-between text-sm bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-1.5">
+              <span><span className="text-slate-300">{fmtShort(h.date)}</span> · <span className="text-slate-100">{h.name}</span></span>
+              <button onClick={() => remove(h.date)} className="text-slate-400 hover:text-red-300"><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <details className="mb-4">
+        <summary className="text-xs text-slate-500 cursor-pointer">Built-in SA holidays for {year} ({base.length})</summary>
+        <div className="mt-2 space-y-1">
+          {base.map(([d, nm]) => (
+            <div key={d} className="flex items-center justify-between text-sm text-slate-400 px-1">
+              <span>{fmtShort(d)}</span><span>{nm}</span>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <div className="flex justify-end gap-2 pt-2 border-t border-[#30363d]">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={commit} className={btnPrimary}>Save holidays</button>
+      </div>
+    </Modal>
+  );
+}
+
+function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, customHolidays = [], user, save, onOpen, initialMonth }) {
   const [month, setMonth] = useState(() => {
     const d = initialMonth ? fromIso(initialMonth) : new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
@@ -1455,7 +1618,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
   const dropOn = (dateIso) => (e) => {
     e.preventDefault(); setDragOver(null);
     const drag = dragRef.current; dragRef.current = null;
-    if (!drag || !canEdit(drag.p)) return;
+    if (!drag || !canBook(drag.p)) return;
     const { p, kind, dayIndex, visitId } = drag;
     if (kind === "received" || kind === "ordered") setBooking({ project: p, date: dateIso, mode: "book" });
     else if (kind === "day") {
@@ -1507,7 +1670,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
         <div className="text-[11px] text-slate-500 mb-3">In ETA order · {ordered.length}</div>
         <div className="space-y-2 overflow-y-auto flex-1 pr-0.5">
           {ordered.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
-          {ordered.map((p) => <Sticker key={p.id} p={p} inTray draggable={canEdit(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "ordered" })} onClick={() => onOpen(p)} variant="ordered" />)}
+          {ordered.map((p) => <Sticker key={p.id} p={p} inTray draggable={canBook(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "ordered" })} onClick={() => onOpen(p)} variant="ordered" />)}
         </div>
         {isCoord && ordered.length > 0 && <div className="text-[11px] text-slate-500 mt-3">Drag onto a date to plan it before stock arrives (white sticker, red outline). Mark received to move it up.</div>}
       </aside>
@@ -1538,12 +1701,12 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
             {received.length + returns.length === 0 && <div className="text-xs text-slate-500 self-center">Nothing waiting to be booked.</div>}
             {returns.map((p) => (
               <div key={`r-${p.id}`} className="w-44">
-                <Sticker p={p} draggable={canEdit(p)} onDragStart={startDrag({ p, kind: "return" })} onClick={() => onOpen(p)} variant="return" />
+                <Sticker p={p} draggable={canBook(p)} onDragStart={startDrag({ p, kind: "return" })} onClick={() => onOpen(p)} variant="return" />
               </div>
             ))}
             {received.map((p) => (
               <div key={p.id} className="w-44">
-                <Sticker p={p} inTray draggable={canEdit(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
+                <Sticker p={p} inTray draggable={canBook(p) && !isReserved(p)} onDragStart={startDrag({ p, kind: "received" })} onClick={() => onOpen(p)} variant="received" />
               </div>
             ))}
           </div>
@@ -1559,6 +1722,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
               const key = iso(d);
               const inMonth = d.getMonth() === month.getMonth();
               const wk = isWeekend(key);
+              const hol = holidayName(key, customHolidays);
               const items = byDay[key] || [];
               return (
                 <div
@@ -1566,15 +1730,20 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
                   onDragOver={(e) => { if (isCoord) { e.preventDefault(); setDragOver(key); } }}
                   onDragLeave={() => setDragOver((k) => (k === key ? null : k))}
                   onDrop={dropOn(key)}
-                  className={`rounded-lg border p-1.5 flex flex-col gap-1 ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : "border-[#30363d]"} ${inMonth ? (wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
+                  className={`rounded-lg border p-1.5 flex flex-col gap-1 ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${inMonth ? (hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
                 >
                   <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
                     <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
                   </div>
+                  {hol && (
+                    <div className="text-[10px] leading-tight px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-200 truncate" title={hol}>
+                      {hol}
+                    </div>
+                  )}
                   {items.map((it) => it.kind === "day" ? (
                     <Sticker
                       key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={isReserved(it.p) ? "reserved" : it.p.status}
-                      draggable={canEdit(it.p) && (it.p.status === "booked" || isReserved(it.p))}
+                      draggable={canBook(it.p) && (it.p.status === "booked" || isReserved(it.p))}
                       onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
                       dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
                       time={it.day.time} endTime={it.day.endTime}
@@ -1585,7 +1754,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
                   ) : (
                     <Sticker
                       key={`${it.p.id}-${it.visit.id}`} p={it.p} variant="return"
-                      draggable={canEdit(it.p)}
+                      draggable={canBook(it.p)}
                       onDragStart={startDrag({ p: it.p, kind: "moveReturn", visitId: it.visit.id })} onClick={() => onOpen(it.p)}
                       time={it.visit.time} endTime={it.visit.endTime}
                     />
@@ -1608,6 +1777,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, user, save, onOpen, ini
             )}
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-500/15 border border-amber-500/30" /> Public holiday</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
             <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Planned</span>
             <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
@@ -2017,11 +2187,6 @@ function ReportsView({ projects }) {
                 <div className="text-gray-600">{productLinesOf(p).length === 0 && p.productType ? `${p.productType} · ` : ""}{p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
               </div>
             </div>
-            {(p.jobCards || []).length > 0 && day.dayIndex === 1 && !isReturn && (
-              <div className="mt-3 space-y-3">
-                {p.jobCards.map((c) => <img key={c.id} src={c.image} alt="Job card" className="w-full rounded border border-gray-300 report-img" />)}
-              </div>
-            )}
           </div>
         ))}
       </div>
