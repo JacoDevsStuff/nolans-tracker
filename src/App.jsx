@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock
 } from "lucide-react";
 
 /* =========================================================
@@ -18,9 +18,9 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"], bookAny: true },
-  "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments
-  "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood
+  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"], bookAny: true, perfReports: true },
+  "0006": { name: "Marco", level: 2, depts: null, perfReports: true },   // owner — all departments
+  "0007": { name: "Luciano", level: 2, depts: null, perfReports: true }, // owner — all departments, manages Wood
   "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
   "0009": { name: "Chanel", level: 2, depts: ["blinds"] },
   "2222": { name: "Developer", level: 3 },
@@ -463,6 +463,8 @@ export default function App() {
   const canBook = (p) => canEdit(p) || !!user?.bookAny;
   // Departments a co-ordinator is allowed to create/pick in the form (null = all)
   const allowedDepts = (isDev || !user?.depts) ? null : user.depts;
+  // Phase 9 — Performance Report is open to Developer and users flagged perfReports; everyone else sees a Beta Testing card
+  const canSeePerf = isDev || !!user?.perfReports;
 
   useEffect(() => { if (user) sessionStorage.setItem("nolans_user", JSON.stringify(user)); }, [user]);
 
@@ -545,6 +547,7 @@ export default function App() {
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
     ...(level >= 1 ? [{ id: "review", label: "Snag review", icon: ClipboardCheck, count: isCoord ? reviewCount : null }] : []),
+    { id: "performance", label: "Performance Report", icon: TrendingUp, beta: !canSeePerf },
     ...(isCoord ? [
       { id: "availability", label: "Availability", icon: CalendarCheck },
       { id: "reports", label: "Reports", icon: FileText },
@@ -613,6 +616,7 @@ export default function App() {
                 >
                   <n.icon size={18} />
                   <span className="flex-1 text-left">{n.label}</span>
+                  {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
                   {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{n.alert} new</span>}
                   {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
                 </button>
@@ -647,6 +651,8 @@ export default function App() {
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
             <HomeView user={user} lists={lists} setView={setView} openDept={openDept} />
+          ) : view === "performance" ? (
+            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <PerformanceBeta />
           ) : view === "reports" ? (
             <ReportsView projects={active} />
           ) : view === "availability" ? (
@@ -2390,6 +2396,338 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
           <div className="text-[11px] text-slate-500 mt-3">Filtering by product type, consultant and team comes in phase 4.</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* =========================================================
+   PHASE 9 — PERFORMANCE REPORT (consultants + install teams)
+   Every figure is worked out live from the job data, so adding a new
+   metric later is one extra line in computePerformance().
+   ========================================================= */
+const PERF_MODES = [
+  { id: "month", label: "Month" },
+  { id: "quarter", label: "Quarter" },
+  { id: "custom", label: "Custom range" },
+  { id: "all", label: "All time" },
+];
+// Timestamps (ISO with time) or plain dates -> local "YYYY-MM-DD"
+const dayOf = (ts) => { if (!ts) return null; if (ts.length === 10) return ts; const d = new Date(ts); return isNaN(d) ? null : iso(d); };
+const inPeriod = (d, from, to) => !!d && (!from || d >= from) && (!to || d <= to);
+// Reviewed cause wins; otherwise fall back to the category it was logged under
+const snagCauseOf = (s) => (s.review && s.review.cause) || s.category || "";
+const snagCostOf = (s) => ((s.review && s.review.costs) || []).reduce((n, c) => n + (Number(c.amount) || 0), 0);
+const rangeLabel = (l) => (l.productRange ? composeProduct(l.supplier, l.productRange) : (l.productType || "Range not specified"));
+const m2 = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-ZA")} m²`;
+const quarterOptions = () => {
+  const now = new Date(); let y = now.getFullYear(); let q = Math.floor(now.getMonth() / 3) + 1;
+  const out = [];
+  for (let i = 0; i < 12; i++) { out.push(`${y}-Q${q}`); q--; if (q === 0) { q = 4; y--; } }
+  return out;
+};
+function periodOf({ mode, month, quarter, from, to }) {
+  if (mode === "month" && month) {
+    const [y, m] = month.split("-").map(Number);
+    return { from: `${month}-01`, to: `${month}-${pad(new Date(y, m, 0).getDate())}`, label: new Date(y, m - 1, 1).toLocaleDateString("en-ZA", { month: "long", year: "numeric" }) };
+  }
+  if (mode === "quarter" && quarter) {
+    const [y, qs] = quarter.split("-Q"); const qn = Number(qs); const sm = (qn - 1) * 3 + 1; const em = sm + 2;
+    return { from: `${y}-${pad(sm)}-01`, to: `${y}-${pad(em)}-${pad(new Date(Number(y), em, 0).getDate())}`, label: `Q${qn} ${y}` };
+  }
+  if (mode === "custom") {
+    return { from: from || null, to: to || null, label: `${from ? fmt(from) : "Start"} to ${to ? fmt(to) : "today"}` };
+  }
+  return { from: null, to: null, label: "All time" };
+}
+
+const blankStats = () => ({ ordered: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
+
+// The single loop every number in the report comes from.
+function computePerformance(projects, { from, to }, deptFilter) {
+  const scope = projects.filter((p) => deptFilter === "all" || p.department === deptFilter);
+  const consultants = {}, teams = {};
+  const cStat = (name) => (consultants[name] = consultants[name] || blankStats());
+  const tStat = (dept, team) => { const k = `${dept}|${team}`; return (teams[k] = teams[k] || { dept, team, ...blankStats() }); };
+  // Seed known people/teams so zero rows still show
+  CONSULTANTS.forEach(cStat);
+  DEPARTMENTS.filter((d) => deptFilter === "all" || d.id === deptFilter).forEach((d) => teamsOf(d.id).forEach((t) => tStat(d.id, t)));
+
+  scope.forEach((p) => {
+    const c = cStat(p.consultant || "Unassigned");
+    const t = tStat(p.department, p.team || teamsOf(p.department)[0]);
+    const area = totalArea(p);
+    const bookDate = p.installDate || scheduleOf(p)[0]?.date || null;
+
+    // Ordered = job created in the period. Consultant m² and ranges count here (what was sold).
+    if (inPeriod(dayOf(p.createdAt), from, to)) {
+      c.ordered++; t.ordered++;
+      c.m2 += area;
+      if (area) c.m2ByDept[p.department] = (c.m2ByDept[p.department] || 0) + area;
+      productLinesOf(p).forEach((l) => {
+        const a = Number(l.area) || 0;
+        const k = rangeLabel(l);
+        const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0 });
+        r.m2 += a; r.lines++;
+      });
+    }
+    // Booked = first install day falls in the period (still booked or already done)
+    if ((p.status === "booked" || p.status === "installed") && inPeriod(bookDate, from, to)) { c.booked++; t.booked++; }
+    // Completed = marked installed in the period. Team m² counts here (what was actually laid).
+    if (p.status === "installed" && inPeriod(dayOf(p.installedAt), from, to)) { c.completed++; t.completed++; t.m2 += area; }
+    // Invoiced = moved to History in the period
+    if (p.invoiced && inPeriod(dayOf(p.invoicedAt), from, to)) { c.invoiced++; t.invoiced++; }
+
+    (p.snags || []).forEach((s) => {
+      if (!inPeriod(dayOf(s.createdAt), from, to)) return;
+      const cause = snagCauseOf(s);
+      if (cause === "Consultant boo-boo") { c.snags++; c.snagCost += snagCostOf(s); }
+      if (cause === "Installation boo-boo") { t.snags++; t.snagCost += snagCostOf(s); }
+    });
+  });
+
+  const consultantRows = Object.entries(consultants).map(([name, s]) => ({ name, ...s }))
+    .sort((a, b) => b.m2 - a.m2 || b.ordered - a.ordered || a.name.localeCompare(b.name));
+  const deptOrder = DEPARTMENTS.map((d) => d.id);
+  const teamRows = Object.values(teams)
+    .sort((a, b) => deptOrder.indexOf(a.dept) - deptOrder.indexOf(b.dept) || a.team.localeCompare(b.team));
+  const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost }), blankStats());
+  return { consultantRows, teamRows, cTotal: sum(consultantRows), tTotal: sum(teamRows) };
+}
+const sortedRanges = (ranges) => Object.entries(ranges).sort((a, b) => b[1].m2 - a[1].m2 || b[1].lines - a[1].lines);
+
+function PerformanceBeta() {
+  return (
+    <div className="max-w-2xl mx-auto mt-10 bg-[#161b22] border border-amber-400/30 rounded-2xl p-10 text-center">
+      <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-400/10 border border-amber-400/40 flex items-center justify-center mb-5">
+        <TrendingUp size={26} className="text-amber-300" />
+      </div>
+      <div className="inline-block text-[10px] font-bold tracking-[0.2em] px-2.5 py-1 rounded-full border border-amber-400/50 text-amber-300 mb-4">BETA TESTING</div>
+      <h1 className="text-2xl font-bold text-white mb-2">Performance Report</h1>
+      <p className="text-slate-400 text-sm leading-relaxed">Something big is on its way. This feature is currently being tested and will open up to everyone soon.</p>
+      <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-500"><Lock size={12} /> Limited access during testing</div>
+    </div>
+  );
+}
+
+function PerformanceView({ projects, user }) {
+  const now = new Date();
+  const [mode, setMode] = useState("month");
+  const [month, setMonth] = useState(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`);
+  const [quarter, setQuarter] = useState(quarterOptions()[0]);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [dept, setDept] = useState("all");
+  const [tab, setTab] = useState("consultants");
+
+  const period = periodOf({ mode, month, quarter, from, to });
+  const data = useMemo(() => computePerformance(projects, period, dept), [projects, period.from, period.to, dept]);
+  const deptLabel = dept === "all" ? "All departments" : deptOf(dept).label;
+  const generated = new Date().toLocaleString("en-ZA", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  const th = "text-left text-[11px] font-medium text-slate-400 uppercase tracking-wider py-2 px-3";
+  const td = "py-2.5 px-3 text-sm text-slate-200";
+  const num = "py-2.5 px-3 text-sm text-slate-200 text-right tabular-nums";
+  const pipelineCells = (r, bold) => (
+    <>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.ordered}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.booked}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.completed}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.invoiced}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.m2 ? m2(r.m2) : "—"}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.snags}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""} ${r.snagCost > 0 ? "text-red-300" : ""}`}>{r.snagCost ? zar(r.snagCost) : "—"}</td>
+    </>
+  );
+  const pipelineHeads = (m2Label, snagLabel) => (
+    <>
+      <th className={`${th} text-right`}>Ordered</th>
+      <th className={`${th} text-right`}>Booked</th>
+      <th className={`${th} text-right`}>Completed</th>
+      <th className={`${th} text-right`}>Invoiced</th>
+      <th className={`${th} text-right`}>{m2Label}</th>
+      <th className={`${th} text-right`}>{snagLabel}</th>
+      <th className={`${th} text-right`}>Snag cost</th>
+    </>
+  );
+
+  return (
+    <div>
+      {/* ---------- Controls (screen only) ---------- */}
+      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-5 mb-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+          <div>
+            <h1 className="text-2xl font-bold text-white flex items-center gap-2"><TrendingUp size={22} className="text-slate-300" /> Performance Report</h1>
+            <div className="text-sm text-slate-400">{period.label} · {deptLabel}</div>
+          </div>
+          <button onClick={() => window.print()} className={`${btnPrimary} flex items-center gap-2`}><Printer size={16} /> Save as PDF</button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+          <Field label="Period">
+            <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value)}>
+              {PERF_MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </Field>
+          {mode === "month" && <Field label="Month"><input type="month" className={inputCls} value={month} onChange={(e) => setMonth(e.target.value)} /></Field>}
+          {mode === "quarter" && (
+            <Field label="Quarter">
+              <select className={inputCls} value={quarter} onChange={(e) => setQuarter(e.target.value)}>
+                {quarterOptions().map((q) => <option key={q} value={q}>{q.replace("-", " ")}</option>)}
+              </select>
+            </Field>
+          )}
+          {mode === "custom" && <Field label="From"><input type="date" className={inputCls} value={from} onChange={(e) => setFrom(e.target.value)} /></Field>}
+          {mode === "custom" && <Field label="To"><input type="date" className={inputCls} value={to} onChange={(e) => setTo(e.target.value)} /></Field>}
+          <Field label="Department">
+            <select className={inputCls} value={dept} onChange={(e) => setDept(e.target.value)}>
+              <option value="all">All departments</option>
+              {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+            </select>
+          </Field>
+        </div>
+        <p className="text-xs text-slate-500 mt-3">Save as PDF opens the print dialog. Choose "Save as PDF" as the printer. The PDF always includes both the consultant and team reports.</p>
+      </div>
+
+      {/* ---------- Screen view ---------- */}
+      <div className="print:hidden">
+        <div className="flex gap-1 mb-4 bg-[#161b22] border border-[#30363d] rounded-xl p-1 w-fit">
+          {[["consultants", "Consultants"], ["teams", "Install teams"]].map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} className={`px-4 py-1.5 rounded-lg text-sm ${tab === id ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>{label}</button>
+          ))}
+        </div>
+
+        {tab === "consultants" ? (
+          <div className="space-y-4">
+            <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5 overflow-x-auto">
+              <table className="w-full min-w-[760px]">
+                <thead className="border-b border-[#30363d]">
+                  <tr><th className={th}>Consultant</th>{pipelineHeads("m² sold", "Snags")}</tr>
+                </thead>
+                <tbody>
+                  {data.consultantRows.map((r) => <tr key={r.name} className="border-b border-[#21262d]"><td className={`${td} font-medium text-white`}>{r.name}</td>{pipelineCells(r)}</tr>)}
+                  <tr className="bg-[#0d1117]"><td className={`${td} font-semibold text-white`}>Total</td>{pipelineCells(data.cTotal, true)}</tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {data.consultantRows.filter((r) => r.ordered > 0).map((r) => (
+                <div key={r.name} className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5">
+                  <div className="flex items-baseline justify-between mb-3">
+                    <h3 className="text-lg font-semibold text-white">{r.name}</h3>
+                    <span className="text-sm text-slate-400">{m2(r.m2)} sold</span>
+                  </div>
+                  {Object.keys(r.m2ByDept).length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {Object.entries(r.m2ByDept).sort((a, b) => b[1] - a[1]).map(([d, a]) => (
+                        <span key={d} className="text-xs px-2 py-1 rounded-lg bg-[#0d1117] border border-[#30363d] text-slate-300">{deptOf(d).label} · {m2(a)}</span>
+                      ))}
+                    </div>
+                  )}
+                  {sortedRanges(r.ranges).length === 0 ? (
+                    <div className="text-xs text-slate-500">No catalogued ranges in this period (range detail covers Carpets and Vinyl).</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {sortedRanges(r.ranges).map(([k, v]) => {
+                        const pct = r.m2 ? Math.max(3, (v.m2 / r.m2) * 100) : 0;
+                        return (
+                          <div key={k}>
+                            <div className="flex justify-between text-sm"><span className="text-slate-200">{k}</span><span className="text-slate-400 tabular-nums">{v.m2 ? m2(v.m2) : `${v.lines} line${v.lines === 1 ? "" : "s"}, no m²`}</span></div>
+                            {v.m2 > 0 && <div className="h-1 bg-[#0d1117] rounded-full mt-1 mb-1.5"><div className="h-1 bg-[#1f6feb] rounded-full" style={{ width: `${pct}%` }} /></div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5 overflow-x-auto">
+            <table className="w-full min-w-[760px]">
+              <thead className="border-b border-[#30363d]">
+                <tr><th className={th}>Department · Team</th>{pipelineHeads("m² installed", "Snags")}</tr>
+              </thead>
+              <tbody>
+                {data.teamRows.map((r) => {
+                  const d = deptOf(r.dept);
+                  return <tr key={`${r.dept}|${r.team}`} className="border-b border-[#21262d]"><td className={td}><span className="inline-flex items-center gap-2"><d.icon size={14} className="text-slate-500" /><span className="text-white font-medium">{d.label}</span><span className="text-slate-400">· {r.team}</span></span></td>{pipelineCells(r)}</tr>;
+                })}
+                <tr className="bg-[#0d1117]"><td className={`${td} font-semibold text-white`}>Total</td>{pipelineCells(data.tTotal, true)}</tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-[11px] text-slate-500 mt-3">Consultant snags count Consultant boo-boos only; team snags count Installation boo-boos only. The reviewed cause is used where one has been allocated. Test projects are excluded.</p>
+      </div>
+
+      {/* ---------- Printable report (PDF) ---------- */}
+      <div className="perf-report hidden print:block bg-white text-black">
+        <div className="border-b-2 border-black pb-3 mb-5">
+          <div className="text-xs tracking-widest text-gray-600">NOLANS PERFORMANCE REPORT</div>
+          <h2 className="text-2xl font-bold">{period.label} · {deptLabel}</h2>
+          <div className="text-xs text-gray-600 mt-1">Period: {period.from ? fmt(period.from) : "Start of records"} to {period.to ? fmt(period.to) : "today"} · Generated {generated} by {user.name}</div>
+        </div>
+
+        <h3 className="text-lg font-bold mb-2">1. Consultant performance</h3>
+        <table className="w-full text-sm border-collapse mb-5">
+          <thead><tr className="border-b border-black text-left">
+            <th className="py-1 pr-2">Consultant</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² sold</th><th className="py-1 px-2 text-right">Consultant snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
+          </tr></thead>
+          <tbody>
+            {[...data.consultantRows, { name: "TOTAL", ...data.cTotal, isTotal: true }].map((r) => (
+              <tr key={r.name} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
+                <td className="py-1 pr-2">{r.name}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <h3 className="text-lg font-bold mb-2">2. Ranges sold per consultant</h3>
+        {data.consultantRows.filter((r) => r.ordered > 0).length === 0 && <div className="text-sm text-gray-600 mb-5">No orders in this period.</div>}
+        {data.consultantRows.filter((r) => r.ordered > 0).map((r) => (
+          <div key={r.name} className="perf-block mb-4">
+            <div className="font-semibold">{r.name} · {m2(r.m2)} sold across {r.ordered} order{r.ordered === 1 ? "" : "s"}</div>
+            {Object.keys(r.m2ByDept).length > 0 && <div className="text-xs text-gray-700">By department: {Object.entries(r.m2ByDept).sort((a, b) => b[1] - a[1]).map(([d, a]) => `${deptOf(d).label} ${m2(a)}`).join(", ")}</div>}
+            {sortedRanges(r.ranges).length === 0 ? (
+              <div className="text-xs text-gray-600">No catalogued ranges (range detail covers Carpets and Vinyl only).</div>
+            ) : (
+              <ul className="text-sm mt-1">
+                {sortedRanges(r.ranges).map(([k, v]) => <li key={k}>• {r.name} sold {v.m2 ? m2(v.m2) : `${v.lines} line${v.lines === 1 ? "" : "s"} (no m² entered)`} of {k}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+
+        <h3 className="text-lg font-bold mb-2 mt-6">3. Install team performance</h3>
+        <table className="w-full text-sm border-collapse mb-5">
+          <thead><tr className="border-b border-black text-left">
+            <th className="py-1 pr-2">Department · Team</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² installed</th><th className="py-1 px-2 text-right">Installation snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
+          </tr></thead>
+          <tbody>
+            {[...data.teamRows, { dept: "", team: "TOTAL", ...data.tTotal, isTotal: true }].map((r) => (
+              <tr key={`${r.dept}|${r.team}`} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
+                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${r.team}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="perf-block text-xs text-gray-700 border-t border-gray-400 pt-3">
+          <div className="font-semibold text-black mb-1">How to read this report</div>
+          <div>Ordered: jobs created in the period. Booked: jobs whose first install day falls in the period. Completed: jobs marked installed in the period. Invoiced: jobs moved to History in the period. A single job can appear in several columns if it moved through several stages in the same period.</div>
+          <div>m² sold (consultants) counts on the order date. m² installed (teams) counts on the completion date. Only Carpets and Vinyl record m² and ranges; other departments show job counts only.</div>
+          <div>Consultant snags are snags whose cause is Consultant boo-boo; installation snags are those whose cause is Installation boo-boo. The cause allocated in Snag review is used where set, otherwise the category logged. Snags count on the date logged. Snag cost is the total of cost lines entered in Snag review. Test projects are excluded.</div>
+        </div>
+      </div>
+
+      <style>{`
+        @media print {
+          @page { margin: 12mm; }
+          body { background: white !important; }
+          .perf-report { color: black; }
+          .perf-report tr, .perf-block { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
     </div>
   );
 }
