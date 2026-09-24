@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check
 } from "lucide-react";
 
 /* =========================================================
@@ -18,9 +18,9 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Franco", level: 2, depts: ["shutters", "carpets"], bookAny: true, perfReports: true },
-  "0006": { name: "Marco", level: 2, depts: null, perfReports: true },   // owner — all departments
-  "0007": { name: "Luciano", level: 2, depts: null, perfReports: true }, // owner — all departments, manages Wood
+  "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true }, // app partner — full access, all departments
+  "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments (Performance Report locked: Beta card)
+  "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
   "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
   "0009": { name: "Chanel", level: 2, depts: ["blinds"] },
   "2222": { name: "Developer", level: 3 },
@@ -262,6 +262,33 @@ const onCalendar = (p) => !p.invoiced && (p.status === "booked" || p.status === 
 // Received but some line items still outstanding
 const partiallyReceived = (p) => p.received && (p.lineItems || []).some((li) => !li.received);
 
+/* Phase 9.1 — ETA follow-up
+   Overdue  = ETA date has passed and the order is still not received
+   Due soon = ETA is today or within the next ETA_WARN_DAYS days, still not received */
+const ETA_WARN_DAYS = 3;
+const etaStateOf = (p) => {
+  if (!p || p.status !== "ordered" || p.received || !p.materialEta || p.deleted || p.invoiced) return null;
+  const today = todayIso();
+  if (p.materialEta < today) return "overdue";
+  if (p.materialEta <= addDays(today, ETA_WARN_DAYS)) return "soon";
+  return null;
+};
+const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
+const etaLabel = (p) => {
+  const st = etaStateOf(p); if (!st) return "";
+  const d = daysBetween(todayIso(), p.materialEta);
+  if (st === "overdue") return `${-d} day${d === -1 ? "" : "s"} overdue`;
+  return d === 0 ? "ETA today" : `ETA in ${d} day${d === 1 ? "" : "s"}`;
+};
+const EtaBadge = ({ p, small }) => {
+  const st = etaStateOf(p); if (!st) return null;
+  return (
+    <span title={etaLabel(p)} className={`shrink-0 font-bold rounded-full ${small ? "text-[9px] px-1 py-px" : "text-[10px] px-1.5 py-0.5"} ${st === "overdue" ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>
+      {st === "overdue" ? "OVERDUE" : "ETA SOON"}
+    </span>
+  );
+};
+
 /* =========================================================
    SUPABASE (REST, no client library needed)
    ========================================================= */
@@ -272,10 +299,31 @@ const headers = {
 };
 const SETTINGS_ID = "__app_settings__"; // reserved row in projects_v2 for app-wide settings (holidays etc.)
 async function dbLoad() {
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data`, { headers });
+  // Personal notes live in the same table under ids starting "note:" — they are never loaded as projects
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*`, { headers });
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
-  return rows.filter((row) => row.id !== SETTINGS_ID).map((row) => ({ ...row.data, id: row.id }));
+  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+}
+// Phase 9.1 — personal feedback notes. Each note is its own row (id "note:<uuid>") so two people
+// posting at once can never overwrite each other. A user only ever loads their own notes; the Developer loads all.
+const NOTE_PREFIX = "note:";
+async function dbLoadNotes(user) {
+  const isDevUser = (user?.level ?? 0) >= 3;
+  const mineOnly = isDevUser ? "" : `&data->>pin=eq.${encodeURIComponent(user.pin)}`;
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(NOTE_PREFIX)}*${mineOnly}`, { headers });
+  if (!r.ok) throw new Error(`Notes load failed (${r.status})`);
+  const rows = await r.json();
+  return rows.map((row) => ({ ...row.data, id: row.id })).filter((n) => !n.deleted);
+}
+async function dbSaveNote(note) {
+  const body = [{ id: note.id, data: note, updated_at: new Date().toISOString() }];
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Note save failed (${r.status})`);
 }
 async function dbLoadSettings() {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${SETTINGS_ID}&select=data`, { headers });
@@ -525,6 +573,12 @@ export default function App() {
   // Unacknowledged open snags — badge for co-ordinator+
   const newSnagCount = useMemo(() => active.reduce((n, p) => n + openSnags(p).filter((s) => !s.acknowledged).length, 0), [active]);
   const reviewCount = useMemo(() => active.reduce((n, p) => n + (p.snags || []).filter((s) => s.resolved && !(s.review && s.review.cause)).length, 0), [active]);
+  // Phase 9.1 — orders overdue or due within 3 days, still not received. Consultants see only their own (same rule as Placed orders).
+  const etaAlerts = useMemo(() => {
+    const withState = mine(active.filter((p) => etaStateOf(p))).sort((a, b) => a.materialEta.localeCompare(b.materialEta));
+    return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon") };
+  }, [active, level, user]);
+  const etaCount = etaAlerts.overdue.length + etaAlerts.soon.length;
 
   // Global search: consultants only see their own placed/received orders
   const searchResults = useMemo(() => {
@@ -543,6 +597,7 @@ export default function App() {
     { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
     { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
+    { id: "eta", label: "ETA alerts", icon: AlertTriangle, count: etaCount, alert: etaAlerts.overdue.length, alertLabel: "overdue" },
     ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
@@ -590,8 +645,9 @@ export default function App() {
               <Calendar size={16} /> Public holidays
             </button>
           )}
-          <button className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title="Notifications (coming in phase 3)">
+          <button onClick={() => setView("eta")} className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title={etaCount ? `${etaAlerts.overdue.length} overdue · ${etaAlerts.soon.length} due within ${ETA_WARN_DAYS} days` : "No ETA alerts"}>
             <Bell size={18} />
+            {etaCount > 0 && <span className={`absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaCount}</span>}
           </button>
           <div className="flex items-center gap-2 pl-2">
             <div className="w-9 h-9 rounded-full bg-[#21262d] border border-[#30363d] flex items-center justify-center text-sm font-semibold">
@@ -617,7 +673,7 @@ export default function App() {
                   <n.icon size={18} />
                   <span className="flex-1 text-left">{n.label}</span>
                   {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
-                  {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{n.alert} new</span>}
+                  {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{n.alert} {n.alertLabel || "new"}</span>}
                   {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
                 </button>
               );
@@ -650,7 +706,10 @@ export default function App() {
           {loading ? (
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
-            <HomeView user={user} lists={lists} setView={setView} openDept={openDept} />
+            <HomeView user={user} lists={lists} setView={setView} openDept={openDept} etaAlerts={etaAlerts} onOpen={setSelected}
+              capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays)} />
+          ) : view === "eta" ? (
+            <EtaAlertsView alerts={etaAlerts} onOpen={setSelected} level={level} />
           ) : view === "performance" ? (
             canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <PerformanceBeta />
           ) : view === "reports" ? (
@@ -697,6 +756,7 @@ export default function App() {
       {showHolidays && (
         <HolidaysModal custom={customHolidays} onSave={(list) => saveSettings({ ...settings, customHolidays: list })} onClose={() => setShowHolidays(false)} />
       )}
+      {user.pin && <NotesWidget user={user} view={view} />}
       {toast && (
         <div className="print:hidden fixed bottom-5 right-5 bg-[#161b22] border border-[#30363d] text-sm px-4 py-2.5 rounded-xl shadow-xl">{toast}</div>
       )}
@@ -746,7 +806,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
 /* =========================================================
    HOME DASHBOARD
    ========================================================= */
-function HomeView({ user, lists, setView, openDept }) {
+function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity }) {
   const myCount = lists.placed.length + lists.received.length;
   const cards = [
     { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
@@ -765,6 +825,7 @@ function HomeView({ user, lists, setView, openDept }) {
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-300"><Calendar size={16} /> {fmt(todayIso())}</div>
       </div>
+      {etaAlerts && <EtaBanner alerts={etaAlerts} onOpen={onOpen} onViewAll={() => setView("eta")} />}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,1fr)_1.6fr] gap-5">
         <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl p-3 space-y-2">
           {cards.map((c) => (
@@ -800,6 +861,236 @@ function HomeView({ user, lists, setView, openDept }) {
           ))}
         </div>
       </div>
+      {capacity && <CapacityPanel capacity={capacity} openDept={openDept} />}
+    </div>
+  );
+}
+
+/* =========================================================
+   PHASE 9.1 — TEAM CAPACITY (home screen, all levels)
+   Per department calendar over the next 10 working days (weekends and public holidays skipped).
+   A team counts as booked on a day if it has any install, planned/reserved day or snag return visit.
+   Departments with two teams are measured in team-days (2 teams × 10 days = 20).
+   ========================================================= */
+const CAPACITY_WORKDAYS = 10;
+const workingDaysFrom = (start, n, custom) => {
+  const out = []; let cur = start;
+  while (out.length < n) { if (!isWeekend(cur) && !holidayName(cur, custom)) out.push(cur); cur = addDays(cur, 1); }
+  return out;
+};
+function computeCapacity(projects, custom = []) {
+  const today = todayIso();
+  const windowDays = workingDaysFrom(today, CAPACITY_WORKDAYS, custom);
+  return CALENDARS.map((cal) => {
+    const teamCount = teamsOf(cal.id).length;
+    const inCal = projects.filter((p) => calendarOf(p.department) === cal.id);
+    const occ = {}; // date -> set of occupied team slots
+    const mark = (date, key) => { (occ[date] = occ[date] || new Set()).add(key); };
+    inCal.filter(onCalendar).forEach((p) => scheduleOf(p).forEach((sd) => mark(sd.date, p.team || `job:${p.id}`)));
+    inCal.forEach((p) => (p.returnVisits || []).forEach((v) => mark(v.date, v.team || p.team || `ret:${v.id}`)));
+    const usedOn = (d) => Math.min(teamCount, occ[d] ? occ[d].size : 0);
+    const total = windowDays.length * teamCount;
+    const booked = windowDays.reduce((n, d) => n + usedOn(d), 0);
+    // Earliest clear week: first Mon–Fri week (this week only if today is Monday) where a full team is free every working day
+    let wk = weekStart(today); if (wk < today) wk = addDays(wk, 7);
+    let clearWeek = null;
+    for (let i = 0; i < 26 && !clearWeek; i++, wk = addDays(wk, 7)) {
+      const days = [0, 1, 2, 3, 4].map((o) => addDays(wk, o)).filter((d) => !holidayName(d, custom));
+      if (days.length && days.every((d) => usedOn(d) < teamCount)) clearWeek = wk;
+    }
+    return { cal, teamCount, total, booked, free: total - booked, clearWeek };
+  });
+}
+function CapacityPanel({ capacity, openDept }) {
+  const today = todayIso();
+  return (
+    <div className="mt-5 bg-[#0d1117] border border-[#30363d] rounded-2xl p-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-2">
+          <Gauge size={18} className="text-slate-300" />
+          <h2 className="text-lg font-semibold text-white">Team capacity</h2>
+        </div>
+        <span className="text-xs text-slate-500">Next {CAPACITY_WORKDAYS} working days · weekends and public holidays excluded</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        {capacity.map(({ cal, teamCount, total, booked, free, clearWeek }) => {
+          const pct = total ? booked / total : 0;
+          const bar = pct > 0.8 ? "bg-red-500" : pct > 0.5 ? "bg-amber-400" : "bg-emerald-500";
+          const unit = teamCount > 1 ? "team-days" : "days";
+          return (
+            <button key={cal.id} onClick={() => openDept(cal.id)} className="text-left bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                <cal.icon size={16} className="text-slate-400" /> <span className="truncate">{cal.label}</span>
+                {teamCount > 1 && <span className="ml-auto text-[10px] text-slate-500">{teamCount} teams</span>}
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-[#21262d] overflow-hidden"><div className={`h-full ${bar}`} style={{ width: `${Math.round(pct * 100)}%` }} /></div>
+              <div className="mt-2 text-xs text-slate-300">{booked} of {total} {unit} booked</div>
+              <div className={`text-xs font-semibold ${free === 0 ? "text-red-300" : "text-emerald-300"}`}>{free} {unit} free</div>
+              <div className="mt-1.5 text-[11px] text-slate-400" title="First Mon–Fri week where a full team is free every working day">
+                Earliest clear week: <span className="text-slate-200">{clearWeek ? `w/c ${fmtShort(clearWeek)}${clearWeek === weekStart(today) ? " (this week)" : ""}` : "none in 6 months"}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   PHASE 9.1 — ETA FOLLOW-UP (home banner + dedicated view)
+   ========================================================= */
+function EtaBanner({ alerts, onOpen, onViewAll }) {
+  const { overdue, soon } = alerts;
+  if (!overdue.length && !soon.length) return null;
+  const top = [...overdue, ...soon].slice(0, 4);
+  return (
+    <div className={`mb-5 rounded-xl border px-4 py-3 ${overdue.length ? "border-red-500/50 bg-red-500/10" : "border-amber-400/50 bg-amber-400/10"}`}>
+      <div className="flex items-center gap-3 flex-wrap">
+        <AlertTriangle size={18} className={overdue.length ? "text-red-400" : "text-amber-300"} />
+        <span className="text-sm text-white font-medium">
+          {overdue.length > 0 && <>{overdue.length} order{overdue.length === 1 ? "" : "s"} past ETA</>}
+          {overdue.length > 0 && soon.length > 0 && " · "}
+          {soon.length > 0 && <>{soon.length} due within {ETA_WARN_DAYS} days</>}
+          <span className="text-slate-400 font-normal"> · not yet received</span>
+        </span>
+        <button onClick={onViewAll} className="ml-auto text-xs underline text-slate-300 hover:text-white">View all</button>
+      </div>
+      <div className="flex flex-wrap gap-2 mt-2">
+        {top.map((p) => (
+          <button key={p.id} onClick={() => onOpen(p)} className="flex items-center gap-2 text-xs bg-[#0d1117] border border-[#30363d] hover:border-slate-500 rounded-lg px-2.5 py-1.5">
+            <EtaBadge p={p} small />
+            <span className="text-white">{p.clientName}</span>
+            <span className="text-slate-400">{deptOf(p.department).label} · {etaLabel(p)}</span>
+          </button>
+        ))}
+        {overdue.length + soon.length > top.length && <button onClick={onViewAll} className="text-xs text-slate-400 hover:text-white px-2">+{overdue.length + soon.length - top.length} more</button>}
+      </div>
+    </div>
+  );
+}
+function EtaAlertsView({ alerts, onOpen, level }) {
+  const Section = ({ title, items, tone }) => (
+    <div className="mb-6">
+      <div className={`text-xs tracking-wider mb-2 ${tone}`}>{title} · {items.length}</div>
+      {items.length === 0 ? (
+        <div className="text-slate-500 text-sm py-6 text-center border border-dashed border-[#30363d] rounded-xl">Nothing here.</div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((p) => {
+            const d = deptOf(p.department);
+            const lines = productLinesOf(p);
+            const supplier = p.supplier || lines[0]?.supplier || "";
+            return (
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${etaStateOf(p) === "overdue" ? "border-red-500/60" : "border-amber-400/50"} rounded-xl p-4 grid grid-cols-12 gap-3 items-center`}>
+                <div className="col-span-12 md:col-span-4 min-w-0">
+                  <div className="font-medium text-white truncate">{p.clientName}</div>
+                  <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
+                </div>
+                <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
+                <div className="col-span-6 md:col-span-3 text-sm text-slate-300 truncate">{p.productType}{supplier && !String(p.productType || "").includes(supplier) ? ` · ${supplier}` : ""}</div>
+                <div className="col-span-6 md:col-span-2 text-xs text-slate-300">ETA {fmtShort(p.materialEta)}<div className="text-slate-400">{etaLabel(p)}</div></div>
+                <div className="col-span-6 md:col-span-1 flex justify-end"><EtaBadge p={p} /></div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="flex items-baseline justify-between mb-1">
+        <h1 className="text-2xl font-bold text-white">ETA alerts</h1>
+        <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
+      </div>
+      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA or due within {ETA_WARN_DAYS} days. Tap an order to open it.</p>
+      <Section title="OVERDUE — PAST ETA" items={alerts.overdue} tone="text-red-300" />
+      <Section title={`DUE WITHIN ${ETA_WARN_DAYS} DAYS`} items={alerts.soon} tone="text-amber-300" />
+    </div>
+  );
+}
+
+/* =========================================================
+   PHASE 9.1 — PERSONAL NOTES (floating, every screen)
+   Each user sees only their own notes; the Developer sees everyone's.
+   Used as a feedback channel for personalised changes.
+   ========================================================= */
+const SCREEN_NAMES = { home: "Home", placed: "Placed orders", received: "Received orders", booked: "Booked orders", eta: "ETA alerts", snags: "Snags", completed: "Completed orders", history: "History", review: "Snag review", performance: "Performance Report", availability: "Availability", reports: "Reports" };
+const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).label} calendar` : SCREEN_NAMES[v] || v || "");
+function NotesWidget({ user, view }) {
+  const isDevUser = (user.level ?? 0) >= 3;
+  const [open, setOpen] = useState(false);
+  const [notes, setNotes] = useState([]);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [showDone, setShowDone] = useState(false);
+  const load = async () => {
+    try { setNotes(await dbLoadNotes(user)); setErr(""); }
+    catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, [user.pin]);
+  useEffect(() => { if (open) load(); }, [open]);
+  const put = async (n) => {
+    setNotes((prev) => { const i = prev.findIndex((x) => x.id === n.id); const c = [...prev]; if (i === -1) c.push(n); else c[i] = n; return c.filter((x) => !x.deleted); });
+    try { await dbSaveNote(n); setErr(""); } catch (e) { setErr(e.message); }
+  };
+  const post = async () => {
+    const t = text.trim(); if (!t) return;
+    setBusy(true);
+    await put({ id: NOTE_PREFIX + uid(), pin: user.pin, author: user.name, text: t, screen: screenName(view), createdAt: new Date().toISOString(), done: false });
+    setText(""); setBusy(false);
+  };
+  const openCount = notes.filter((n) => !n.done).length;
+  const shown = notes.filter((n) => showDone || !n.done).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return (
+    <div className="print:hidden">
+      {!open && (
+        <button onClick={() => setOpen(true)} className="fixed bottom-5 left-5 z-40 w-12 h-12 rounded-full bg-[#1f6feb] hover:bg-[#388bfd] text-white shadow-xl flex items-center justify-center" title="My notes — ideas and feedback, only you and the developer can see these">
+          <MessageSquarePlus size={20} />
+          {isDevUser && openCount > 0 && <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-red-600 text-[10px] font-bold flex items-center justify-center">{openCount}</span>}
+        </button>
+      )}
+      {open && (
+        <div className="fixed bottom-5 left-5 z-40 w-[min(380px,calc(100vw-2.5rem))] max-h-[70vh] flex flex-col bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[#30363d]">
+            <div>
+              <div className="text-sm font-semibold text-white">{isDevUser ? "All feedback notes" : "My notes"}</div>
+              <div className="text-[11px] text-slate-500">{isDevUser ? "Everyone's notes · only you see all of them" : "Only you and the developer can see these"}</div>
+            </div>
+            <button onClick={() => setOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-slate-400"><X size={16} /></button>
+          </div>
+          <div className="p-3 border-b border-[#30363d]">
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} className={inputCls} placeholder={`An idea, a problem, something you'd change… (on ${screenName(view)})`}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) post(); }} />
+            <div className="flex items-center justify-between mt-2">
+              {isDevUser ? (
+                <label className="text-[11px] text-slate-400 flex items-center gap-1.5"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> Show done</label>
+              ) : <span />}
+              <button onClick={post} disabled={busy || !text.trim()} className={`${btnPrimary} flex items-center gap-1.5 py-1.5`}><Send size={14} /> Post</button>
+            </div>
+            {err && <div className="text-[11px] text-red-400 mt-1">{err}</div>}
+          </div>
+          <div className="overflow-auto p-3 space-y-2">
+            {shown.length === 0 ? <div className="text-xs text-slate-500 text-center py-4">No notes yet.</div> : shown.map((n) => (
+              <div key={n.id} className={`border border-[#30363d] rounded-lg p-2.5 text-sm ${n.done ? "opacity-60" : ""}`}>
+                <div className="text-slate-100 whitespace-pre-wrap break-words">{n.text}</div>
+                <div className="flex items-center gap-2 mt-1.5 text-[10px] text-slate-500">
+                  {isDevUser && <span className="text-slate-300 font-semibold">{n.author}</span>}
+                  <span>{new Date(n.createdAt).toLocaleString("en-ZA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                  {n.screen && <span>· {n.screen}</span>}
+                  {n.done && <span className="text-emerald-400">· done</span>}
+                  <span className="ml-auto flex items-center gap-1">
+                    {isDevUser && <button onClick={() => put({ ...n, done: !n.done, doneAt: n.done ? null : new Date().toISOString() })} className="p-1 rounded hover:bg-[#21262d] text-emerald-300" title={n.done ? "Mark as open" : "Mark as done"}><Check size={12} /></button>}
+                    {(isDevUser || n.pin === user.pin) && <button onClick={() => { if (confirm("Delete this note?")) put({ ...n, deleted: true }); }} className="p-1 rounded hover:bg-[#21262d] text-slate-400" title="Delete note"><Trash2 size={12} /></button>}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -836,6 +1127,7 @@ function ListView({ title, status, items, onOpen, level }) {
                 <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
                   <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
                   {hasOpenSnags(p) && <SnagFlag />}
+                  <EtaBadge p={p} />
                   {isReserved(p) && <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span>}
                   {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
                   <Badge status={p.status} />
@@ -1468,7 +1760,11 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   const flagged = hasOpenSnags(p);
   const test = !!p.isTest;
   const compact = expandable && !expanded;
-  const ringCls = test ? "ring-2 ring-orange-500 border-orange-500" : (flagged && variant !== "return" ? "ring-1 ring-red-500/60" : "");
+  const eta = variant !== "return" ? etaStateOf(p) : null;
+  const ringCls = test ? "ring-2 ring-orange-500 border-orange-500"
+    : (flagged && variant !== "return") ? "ring-1 ring-red-500/60"
+    : eta === "overdue" ? "ring-2 ring-red-500"
+    : eta === "soon" ? "ring-2 ring-amber-400" : "";
   const showBars = variant === "reserved" || variant === "booked" || variant === "installed";
   return (
     <div
@@ -1481,6 +1777,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           <span className="font-semibold truncate flex-1">{p.clientName}</span>
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
+          <EtaBadge p={p} small />
           {showBars && <StageBars p={p} />}
         </div>
       ) : (
@@ -1489,6 +1786,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
             <span className="font-semibold truncate flex-1">{p.clientName}</span>
             {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
             {(flagged || variant === "return") && <SnagFlag small />}
+            {variant !== "return" && <EtaBadge p={p} small />}
             {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
             {p.status === "received" && variant !== "return" && <RBadge />}
           </div>
