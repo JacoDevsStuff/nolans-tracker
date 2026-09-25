@@ -106,17 +106,18 @@ const hasCatalog = (dept) => categoriesOf(dept).length > 0;
 const suppliersOf = (cat) => Object.keys(PRODUCT_CATALOG[cat] || {});
 const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
 // The label written into productType so stickers, reports and search keep working unchanged
-const composeProduct = (sup, rng) => [sup, rng].filter(Boolean).join(" ");
+// Phase 9.2 — optional free-text colour is appended so stickers/search show it; reports group by supplier + range only
+const composeProduct = (sup, rng, colour) => [sup, rng, (colour || "").trim()].filter(Boolean).join(" ");
 
 // Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
 // A fresh, empty product line for a department (auto-picks the only category where there is just one).
-const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", area: "" }; };
+const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", colour: "", area: "" }; };
 // All product lines for a job. Falls back to a single synthesised line for older records that only
 // stored the top-level product fields, so nothing built before Phase 6 breaks.
 const productLinesOf = (p) => {
   if (Array.isArray(p.productLines) && p.productLines.length) return p.productLines;
   if (hasCatalog(p.department) && (p.productRange || p.productType)) {
-    return [{ id: (p.id || "") + "-pl0", productCategory: p.productCategory || "", supplier: p.supplier || "", productRange: p.productRange || "", productType: p.productType || "", area: p.area ?? "" }];
+    return [{ id: (p.id || "") + "-pl0", productCategory: p.productCategory || "", supplier: p.supplier || "", productRange: p.productRange || "", productType: p.productType || "", colour: p.colour || "", area: p.area ?? "" }];
   }
   return [];
 };
@@ -125,7 +126,7 @@ const totalArea = (p) => productLinesOf(p).reduce((sum, l) => sum + (Number(l.ar
 // One string holding everything searchable on a job, including every product line and item.
 const searchText = (p) => [
   p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact,
-  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType]),
+  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour]),
   ...(p.lineItems || []).map((li) => li.description),
 ].filter(Boolean).join(" ").toLowerCase();
 
@@ -1144,26 +1145,58 @@ function ListView({ title, status, items, onOpen, level }) {
 /* =========================================================
    CREATE / EDIT PROJECT
    ========================================================= */
-// Older projects were saved before the product catalogue existed. When one is opened for
-// editing we fill in what we can: single-category departments pick themselves, and a typed
-// product label is matched back to a supplier and range where the wording lines up.
-function catalogBackfill(p) {
-  if (!hasCatalog(p.department)) return {};
-  if (p.productRange && p.supplier) return {};
-  const cats = categoriesOf(p.department);
-  const label = (p.productType || "").trim().toLowerCase();
-  if (label) {
-    for (const cat of cats) {
-      for (const sup of suppliersOf(cat)) {
-        for (const rng of rangesOf(cat, sup)) {
-          if (composeProduct(sup, rng).toLowerCase() === label || rng.toLowerCase() === label) {
-            return { productCategory: cat, supplier: sup, productRange: rng, productType: composeProduct(sup, rng) };
-          }
-        }
+// Phase 9.2 — older jobs were typed in by hand (e.g. "Rustique Sandelwood 9lm"). When one is opened
+// for editing, each product line is matched back to the catalogue where possible so the dropdowns
+// unlock and pre-fill. Matching rules (kept strict to avoid wrong guesses):
+//   • the typed text must START with the range name, optionally preceded by the supplier name
+//   • the longest matching range wins; if the same range name exists at two suppliers and the
+//     supplier isn't typed, only the category is filled and supplier/range are left to pick by hand
+//   • whatever follows the range becomes the colour; a trailing quantity is removed from it, and a
+//     quantity in m² (m2, m², sqm) is copied into Area if Area is empty. Linear metres (lm) are not converted.
+const QTY_TAIL = /\s*[,;-]?\s*(\d+(?:[.,]\d+)?)\s*(lm|m2|m²|sqm|sq\s?m|m)\s*$/i;
+function matchLegacyLine(line, dept) {
+  const cats = categoriesOf(dept);
+  if (!cats.length) return line;
+  const next = { ...line, colour: line.colour || "" };
+  if (!next.productCategory && cats.length === 1) next.productCategory = cats[0];
+  if (line.productRange && line.supplier) return next; // already catalogued
+  const raw = (line.productType || "").trim();
+  if (!raw) return next;
+  const rawN = raw.replace(/\s+/g, " ");
+  const label = rawN.toLowerCase();
+  const startsWord = (text, word) => text === word || text.startsWith(word + " ") || text.startsWith(word + ",");
+  const hits = [];
+  for (const cat of (next.productCategory ? [next.productCategory] : cats)) {
+    for (const sup of suppliersOf(cat)) {
+      const supL = sup.toLowerCase();
+      const afterSup = startsWord(label, supL) ? label.slice(supL.length).trim() : null;
+      for (const rng of rangesOf(cat, sup)) {
+        const rngL = rng.toLowerCase();
+        if (afterSup != null && startsWord(afterSup, rngL)) hits.push({ cat, sup, rng, withSup: true, rest: rawN.slice(label.length - afterSup.length + rngL.length).trim() });
+        else if (startsWord(label, rngL)) hits.push({ cat, sup, rng, withSup: false, rest: rawN.slice(rngL.length).trim() });
       }
     }
   }
-  return { productCategory: cats.length === 1 ? cats[0] : (p.productCategory || ""), supplier: p.supplier || "", productRange: "" };
+  if (!hits.length) return { ...next, _legacy: raw, _matched: false };
+  const best = Math.max(...hits.map((h) => h.rng.length));
+  let top = hits.filter((h) => h.rng.length === best);
+  if (top.some((h) => h.withSup)) top = top.filter((h) => h.withSup);
+  if (new Set(top.map((h) => h.sup)).size > 1) {
+    // same range name at more than one supplier — let the user choose
+    const cat = new Set(top.map((h) => h.cat)).size === 1 ? top[0].cat : next.productCategory;
+    return { ...next, productCategory: cat || "", _legacy: raw, _matched: false };
+  }
+  const h = top[0];
+  let rest = h.rest.replace(/^[,;\-\s]+/, "");
+  let area = next.area;
+  const q = rest.match(QTY_TAIL);
+  if (q) {
+    const unit = q[2].toLowerCase().replace(/\s/g, "");
+    if ((unit === "m2" || unit === "m²" || unit === "sqm") && (area === "" || area == null)) area = q[1].replace(",", ".");
+    rest = rest.slice(0, q.index).trim();
+  }
+  const colour = next.colour || rest;
+  return { ...next, productCategory: h.cat, supplier: h.sup, productRange: h.rng, colour, area, productType: composeProduct(h.sup, h.rng, colour), _legacy: raw, _matched: true };
 }
 
 function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave }) {
@@ -1179,7 +1212,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if (hasCatalog(base.department)) {
       let lines = (Array.isArray(base.productLines) && base.productLines.length) ? base.productLines : productLinesOf(base);
       if (!lines.length) lines = [newLine(base.department)];
-      base.productLines = lines.map((l) => ({ ...l, id: l.id || uid() }));
+      base.productLines = lines.map((l) => matchLegacyLine({ ...l, id: l.id || uid() }, base.department));
     } else {
       base.productLines = [];
     }
@@ -1206,9 +1239,11 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
 
   // Per-line catalogue pickers — each level clears the ones below it and rewrites that line's label
   const updProdLine = (id, patch) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, ...patch } : l)) }));
-  const setLineCategory = (id, cat) => updProdLine(id, { productCategory: cat, supplier: "", productRange: "", productType: "" });
-  const setLineSupplier = (id, sup) => updProdLine(id, { supplier: sup, productRange: "", productType: "" });
-  const setLineRange = (id, rng) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productRange: rng, productType: composeProduct(l.supplier, rng) } : l)) }));
+  // A hand-typed entry (l._legacy) is only replaced once a range is actually picked
+  const setLineCategory = (id, cat) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productCategory: cat, supplier: "", productRange: "", productType: l._legacy || "" } : l)) }));
+  const setLineSupplier = (id, sup) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, supplier: sup, productRange: "", productType: l._legacy || "" } : l)) }));
+  const setLineRange = (id, rng) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productRange: rng, productType: rng ? composeProduct(l.supplier, rng, l.colour) : (l._legacy || "") } : l)) }));
+  const setLineColour = (id, colour) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, colour, productType: l.productRange ? composeProduct(l.supplier, l.productRange, colour) : l.productType } : l)) }));
   const addProdLine = () => setF((s) => ({ ...s, productLines: [...s.productLines, newLine(s.department)] }));
   const delProdLine = (id) => setF((s) => ({ ...s, productLines: s.productLines.length > 1 ? s.productLines.filter((l) => l.id !== id) : s.productLines }));
 
@@ -1238,7 +1273,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if (hasCatalog(f.department)) {
       // keep only lines that actually have a product; store area as a number
       const lines = (f.productLines || []).filter((l) => l.productRange || l.productType)
-        .map((l) => ({ ...l, area: (l.area === "" || l.area == null) ? null : Number(l.area) }));
+        .map(({ _legacy, _matched, ...l }) => ({ ...l, colour: (l.colour || "").trim(), area: (l.area === "" || l.area == null) ? null : Number(l.area) }));
       base.productLines = lines;
       const first = lines[0];
       base.productType = first ? first.productType : "";
@@ -1246,6 +1281,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
       base.productRange = first ? first.productRange : "";
       base.productCategory = first ? first.productCategory : "";
       base.area = first ? first.area : null;
+      base.colour = first ? first.colour : "";
     } else {
       base.productLines = [];
     }
@@ -1324,10 +1360,18 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                       </select>
                     </Field>
                   </div>
-                  <Field label="Area (m²)"><input type="number" min="0" step="0.01" className={inputCls} value={l.area ?? ""} onChange={(e) => updProdLine(l.id, { area: e.target.value })} placeholder="e.g. 24.5" /></Field>
-                  {l.productType && !l.productRange && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => setLineColour(l.id, e.target.value)} placeholder="e.g. Sandelwood" /></Field>
+                    <Field label="Area (m²)"><input type="number" min="0" step="0.01" className={inputCls} value={l.area ?? ""} onChange={(e) => updProdLine(l.id, { area: e.target.value })} placeholder="e.g. 24.5" /></Field>
+                  </div>
+                  {l._legacy && l.productRange && (
+                    <div className="text-xs text-sky-300/90 bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2">
+                      Matched from the typed entry <span className="text-sky-100">{l._legacy}</span>. Check supplier, range, colour and m², then save.
+                    </div>
+                  )}
+                  {l._legacy && !l.productRange && (
                     <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-                      Existing entry: <span className="text-amber-100">{l.productType}</span> — typed in by hand. Pick a supplier and range above to replace it, or leave it as it is.
+                      Existing entry: <span className="text-amber-100">{l._legacy}</span> (typed in by hand). Pick a supplier and range above to replace it, or leave it as it is.
                     </div>
                   )}
                 </div>
