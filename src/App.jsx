@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical
 } from "lucide-react";
 
 /* =========================================================
@@ -404,22 +404,22 @@ const Field = ({ label, children }) => (
     {children}
   </label>
 );
-const inputCls = "w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#1f6feb]";
+const inputCls = "w-full bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 text-base md:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#1f6feb]";
 const btnPrimary = "px-4 py-2 rounded-lg bg-[#1f6feb] hover:bg-[#388bfd] text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed";
 const btnGhost = "px-4 py-2 rounded-lg border border-[#30363d] hover:bg-[#21262d] text-slate-200 text-sm";
 
 function Modal({ title, onClose, children, wide }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={onClose}>
+    <div className="fixed inset-0 z-50 flex items-stretch md:items-center justify-center bg-black/60 p-0 md:p-4" onMouseDown={onClose}>
       <div
-        className={`bg-[#161b22] border border-[#30363d] rounded-2xl w-full ${wide ? "max-w-3xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto shadow-2xl`}
+        className={`bg-[#161b22] border-0 md:border border-[#30363d] rounded-none md:rounded-2xl w-full ${wide ? "md:max-w-3xl" : "md:max-w-lg"} h-full md:h-auto max-h-full md:max-h-[92vh] overflow-y-auto shadow-2xl`}
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#30363d] sticky top-0 bg-[#161b22] z-10">
-          <h3 className="text-base font-semibold text-white">{title}</h3>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-[#21262d] text-slate-400"><X size={18} /></button>
+        <div className="flex items-center justify-between gap-3 px-4 md:px-5 py-3 md:py-4 border-b border-[#30363d] sticky top-0 bg-[#161b22] z-10" style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}>
+          <h3 className="text-base font-semibold text-white min-w-0 truncate">{title}</h3>
+          <button onClick={onClose} className="p-2 -mr-1 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={20} /></button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="p-4 md:p-5" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>{children}</div>
       </div>
     </div>
   );
@@ -428,6 +428,62 @@ function Modal({ title, onClose, children, wide }) {
 /* =========================================================
    LOGIN
    ========================================================= */
+/* =========================================================
+   PHASE 10 — MOBILE HELPERS
+   ========================================================= */
+const MOBILE_QUERY = "(max-width: 767px)";
+function useIsMobile() {
+  const get = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia(MOBILE_QUERY).matches : false);
+  const [m, setM] = useState(get);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const h = () => setM(mq.matches);
+    h();
+    mq.addEventListener ? mq.addEventListener("change", h) : mq.addListener(h);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", h) : mq.removeListener(h); };
+  }, []);
+  return m;
+}
+
+// PWA / "Add to Home Screen". Everything lives in App.jsx, so the tags are added to <head> at start-up
+// instead of editing index.html. The icon is drawn once on a canvas (the Nolans double bar on dark).
+function installPwaTags() {
+  if (typeof document === "undefined" || document.getElementById("nolans-pwa")) return;
+  const head = document.head;
+  const add = (tag, attrs) => { const el = document.createElement(tag); Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v)); head.appendChild(el); return el; };
+  let icon = "";
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = 512;
+    const g = c.getContext("2d");
+    g.fillStyle = "#0d1117"; g.fillRect(0, 0, 512, 512);
+    g.fillStyle = "#4a7bd1";
+    g.save(); g.translate(256, 256); g.transform(1, 0, -0.21, 1, 0, 0);
+    g.fillRect(-92, -150, 70, 300); g.fillRect(22, -150, 70, 300);
+    g.restore();
+    icon = c.toDataURL("image/png");
+  } catch { /* canvas unavailable — skip icon */ }
+  const vp = document.querySelector('meta[name="viewport"]');
+  if (vp) vp.setAttribute("content", "width=device-width, initial-scale=1, viewport-fit=cover");
+  else add("meta", { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" });
+  add("meta", { id: "nolans-pwa", name: "apple-mobile-web-app-capable", content: "yes" });
+  add("meta", { name: "mobile-web-app-capable", content: "yes" });
+  add("meta", { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" });
+  add("meta", { name: "apple-mobile-web-app-title", content: "Nolans" });
+  add("meta", { name: "theme-color", content: "#0d1117" });
+  if (icon) add("link", { rel: "apple-touch-icon", href: icon });
+  try {
+    const manifest = {
+      name: "Nolans Installation Management", short_name: "Nolans",
+      start_url: window.location.origin + "/", scope: window.location.origin + "/", display: "standalone",
+      background_color: "#0d1117", theme_color: "#0d1117",
+      icons: icon ? [{ src: icon, sizes: "512x512", type: "image/png", purpose: "any" }] : [],
+    };
+    add("link", { rel: "manifest", href: "data:application/manifest+json," + encodeURIComponent(JSON.stringify(manifest)) });
+  } catch { /* ignore */ }
+}
+installPwaTags();
+
 function Login({ onLogin }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
@@ -501,6 +557,16 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
   const [toast, setToast] = useState("");
+  // Phase 10 — mobile shell: slide-in menu, "…" actions menu, expandable search
+  const [navOpen, setNavOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [mobileSearch, setMobileSearch] = useState(false);
+  useEffect(() => { setNavOpen(false); setMoreOpen(false); }, [view]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const prev = document.body.style.overflow; document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [navOpen]);
 
   const level = user?.level ?? 0;
   const isCoord = level >= 2;
@@ -614,90 +680,151 @@ export default function App() {
   const openDept = (id, month) => { setCalMonth(month || null); setView(`dept:${calendarOf(id)}`); };
   const openProject = (p) => { setSelected(p); setSearch(""); };
 
-  return (
-    <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black">
-      {/* Top bar */}
-      <header className="print:hidden h-16 flex items-center gap-4 px-5 border-b border-[#30363d] bg-[#0d1117]">
-        <button onClick={() => setView("home")} className="shrink-0"><Logo /></button>
-        <div className="flex-1 max-w-2xl mx-auto relative">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={search} onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") setSearch(""); if (e.key === "Enter" && searchResults.length === 1) openProject(searchResults[0]); }}
-            placeholder="Search orders, clients or PO numbers"
-            className={`${inputCls} pl-9 rounded-full bg-[#161b22]`}
-          />
-          {q && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200"><X size={14} /></button>}
-          {q && <SearchDropdown results={searchResults} onOpen={openProject} onClose={() => setSearch("")} />}
-        </div>
-        <div className="flex items-center gap-3 shrink-0">
-          {isCoord && (
-            <button onClick={() => setShowCreate(true)} className={`${btnPrimary} flex items-center gap-1.5`}>
-              <Plus size={16} /> New project
+  const pick = (fn) => () => { fn(); setNavOpen(false); };
+  const actions = [
+    ...(isCoord ? [{ key: "new", label: "New project", icon: Plus, run: () => setShowCreate(true), cls: "text-white" }] : []),
+    ...(isDev ? [{ key: "test", label: "New test project", icon: Plus, run: () => setShowTest(true), cls: "text-orange-300" }] : []),
+    ...(isDev ? [{ key: "hol", label: "Public holidays", icon: Calendar, run: () => setShowHolidays(true), cls: "text-slate-200" }] : []),
+  ];
+  const searchBox = (autoFocus) => (
+    <div className="relative w-full">
+      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+      <input
+        value={search} onChange={(e) => setSearch(e.target.value)} autoFocus={autoFocus}
+        onKeyDown={(e) => { if (e.key === "Escape") setSearch(""); if (e.key === "Enter" && searchResults.length === 1) openProject(searchResults[0]); }}
+        placeholder="Search orders, clients or PO numbers"
+        className={`${inputCls} pl-9 pr-8 rounded-full bg-[#161b22]`}
+      />
+      {q && <button onClick={() => setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200"><X size={14} /></button>}
+      {q && <SearchDropdown results={searchResults} onOpen={(p) => { openProject(p); setMobileSearch(false); }} onClose={() => setSearch("")} />}
+    </div>
+  );
+  const sidebarBody = (
+    <>
+      <nav className="space-y-1">
+        {nav.map((n) => {
+          const activeNav = view === n.id;
+          return (
+            <button
+              key={n.id} onClick={pick(() => setView(n.id))}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+            >
+              <n.icon size={18} className="shrink-0" />
+              <span className="flex-1 text-left">{n.label}</span>
+              {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
+              {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white whitespace-nowrap">{n.alert} {n.alertLabel || "new"}</span>}
+              {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
             </button>
-          )}
-          {isDev && (
-            <button onClick={() => setShowTest(true)} className="px-4 py-2 rounded-lg border-2 border-orange-500 text-orange-300 hover:bg-orange-500/10 text-sm font-medium flex items-center gap-1.5" title="Developer only — a fully working test project, hidden from everyone else and dropped from reports and searches once deleted">
-              <Plus size={16} /> New test project
-            </button>
-          )}
-          {isDev && (
-            <button onClick={() => setShowHolidays(true)} className="px-4 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#161b22] text-sm font-medium flex items-center gap-1.5" title="Developer only — manage custom public holidays shown on every calendar">
-              <Calendar size={16} /> Public holidays
-            </button>
-          )}
-          <button onClick={() => setView("eta")} className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title={etaCount ? `${etaAlerts.overdue.length} overdue · ${etaAlerts.soon.length} due within ${ETA_WARN_DAYS} days` : "No ETA alerts"}>
-            <Bell size={18} />
-            {etaCount > 0 && <span className={`absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaCount}</span>}
+          );
+        })}
+      </nav>
+      <div className="mt-6 pt-4 border-t border-[#30363d]">
+        <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
+        {DEPARTMENTS.map((d) => (
+          <button
+            key={d.id} onClick={pick(() => openDept(d.id))}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.calendar}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+          >
+            <d.icon size={16} /> {d.label}
           </button>
-          <div className="flex items-center gap-2 pl-2">
-            <div className="w-9 h-9 rounded-full bg-[#21262d] border border-[#30363d] flex items-center justify-center text-sm font-semibold">
-              {user.name.slice(0, 2).toUpperCase()}
+        ))}
+      </div>
+      <div className="mt-auto pt-4 text-[10px] text-slate-500 tracking-wider">
+        FLOORING | BLINDS | SHUTTERS | FIREPLACES
+      </div>
+    </>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#0d1117] text-slate-100 flex flex-col print:bg-white print:text-black" style={{ overflowX: "clip" }}>
+      {/* Top bar */}
+      <header className="print:hidden sticky top-0 z-30 border-b border-[#30363d] bg-[#0d1117]" style={{ paddingTop: "env(safe-area-inset-top)" }}>
+        <div className="h-14 md:h-16 flex items-center gap-2 md:gap-4 px-3 md:px-5">
+          <button onClick={() => setNavOpen(true)} className="md:hidden p-2 -ml-1 rounded-lg hover:bg-[#161b22] text-slate-200" aria-label="Open menu"><Menu size={22} /></button>
+          <button onClick={() => setView("home")} className="shrink-0">
+            <span className="md:hidden"><Logo small /></span>
+            <span className="hidden md:block"><Logo /></span>
+          </button>
+          <div className="hidden md:block flex-1 max-w-2xl mx-auto">{searchBox(false)}</div>
+          <div className="flex-1 md:hidden" />
+          <div className="flex items-center gap-1 md:gap-3 shrink-0">
+            <button onClick={() => setMobileSearch((v) => !v)} className={`md:hidden p-2 rounded-lg hover:bg-[#161b22] ${mobileSearch ? "text-white bg-[#161b22]" : "text-slate-300"}`} aria-label="Search"><Search size={19} /></button>
+            {isCoord && (
+              <button onClick={() => setShowCreate(true)} className={`${btnPrimary} hidden md:flex items-center gap-1.5`}>
+                <Plus size={16} /> New project
+              </button>
+            )}
+            {isDev && (
+              <button onClick={() => setShowTest(true)} className="hidden md:flex px-4 py-2 rounded-lg border-2 border-orange-500 text-orange-300 hover:bg-orange-500/10 text-sm font-medium items-center gap-1.5" title="Developer only — a fully working test project, hidden from everyone else and dropped from reports and searches once deleted">
+                <Plus size={16} /> New test project
+              </button>
+            )}
+            {isDev && (
+              <button onClick={() => setShowHolidays(true)} className="hidden md:flex px-4 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#161b22] text-sm font-medium items-center gap-1.5" title="Developer only — manage custom public holidays shown on every calendar">
+                <Calendar size={16} /> Public holidays
+              </button>
+            )}
+            <button onClick={() => setView("eta")} className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title={etaCount ? `${etaAlerts.overdue.length} overdue · ${etaAlerts.soon.length} due within ${ETA_WARN_DAYS} days` : "No ETA alerts"}>
+              <Bell size={18} />
+              {etaCount > 0 && <span className={`absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaCount}</span>}
+            </button>
+            {actions.length > 0 && (
+              <div className="relative md:hidden">
+                <button onClick={() => setMoreOpen((v) => !v)} className={`p-2 rounded-lg hover:bg-[#161b22] ${moreOpen ? "bg-[#161b22] text-white" : "text-slate-300"}`} aria-label="More actions"><MoreVertical size={19} /></button>
+                {moreOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
+                    <div className="absolute right-0 top-full mt-2 z-50 w-56 bg-[#161b22] border border-[#30363d] rounded-xl shadow-2xl overflow-hidden">
+                      {actions.map((a) => (
+                        <button key={a.key} onClick={() => { setMoreOpen(false); a.run(); }} className={`w-full flex items-center gap-2.5 px-4 py-3 text-sm hover:bg-[#21262d] border-b border-[#30363d] last:border-0 ${a.cls}`}>
+                          <a.icon size={16} /> {a.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="flex items-center gap-2 pl-1 md:pl-2">
+              <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-[#21262d] border border-[#30363d] flex items-center justify-center text-xs md:text-sm font-semibold">
+                {user.name.slice(0, 2).toUpperCase()}
+              </div>
+              <span className="text-sm hidden lg:block">{user.name}</span>
+              <button onClick={logout} className="hidden md:block p-1.5 rounded-md hover:bg-[#161b22] text-slate-400" title="Sign out"><LogOut size={16} /></button>
             </div>
-            <span className="text-sm hidden sm:block">{user.name}</span>
-            <button onClick={logout} className="p-1.5 rounded-md hover:bg-[#161b22] text-slate-400" title="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
+        {mobileSearch && <div className="md:hidden px-3 pb-3">{searchBox(true)}</div>}
       </header>
 
+      {/* Mobile slide-in menu */}
+      {navOpen && (
+        <div className="print:hidden md:hidden fixed inset-0 z-50 flex">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setNavOpen(false)} />
+          <aside className="relative w-72 max-w-[85vw] h-full bg-[#0d1117] border-r border-[#30363d] p-4 flex flex-col overflow-y-auto"
+            style={{ paddingTop: "max(1rem, env(safe-area-inset-top))", paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
+            <div className="flex items-center justify-between mb-4">
+              <Logo />
+              <button onClick={() => setNavOpen(false)} className="p-2 rounded-lg hover:bg-[#161b22] text-slate-400" aria-label="Close menu"><X size={20} /></button>
+            </div>
+            <div className="flex items-center gap-3 px-3 py-2 mb-3 rounded-xl bg-[#161b22] border border-[#30363d]">
+              <div className="w-8 h-8 rounded-full bg-[#21262d] border border-[#30363d] flex items-center justify-center text-xs font-semibold">{user.name.slice(0, 2).toUpperCase()}</div>
+              <span className="text-sm flex-1">{user.name}</span>
+              <button onClick={logout} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 flex items-center gap-1 text-xs"><LogOut size={14} /> Sign out</button>
+            </div>
+            {sidebarBody}
+          </aside>
+        </div>
+      )}
+
       <div className="flex flex-1 min-h-0">
-        {/* Sidebar */}
-        <aside className="print:hidden w-60 shrink-0 border-r border-[#30363d] p-4 flex flex-col">
-          <nav className="space-y-1">
-            {nav.map((n) => {
-              const activeNav = view === n.id;
-              return (
-                <button
-                  key={n.id} onClick={() => setView(n.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
-                >
-                  <n.icon size={18} />
-                  <span className="flex-1 text-left">{n.label}</span>
-                  {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
-                  {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{n.alert} {n.alertLabel || "new"}</span>}
-                  {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="mt-6 pt-4 border-t border-[#30363d]">
-            <div className="text-[11px] text-slate-500 px-3 mb-1">Departments</div>
-            {DEPARTMENTS.map((d) => (
-              <button
-                key={d.id} onClick={() => openDept(d.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm ${view === `dept:${d.calendar}` ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
-              >
-                <d.icon size={16} /> {d.label}
-              </button>
-            ))}
-          </div>
-          <div className="mt-auto pt-4 text-[10px] text-slate-500 tracking-wider">
-            FLOORING | BLINDS | SHUTTERS | FIREPLACES
-          </div>
+        {/* Sidebar (desktop) */}
+        <aside className="print:hidden hidden md:flex w-60 shrink-0 border-r border-[#30363d] p-4 flex-col">
+          {sidebarBody}
         </aside>
 
         {/* Main */}
-        <main className="flex-1 min-w-0 p-6 overflow-auto print:p-0">
+        <main className="flex-1 min-w-0 p-3 md:p-6 overflow-auto print:p-0" style={{ paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}>
           {error && (
             <div className="print:hidden mb-4 rounded-xl border border-red-500/40 bg-red-500/10 text-red-300 text-sm px-4 py-3 flex items-center justify-between">
               <span>{error}. Check the Supabase URL/key at the top of App.jsx and that the {TABLE} table exists.</span>
@@ -817,14 +944,14 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity 
     { id: "completed", label: "Completed orders", count: lists.completed.length, icon: CheckCircle2, color: "bg-teal-600" },
   ];
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-7">
-      <div className="flex items-start justify-between mb-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-7">
+      <div className="flex flex-col-reverse sm:flex-row sm:items-start justify-between gap-2 mb-5 md:mb-6">
         <div>
-          <div className="text-slate-400 text-sm tracking-[0.2em]">WELCOME BACK</div>
-          <h1 className="text-3xl font-bold text-white mt-1">{user.name}</h1>
-          <p className="text-slate-400 mt-2 text-sm max-w-md">Manage your orders, track progress and keep everything on schedule.</p>
+          <div className="text-slate-400 text-xs md:text-sm tracking-[0.2em]">WELCOME BACK</div>
+          <h1 className="text-2xl md:text-3xl font-bold text-white mt-1">{user.name}</h1>
+          <p className="text-slate-400 mt-2 text-sm max-w-md hidden sm:block">Manage your orders, track progress and keep everything on schedule.</p>
         </div>
-        <div className="flex items-center gap-2 text-sm text-slate-300"><Calendar size={16} /> {fmt(todayIso())}</div>
+        <div className="flex items-center gap-2 text-xs md:text-sm text-slate-400 md:text-slate-300 shrink-0"><Calendar size={16} /> {fmt(todayIso())}</div>
       </div>
       {etaAlerts && <EtaBanner alerts={etaAlerts} onOpen={onOpen} onViewAll={() => setView("eta")} />}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,1fr)_1.6fr] gap-5">
@@ -832,9 +959,9 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity 
           {cards.map((c) => (
             <button
               key={c.id} onClick={() => c.id !== "signed" && setView(c.id)}
-              className="w-full flex items-center gap-4 bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-4 text-left"
+              className="w-full flex items-center gap-3 md:gap-4 bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-3 md:p-4 text-left"
             >
-              <div className={`w-11 h-11 rounded-full ${c.color} flex items-center justify-center text-white shrink-0`}><c.icon size={20} /></div>
+              <div className={`w-10 h-10 md:w-11 md:h-11 rounded-full ${c.color} flex items-center justify-center text-white shrink-0`}><c.icon size={20} /></div>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-white">{c.label}</div>
                 {c.sub && <div className="text-xs text-slate-400">{c.sub}</div>}
@@ -848,15 +975,15 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity 
           {DEPARTMENTS.map((d) => (
             <button
               key={d.id} onClick={() => openDept(d.id)}
-              className="w-full h-24 rounded-xl border border-[#30363d] flex items-center px-6 gap-5 text-left relative overflow-hidden group"
+              className="w-full h-16 md:h-24 rounded-xl border border-[#30363d] flex items-center px-4 md:px-6 gap-4 md:gap-5 text-left relative overflow-hidden group"
               style={{ background: `linear-gradient(90deg, ${d.to} 0%, ${d.to} 35%, ${d.from} 100%)` }}
             >
               <div
                 className="absolute inset-y-0 right-0 w-1/2 opacity-40"
                 style={{ backgroundImage: `repeating-linear-gradient(${d.id === "shutters" || d.id === "blinds" ? "180deg" : "45deg"}, rgba(255,255,255,0.08) 0 6px, transparent 6px 18px)` }}
               />
-              <d.icon size={40} className="text-white relative" strokeWidth={1.5} />
-              <span className="text-2xl font-semibold text-white relative">{d.label}</span>
+              <d.icon className="text-white relative w-7 h-7 md:w-10 md:h-10" strokeWidth={1.5} />
+              <span className="text-lg md:text-2xl font-semibold text-white relative">{d.label}</span>
               <ChevronRight size={24} className="ml-auto text-white/80 relative" />
             </button>
           ))}
@@ -983,7 +1110,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
             const lines = productLinesOf(p);
             const supplier = p.supplier || lines[0]?.supplier || "";
             return (
-              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${etaStateOf(p) === "overdue" ? "border-red-500/60" : "border-amber-400/50"} rounded-xl p-4 grid grid-cols-12 gap-3 items-center`}>
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${etaStateOf(p) === "overdue" ? "border-red-500/60" : "border-amber-400/50"} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
                   <div className="font-medium text-white truncate">{p.clientName}</div>
                   <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
@@ -1000,9 +1127,9 @@ function EtaAlertsView({ alerts, onOpen, level }) {
     </div>
   );
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-baseline justify-between mb-1">
-        <h1 className="text-2xl font-bold text-white">ETA alerts</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-white">ETA alerts</h1>
         <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
       </div>
       <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA or due within {ETA_WARN_DAYS} days. Tap an order to open it.</p>
@@ -1101,9 +1228,9 @@ function NotesWidget({ user, view }) {
    ========================================================= */
 function ListView({ title, status, items, onOpen, level }) {
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-baseline justify-between mb-5">
-        <h1 className="text-2xl font-bold text-white">{title}</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-white">{title}</h1>
         <span className="text-sm text-slate-400">{items.length} {items.length === 1 ? "order" : "orders"}{level === 1 && (status === "placed" || status === "received") ? " of yours" : ""}</span>
       </div>
       {items.length === 0 ? (
@@ -1113,7 +1240,7 @@ function ListView({ title, status, items, onOpen, level }) {
           {items.map((p) => {
             const d = deptOf(p.department);
             return (
-              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-4 grid grid-cols-12 gap-3 items-center`}>
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
                   <div className="font-medium text-white truncate">{p.clientName}</div>
                   <div className="text-xs text-slate-400 truncate">{p.address}</div>
@@ -1125,7 +1252,7 @@ function ListView({ title, status, items, onOpen, level }) {
                    status === "booked" ? <>{fmtShort(p.installDate)}{p.installEndDate !== p.installDate ? ` – ${fmtShort(p.installEndDate)}` : ""} · {p.installTime}</> :
                    <>Done {fmtShort((p.installedAt || "").slice(0, 10))}</>}
                 </div>
-                <div className="col-span-6 md:col-span-2 flex items-center justify-end gap-2 text-xs text-slate-400">
+                <div className="col-span-12 md:col-span-2 flex items-center justify-start md:justify-end gap-2 text-xs text-slate-400 flex-wrap">
                   <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
                   {hasOpenSnags(p) && <SnagFlag />}
                   <EtaBadge p={p} />
@@ -1933,7 +2060,11 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
   const [dragOver, setDragOver] = useState(null);
   const [expandedKey, setExpandedKey] = useState(null); // which calendar sticker is expanded to full detail
   const dragRef = useRef(null); // { p, kind: "received" | "day" | "return" | "moveReturn", dayIndex, visitId }
-  useEffect(() => { setExpandedKey(null); }, [month]);
+  // Phase 10 — phones get a one-week list view (opens on the current week, or the week picked in Availability)
+  const isMobile = useIsMobile();
+  const [weekOf, setWeekOf] = useState(() => weekStart(initialMonth || todayIso()));
+  const [showTrays, setShowTrays] = useState(false);
+  useEffect(() => { setExpandedKey(null); }, [month, weekOf]);
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
@@ -2009,6 +2140,145 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
   const monthLabel = month.toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
   const today = todayIso();
   const isShutters = cal.id === "shutters";
+  // Stickers for one day — shared by the desktop month grid and the mobile week list.
+  // On phones stickers aren't expandable: a tap opens the job straight away.
+  const renderItems = (items, mobile) => items.map((it) => it.kind === "day" ? (
+                    <Sticker
+                      key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={isReserved(it.p) ? "reserved" : it.p.status}
+                      draggable={!mobile && canBook(it.p) && (it.p.status === "booked" || isReserved(it.p))}
+                      onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
+                      dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
+                      time={it.day.time} endTime={it.day.endTime}
+                      expandable={!mobile && it.day.dayIndex === 1}
+                      expanded={expandedKey === `${it.p.id}-${it.day.dayIndex}`}
+                      onToggle={() => setExpandedKey((k) => (k === `${it.p.id}-${it.day.dayIndex}` ? null : `${it.p.id}-${it.day.dayIndex}`))}
+                    />
+                  ) : (
+                    <Sticker
+                      key={`${it.p.id}-${it.visit.id}`} p={it.p} variant="return"
+                      draggable={!mobile && canBook(it.p)}
+                      onDragStart={startDrag({ p: it.p, kind: "moveReturn", visitId: it.visit.id })} onClick={() => onOpen(it.p)}
+                      time={it.visit.time} endTime={it.visit.endTime}
+                    />
+                  ));
+
+  const legendItems = (
+    <>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /> Placed</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /><RBadge /> Received</span>
+            <span className="flex items-center gap-1.5"><PartialBadge /> Not in full</span>
+            {isShutters ? (
+              <>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-orange-400/25 border border-orange-400/60" /> Shutters</span>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-400/25 border border-blue-400/60" /> Calore</span>
+              </>
+            ) : (
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
+            )}
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-500/15 border border-amber-500/30" /> Public holiday</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Planned</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
+            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-orange-500 border border-orange-500" /> Test (dev only)</span>
+    </>
+  );
+
+  // ---------- Phone layout: one week at a time ----------
+  if (isMobile) {
+    const weekDays = [0, 1, 2, 3, 4, 5, 6].map((o) => addDays(weekOf, o));
+    const weekEnd = weekDays[6];
+    const weekLabel = `${fmt(weekOf, { day: "numeric", month: "short" })} – ${fmt(weekEnd, { day: "numeric", month: "short", year: "numeric" })}`;
+    const thisWeek = weekStart(today);
+    const trayCount = ordered.length + received.length + returns.length;
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <cal.icon size={20} className="text-slate-300 shrink-0" />
+            <h1 className="text-xl font-bold text-white truncate">{cal.label}</h1>
+          </div>
+          {weekOf !== thisWeek && <button onClick={() => setWeekOf(thisWeek)} className={`${btnGhost} py-1.5 px-3 shrink-0`}>This week</button>}
+        </div>
+
+        <div className="flex items-center justify-between bg-[#161b22] border border-[#30363d] rounded-xl p-1">
+          <button onClick={() => setWeekOf(addDays(weekOf, -7))} className="p-2.5 rounded-lg hover:bg-[#21262d]" aria-label="Previous week"><ChevronLeft size={20} /></button>
+          <div className="text-center">
+            <div className="text-sm font-medium text-white">{weekLabel}</div>
+            {weekOf === thisWeek && <div className="text-[10px] text-slate-500 tracking-wider">THIS WEEK</div>}
+          </div>
+          <button onClick={() => setWeekOf(addDays(weekOf, 7))} className="p-2.5 rounded-lg hover:bg-[#21262d]" aria-label="Next week"><ChevronRight size={20} /></button>
+        </div>
+
+        {/* Trays, folded away until needed */}
+        <div className="bg-[#161b22] border border-[#30363d] rounded-xl">
+          <button onClick={() => setShowTrays((v) => !v)} className="w-full flex items-center gap-2 px-3 py-2.5 text-left">
+            <span className="text-sm font-medium text-white flex-1">Trays</span>
+            <span className="text-[11px] text-slate-400">{ordered.length} awaiting · {received.length + returns.length} ready</span>
+            <ChevronDown size={16} className={`text-slate-400 transition-transform ${showTrays ? "rotate-180" : ""}`} />
+          </button>
+          {showTrays && (
+            <div className="px-3 pb-3 space-y-3 border-t border-[#30363d] pt-3">
+              <div>
+                <div className="text-xs font-semibold text-white mb-1.5 flex items-center gap-2">Ready to book <RBadge /> <span className="text-slate-500 font-normal">{received.length + returns.length}</span></div>
+                <div className="space-y-1.5">
+                  {received.length + returns.length === 0 && <div className="text-xs text-slate-500">Nothing waiting to be booked.</div>}
+                  {returns.map((p) => <Sticker key={`r-${p.id}`} p={p} onClick={() => onOpen(p)} variant="return" />)}
+                  {received.map((p) => <Sticker key={p.id} p={p} inTray onClick={() => onOpen(p)} variant="received" />)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-white mb-1.5">Awaiting material <span className="text-slate-500 font-normal">· in ETA order · {ordered.length}</span></div>
+                <div className="space-y-1.5">
+                  {ordered.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
+                  {ordered.map((p) => <Sticker key={p.id} p={p} inTray onClick={() => onOpen(p)} variant="ordered" />)}
+                </div>
+              </div>
+              {isCoord && trayCount > 0 && <div className="text-[11px] text-slate-500">Booking by dragging onto a date works on a computer. On the phone, tap a job to open it.</div>}
+            </div>
+          )}
+        </div>
+
+        {/* Days of the week */}
+        <div className="space-y-2">
+          {weekDays.map((key) => {
+            const wk = isWeekend(key);
+            const hol = holidayName(key, customHolidays);
+            const items = byDay[key] || [];
+            const isToday = key === today;
+            if (wk && !items.length && !hol) {
+              return (
+                <div key={key} className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#30363d]/60 bg-[#0d1117]/40 text-xs text-slate-600">
+                  <span className="w-20">{fmt(key, { weekday: "short", day: "numeric", month: "short" })}</span> Weekend
+                </div>
+              );
+            }
+            return (
+              <div key={key} className={`rounded-xl border p-2.5 ${isToday ? "border-[#1f6feb]" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]"} ${key < today ? "opacity-70" : ""}`}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className={`text-sm font-semibold ${isToday ? "text-white" : "text-slate-300"}`}>{fmt(key, { weekday: "long" })}</span>
+                  <span className={`text-xs ${isToday ? "px-1.5 py-0.5 rounded-full bg-[#1f6feb] text-white" : "text-slate-500"}`}>{fmt(key, { day: "numeric", month: "short" })}</span>
+                  {items.length > 0 && <span className="ml-auto text-[11px] text-slate-500">{items.length} {items.length === 1 ? "job" : "jobs"}</span>}
+                </div>
+                {hol && <div className="text-[11px] mb-1.5 px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30 text-amber-200">{hol}</div>}
+                {items.length ? <div className="space-y-1.5">{renderItems(items, true)}</div> : !hol && <div className="text-xs text-slate-600">Nothing booked</div>}
+              </div>
+            );
+          })}
+        </div>
+
+        <details className="text-[11px] text-slate-500 bg-[#161b22] border border-[#30363d] rounded-xl px-3 py-2">
+          <summary className="cursor-pointer text-slate-400">Colour key</summary>
+          <div className="flex items-center gap-x-4 gap-y-2 mt-2 flex-wrap">{legendItems}</div>
+        </details>
+
+        {booking && <BookingModal booking={booking} onClose={() => setBooking(null)} onConfirm={confirmBooking} />}
+      </div>
+    );
+  }
 
   return (
     <div className="flex gap-4 h-full min-h-0">
@@ -2027,7 +2297,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <cal.icon size={22} className="text-slate-300" />
-            <h1 className="text-2xl font-bold text-white">{cal.label}</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-white">{cal.label}</h1>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronLeft size={18} /></button>
@@ -2088,50 +2358,13 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
                       {hol}
                     </div>
                   )}
-                  {items.map((it) => it.kind === "day" ? (
-                    <Sticker
-                      key={`${it.p.id}-${it.day.dayIndex}`} p={it.p} variant={isReserved(it.p) ? "reserved" : it.p.status}
-                      draggable={canBook(it.p) && (it.p.status === "booked" || isReserved(it.p))}
-                      onDragStart={startDrag({ p: it.p, kind: "day", dayIndex: it.day.dayIndex })} onClick={() => onOpen(it.p)}
-                      dayTag={it.total > 1 ? `${it.day.dayIndex}/${it.total}` : null}
-                      time={it.day.time} endTime={it.day.endTime}
-                      expandable={it.day.dayIndex === 1}
-                      expanded={expandedKey === `${it.p.id}-${it.day.dayIndex}`}
-                      onToggle={() => setExpandedKey((k) => (k === `${it.p.id}-${it.day.dayIndex}` ? null : `${it.p.id}-${it.day.dayIndex}`))}
-                    />
-                  ) : (
-                    <Sticker
-                      key={`${it.p.id}-${it.visit.id}`} p={it.p} variant="return"
-                      draggable={canBook(it.p)}
-                      onDragStart={startDrag({ p: it.p, kind: "moveReturn", visitId: it.visit.id })} onClick={() => onOpen(it.p)}
-                      time={it.visit.time} endTime={it.visit.endTime}
-                    />
-                  ))}
+                  {renderItems(items, false)}
                 </div>
               );
             })}
           </div>
           <div className="flex items-center gap-4 mt-2 text-[11px] text-slate-500 flex-wrap">
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /> Placed</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300/15 border border-slate-400/30" /><RBadge /> Received</span>
-            <span className="flex items-center gap-1.5"><PartialBadge /> Not in full</span>
-            {isShutters ? (
-              <>
-                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-orange-400/25 border border-orange-400/60" /> Shutters</span>
-                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-blue-400/25 border border-blue-400/60" /> Calore</span>
-              </>
-            ) : (
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
-            )}
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-500/15 border border-amber-500/30" /> Public holiday</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
-            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Planned</span>
-            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
-            <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-orange-500 border border-orange-500" /> Test (dev only)</span>
+            {legendItems}
             <span className="ml-auto">Tap a sticker to expand it. Each day (1/3, 2/3…) drags on its own.</span>
           </div>
         </div>
@@ -2170,7 +2403,7 @@ function BookingModal({ booking, onClose, onConfirm }) {
         {isMoveReturn && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}.</div>}
         {isReturn && <div className="text-xs text-red-300 mt-1 flex items-center gap-1"><SnagFlag small /> Return visit for {openSnags(p).length} open snag{openSnags(p).length > 1 ? "s" : ""}.</div>}
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label={isBook || isReturn ? "Date" : "New date"}><div className={`${inputCls} bg-[#21262d]`}>{fmt(date)}</div></Field>
         {isBook && <Field label="Working days"><input type="number" min="1" max="30" className={inputCls} value={days} onChange={(e) => setDays(e.target.value)} /></Field>}
         <Field label={timeRequired ? "Start time" : "Start time (optional)"}>
@@ -2224,12 +2457,12 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
   if (printing) {
     return (
       <div>
-        <div className="print:hidden flex items-center gap-2 mb-4">
+        <div className="print:hidden flex items-center gap-2 mb-4 flex-wrap">
           <button onClick={() => window.print()} className={`${btnPrimary} flex items-center gap-2`}><Printer size={16} /> Print / Save as PDF</button>
           <button onClick={confirmInvoiced} className={`${btnGhost} border-emerald-500/40 text-emerald-300`}>Done — move these {ticked.length} to History</button>
           <button onClick={() => setPrinting(false)} className={btnGhost}>Back</button>
         </div>
-        <div className="report bg-white text-black rounded-2xl p-8 print:p-0 print:rounded-none">
+        <div className="report bg-white text-black rounded-2xl p-4 md:p-8 print:p-0 print:rounded-none overflow-x-auto print:overflow-visible">
           <div className="border-b-2 border-black pb-3 mb-4">
             <div className="text-xs tracking-widest text-gray-600">NOLANS INVOICE LIST</div>
             <h2 className="text-2xl font-bold">{fmt(todayIso())} · {ticked.length} {ticked.length === 1 ? "job" : "jobs"}</h2>
@@ -2256,10 +2489,10 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
   }
 
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-white">Completed orders</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-white">Completed orders</h1>
           <div className="text-sm text-slate-400">{items.length} awaiting invoicing{isCoord && ticked.length > 0 ? ` · ${ticked.length} ticked` : ""}</div>
         </div>
         {isCoord && <button onClick={() => setPrinting(true)} disabled={ticked.length === 0} className={`${btnPrimary} flex items-center gap-2`}><FileText size={16} /> Generate invoice list</button>}
@@ -2271,7 +2504,7 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
           {items.map((p) => {
             const d = deptOf(p.department);
             return (
-              <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-4 flex items-center gap-4`}>
+              <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-3 md:p-4 flex flex-col-reverse sm:flex-row sm:items-center gap-3 sm:gap-4`}>
                 {canEdit(p) && (
                   <label className={`flex items-center gap-2 text-xs shrink-0 select-none ${locked(p) ? "text-slate-500 cursor-not-allowed" : "text-slate-300 cursor-pointer"}`} title={locked(p) ? "Resolve the open snag before invoicing" : ""}>
                     <input type="checkbox" checked={!!p.readyToInvoice} disabled={locked(p)} onChange={() => toggle(p)} className="w-4 h-4" />
@@ -2284,7 +2517,7 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
                     <div className="text-xs text-slate-400 truncate">{p.address}</div>
                   </div>
                   <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}{p.team ? ` · ${p.team}` : ""}</div>
-                  <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right flex items-center justify-end gap-2">
+                  <div className="col-span-12 md:col-span-4 text-xs text-slate-400 text-left md:text-right flex items-center justify-start md:justify-end gap-2 flex-wrap">
                     {hasOpenSnags(p) && <span className="flex items-center gap-1 text-red-300"><SnagFlag small /> {openSnags(p).length} open</span>}
                     <span>PO {p.po} · {p.consultant} · done {fmtShort((p.installedAt || "").slice(0, 10))}</span>
                   </div>
@@ -2314,9 +2547,9 @@ function HistoryView({ items, deleted, isCoord, canEdit, isDev, user, save, onOp
 
   return (
     <div className="space-y-4">
-      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
         <div className="flex items-baseline justify-between mb-5">
-          <h1 className="text-2xl font-bold text-white">History</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-white">History</h1>
           <span className="text-sm text-slate-400">{items.length} invoiced</span>
         </div>
         {groups.length === 0 ? (
@@ -2328,14 +2561,14 @@ function HistoryView({ items, deleted, isCoord, canEdit, isDev, user, save, onOp
               {list.map((p) => {
                 const d = deptOf(p.department);
                 return (
-                  <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-4 flex items-center gap-4`}>
+                  <div key={p.id} className={`bg-[#0d1117] border ${snagCardCls(p)} rounded-xl p-3 md:p-4 flex flex-col-reverse sm:flex-row sm:items-center gap-3 sm:gap-4`}>
                     <button onClick={() => onOpen(p)} className="flex-1 min-w-0 text-left grid grid-cols-12 gap-3 items-center">
                       <div className="col-span-12 md:col-span-5 min-w-0">
                         <div className="font-medium text-white truncate flex items-center gap-2">{p.clientName}{hasOpenSnags(p) && <SnagFlag small />}</div>
                         <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
                       </div>
                       <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
-                      <div className="col-span-6 md:col-span-4 text-xs text-slate-400 text-right">Installed {fmtShort(p.installDate)} · invoiced {fmtShort((p.invoicedAt || "").slice(0, 10))}</div>
+                      <div className="col-span-12 md:col-span-4 text-xs text-slate-400 text-left md:text-right">Installed {fmtShort(p.installDate)} · invoiced {fmtShort((p.invoicedAt || "").slice(0, 10))}</div>
                     </button>
                     {canEdit(p) && <button onClick={() => moveBack(p)} className={`${btnGhost} py-1.5 text-xs flex items-center gap-1 shrink-0`} title="Move back to Completed"><RotateCcw size={12} /> Move back</button>}
                   </div>
@@ -2347,7 +2580,7 @@ function HistoryView({ items, deleted, isCoord, canEdit, isDev, user, save, onOp
       </div>
 
       {isDev && deleted.length > 0 && (
-        <div className="bg-[#161b22] border border-orange-500/40 rounded-2xl p-6">
+        <div className="bg-[#161b22] border border-orange-500/40 rounded-2xl p-4 md:p-6">
           <button onClick={() => setShowDeleted((s) => !s)} className="w-full flex items-center justify-between text-left">
             <div className="flex items-center gap-2 text-orange-300 font-semibold"><Trash2 size={16} /> Deleted projects <span className="text-xs font-normal text-orange-300/70">· {deleted.length} · developer only</span></div>
             <ChevronDown size={18} className={`text-orange-300 transition-transform ${showDeleted ? "rotate-180" : ""}`} />
@@ -2410,13 +2643,13 @@ function AvailabilityView({ projects, openDept }) {
   const today = todayIso();
 
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Availability</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-white">Availability</h1>
           <div className="text-sm text-slate-400">Booked hours per working day · capacity 8h Mon–Thu, 7h Fri</div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <select className={`${inputCls} w-44`} value={dept} onChange={(e) => setDept(e.target.value)}>
             <option value="all">All departments</option>
             {CALENDARS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
@@ -2476,8 +2709,8 @@ function ReportsView({ projects }) {
 
   return (
     <div>
-      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-5 mb-4">
-        <h1 className="text-2xl font-bold text-white mb-4">Reports</h1>
+      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-5 mb-4">
+        <h1 className="text-xl md:text-2xl font-bold text-white mb-4">Reports</h1>
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <Field label="Department">
             <select className={inputCls} value={dept} onChange={(e) => setDept(e.target.value)}>
@@ -2557,9 +2790,9 @@ function ReportsView({ projects }) {
    ========================================================= */
 function SnagsView({ items, onOpen }) {
   return (
-    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-baseline justify-between mb-5">
-        <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Flag size={22} className="text-red-400" /> Snags</h1>
+        <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2"><Flag size={22} className="text-red-400" /> Snags</h1>
         <span className="text-sm text-slate-400">{items.length} job{items.length === 1 ? "" : "s"} with open snags</span>
       </div>
       {items.length === 0 ? (
@@ -2641,10 +2874,10 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-5">
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-2"><ClipboardCheck size={22} className="text-slate-300" /> Snag review</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2"><ClipboardCheck size={22} className="text-slate-300" /> Snag review</h1>
             <div className="text-sm text-slate-400">{isCoord ? "Allocate the cause and cost to company for each resolved snag." : "View only — you can add notes."}</div>
           </div>
           <select className={`${inputCls} w-44`} value={filter} onChange={(e) => setFilter(e.target.value)}>
@@ -2688,12 +2921,12 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
                       <div className="text-xs text-slate-400 mb-1">Cost lines (ZAR)</div>
                       <div className="space-y-2">
                         {(r.costs || []).map((c) => (
-                          <div key={c.id} className="flex items-center gap-2">
-                            <select className={`${inputCls} w-32`} value={c.category} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
+                          <div key={c.id} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                            <select className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} value={c.category} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
                               {COST_CATEGORIES.map((x) => <option key={x}>{x}</option>)}
                             </select>
-                            <input type="number" min="0" step="0.01" className={`${inputCls} w-32`} placeholder="0.00" value={c.amount} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
-                            <input className={inputCls} placeholder="Note (optional)" value={c.note || ""} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
+                            <input type="number" min="0" step="0.01" className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} placeholder="0.00" value={c.amount} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
+                            <input className={`${inputCls} flex-1 min-w-0`} placeholder="Note (optional)" value={c.note || ""} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
                             {rowEdit && <button onClick={() => delCost(p, s, c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
                           </div>
                         ))}
@@ -2720,7 +2953,7 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
       </div>
 
       {isCoord && totals.count > 0 && (
-        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6">
+        <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
           <div className="flex items-baseline justify-between mb-3">
             <h2 className="text-lg font-semibold text-white">Cost to company — all resolved snags</h2>
             <span className="text-xl font-bold text-red-300">{zar(totals.grand)}</span>
@@ -2844,7 +3077,7 @@ function PerformanceBeta() {
         <TrendingUp size={26} className="text-amber-300" />
       </div>
       <div className="inline-block text-[10px] font-bold tracking-[0.2em] px-2.5 py-1 rounded-full border border-amber-400/50 text-amber-300 mb-4">BETA TESTING</div>
-      <h1 className="text-2xl font-bold text-white mb-2">Performance Report</h1>
+      <h1 className="text-xl md:text-2xl font-bold text-white mb-2">Performance Report</h1>
       <p className="text-slate-400 text-sm leading-relaxed">Something big is on its way. This feature is currently being tested and will open up to everyone soon.</p>
       <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-500"><Lock size={12} /> Limited access during testing</div>
     </div>
@@ -2895,10 +3128,10 @@ function PerformanceView({ projects, user }) {
   return (
     <div>
       {/* ---------- Controls (screen only) ---------- */}
-      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-5 mb-4">
+      <div className="print:hidden bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-5 mb-4">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
           <div>
-            <h1 className="text-2xl font-bold text-white flex items-center gap-2"><TrendingUp size={22} className="text-slate-300" /> Performance Report</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2"><TrendingUp size={22} className="text-slate-300" /> Performance Report</h1>
             <div className="text-sm text-slate-400">{period.label} · {deptLabel}</div>
           </div>
           <button onClick={() => window.print()} className={`${btnPrimary} flex items-center gap-2`}><Printer size={16} /> Save as PDF</button>
