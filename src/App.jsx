@@ -25,7 +25,8 @@ const USERS = {
   "0009": { name: "Chanel", level: 2, depts: ["blinds"] },
   "2222": { name: "Developer", level: 3 },
 };
-const CONSULTANTS = ["Jaco", "James", "Trent", "Theo"];
+// Phase 10.2 — Marco, Luciano and Office can also be picked as the consultant on a job (all departments)
+const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Marco", "Luciano", "Office"];
 
 // `calendar` says which calendar a department's jobs land on — Shutters and Calore share one team and one calendar
 const DEPARTMENTS = [
@@ -291,6 +292,88 @@ const EtaBadge = ({ p, small }) => {
 };
 
 /* =========================================================
+   PHASE 10.2 — NOTIFICATION EVENTS
+   Every save is compared with the job as it was, and each change below becomes one notification.
+   ========================================================= */
+const NOTIF_META = {
+  received: { label: "Received", cls: "bg-emerald-500" },
+  partial: { label: "Item received", cls: "bg-amber-400" },
+  eta: { label: "ETA changed", cls: "bg-amber-400" },
+  planned: { label: "Planned", cls: "bg-slate-300" },
+  reserved: { label: "Reserved", cls: "bg-yellow-400" },
+  booked: { label: "Booked", cls: "bg-green-500" },
+  moved: { label: "Moved", cls: "bg-sky-400" },
+  removed: { label: "Removed", cls: "bg-red-400" },
+  completed: { label: "Completed", cls: "bg-teal-400" },
+  invoiced: { label: "Invoiced", cls: "bg-slate-400" },
+  snag: { label: "Snag logged", cls: "bg-red-500" },
+  snagResolved: { label: "Snag resolved", cls: "bg-emerald-400" },
+};
+const schedKey = (p) => scheduleOf(p).map((d) => d.date).sort().join(",");
+function diffEvents(prev, next) {
+  const ev = [];
+  if (!prev || !next || next.deleted) return ev;
+  const add = (type, text) => ev.push({ type, text });
+  if (!prev.received && next.received) add("received", "Main item received");
+  const before = Object.fromEntries((prev.lineItems || []).map((l) => [l.id, l]));
+  const newlyIn = (next.lineItems || []).filter((l) => l.received && !(before[l.id] && before[l.id].received));
+  if (newlyIn.length) {
+    const out = (next.lineItems || []).filter((l) => !l.received).length;
+    add("partial", `${newlyIn.map((l) => l.description).join(", ")} received${out ? ` · ${out} item${out > 1 ? "s" : ""} still outstanding` : " · all items in"}`);
+  }
+  if (prev.materialEta && next.materialEta && prev.materialEta !== next.materialEta && !next.received) add("eta", `ETA changed from ${fmtShort(prev.materialEta)} to ${fmtShort(next.materialEta)}`);
+  const ps = prev.reserveStage || null, ns = next.reserveStage || null;
+  const wasOn = !!prev.installDate, isOn = !!next.installDate;
+  if (!wasOn && isOn && ns === "planned") add("planned", `Planned for ${fmt(next.installDate)}`);
+  if (ns === "reserved" && ps !== "reserved") add("reserved", `Reserved for ${fmt(next.installDate)}`);
+  if (ps === "reserved" && ns === "planned") add("removed", `Reservation removed, still planned for ${fmt(next.installDate)}`);
+  if (next.status === "booked" && (prev.status === "ordered" || prev.status === "received")) add("booked", `Booking confirmed for ${fmt(next.installDate)}`);
+  if (wasOn && isOn && schedKey(prev) !== schedKey(next)) {
+    add("moved", prev.installDate !== next.installDate
+      ? `Install moved from ${fmtShort(prev.installDate)} to ${fmtShort(next.installDate)}`
+      : `Install days changed (now ${fmtShort(next.installDate)}${next.installEndDate && next.installEndDate !== next.installDate ? ` to ${fmtShort(next.installEndDate)}` : ""})`);
+  }
+  if (wasOn && !isOn && next.status !== "installed") add("removed", prev.status === "booked" ? "Booking removed" : "Removed from calendar");
+  if (next.status === "installed" && prev.status !== "installed") add("completed", "Installation completed");
+  if (!prev.invoiced && next.invoiced) add("invoiced", "Invoiced and moved to History");
+  const prevSnags = Object.fromEntries((prev.snags || []).map((x) => [x.id, x]));
+  (next.snags || []).forEach((sn) => {
+    const old = prevSnags[sn.id];
+    if (!old) add("snag", `Snag logged (${sn.category}): ${sn.description || ""}`.trim());
+    else if (!old.resolved && sn.resolved) add("snagResolved", `Snag resolved${sn.resolveReason ? `: ${sn.resolveReason}` : ""}`);
+  });
+  return ev;
+}
+const notifBase = (p) => ({ projectId: p.id, clientName: p.clientName || "", po: p.po || "", department: p.department, consultant: p.consultant || "", isTest: !!p.isTest });
+// Backlog: rebuild the last week's events from each job's activity log (runs once, ids are fixed so it can't double up)
+const LOG_RULES = [
+  [/^Main item received/, "received"], [/: received$/, "partial"], [/^Planned for/, "planned"],
+  [/^Reserved for/, "reserved"], [/^Reservation removed/, "removed"], [/^Booking confirmed/, "booked"],
+  [/^Day \d+(\/\d+)? (moved|added|removed)/, "moved"], [/^Booking removed|^Removed from calendar/, "removed"],
+  [/^Installation completed/, "completed"], [/^Invoiced/, "invoiced"], [/^Snag logged/, "snag"], [/^Snag resolved/, "snagResolved"],
+];
+function backlogNotifs(projects, since, until) {
+  const out = [];
+  projects.forEach((p) => {
+    if (p.deleted) return;
+    (p.log || []).forEach((l) => {
+      if (!l.createdAt || l.createdAt < since || l.createdAt >= until) return;
+      const rule = LOG_RULES.find(([re]) => re.test(l.text || ""));
+      if (!rule) return;
+      out.push({ id: `${NOTIF_PREFIX}bk-${p.id}-${l.id}`, ...notifBase(p), type: rule[1], text: l.text, author: l.author || "", createdAt: l.createdAt, readBy: [], backlog: true });
+    });
+  });
+  return out;
+}
+const ago = (isoTs) => {
+  const m = Math.max(0, Math.round((Date.now() - new Date(isoTs).getTime()) / 60000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60); if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24); return d === 1 ? "yesterday" : `${d} days ago`;
+};
+
+/* =========================================================
    SUPABASE (REST, no client library needed)
    ========================================================= */
 const headers = {
@@ -301,10 +384,40 @@ const headers = {
 const SETTINGS_ID = "__app_settings__"; // reserved row in projects_v2 for app-wide settings (holidays etc.)
 async function dbLoad() {
   // Personal notes live in the same table under ids starting "note:" — they are never loaded as projects
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*`, { headers });
+  // Notifications live there too under "notif:" — also never loaded as projects
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*&id=not.like.${encodeURIComponent(NOTIF_PREFIX)}*`, { headers });
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
-  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+}
+
+/* Phase 10.2 — notifications. One row per event (id "notif:<id>") so people acting at the same time
+   never overwrite each other. Rows older than NOTIF_DAYS are removed on load. */
+const NOTIF_PREFIX = "notif:";
+const NOTIF_DAYS = 7;
+const notifCutoff = () => new Date(Date.now() - NOTIF_DAYS * 86400000).toISOString();
+async function dbLoadNotifs() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(NOTIF_PREFIX)}*&data->>createdAt=gte.${encodeURIComponent(notifCutoff())}`, { headers });
+  if (!r.ok) throw new Error(`Notifications load failed (${r.status})`);
+  const rows = await r.json();
+  return rows.map((row) => ({ ...row.data, id: row.id }));
+}
+async function dbSaveNotifs(list) {
+  if (!list.length) return;
+  const at = new Date().toISOString();
+  const body = list.map((n) => ({ id: n.id, data: n, updated_at: at }));
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Notification save failed (${r.status})`);
+}
+async function dbDeleteOldNotifs() {
+  // Best effort: if it fails, old rows are still hidden because loading only asks for the last 7 days
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=like.${encodeURIComponent(NOTIF_PREFIX)}*&data->>createdAt=lt.${encodeURIComponent(notifCutoff())}`, { method: "DELETE", headers: { ...headers, Prefer: "return=minimal" } });
+  } catch { /* ignore */ }
 }
 // Phase 9.1 — personal feedback notes. Each note is its own row (id "note:<uuid>") so two people
 // posting at once can never overwrite each other. A user only ever loads their own notes; the Developer loads all.
@@ -578,9 +691,15 @@ export default function App() {
   const [toast, setToast] = useState("");
   // Phase 10 — mobile shell: slide-in menu, "…" actions menu, expandable search
   const [navOpen, setNavOpen] = useState(false);
+  // Phase 10.2 — notifications
+  const [notifs, setNotifs] = useState([]);
+  const [bellOpen, setBellOpen] = useState(false);
+  const projectsRef = useRef([]);
+  projectsRef.current = projects;
+  const notifHousekeeping = useRef(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
-  useEffect(() => { setNavOpen(false); setMoreOpen(false); }, [view]);
+  useEffect(() => { setNavOpen(false); setMoreOpen(false); setBellOpen(false); }, [view]);
   useEffect(() => {
     if (!navOpen) return;
     const prev = document.body.style.overflow; document.body.style.overflow = "hidden";
@@ -606,6 +725,24 @@ export default function App() {
     try {
       const [ps, st] = await Promise.all([dbLoad(), dbLoadSettings()]);
       setProjects(ps); setSettings(st); setError("");
+      // Notifications load separately so a problem there never blocks the app
+      try {
+        let ns = await dbLoadNotifs();
+        if (!notifHousekeeping.current) {
+          notifHousekeeping.current = true;
+          dbDeleteOldNotifs();
+          // One-off backlog: turn the last week's activity into notifications the first time this version runs
+          if (!st.notifBacklogAt) {
+            const until = new Date().toISOString();
+            const bk = backlogNotifs(ps, notifCutoff(), until);
+            await dbSaveNotifs(bk);
+            const nextSt = { ...st, notifBacklogAt: until };
+            setSettings(nextSt); await dbSaveSettings(nextSt);
+            ns = await dbLoadNotifs();
+          }
+        }
+        setNotifs(ns);
+      } catch { /* notifications are optional */ }
     }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -630,13 +767,39 @@ export default function App() {
   }, [toast]);
 
   const save = async (p, msg) => {
+    const before = projectsRef.current.find((x) => x.id === p.id);
+    const events = user && user.pin ? diffEvents(before, p) : [];
     setProjects((prev) => {
       const i = prev.findIndex((x) => x.id === p.id);
       if (i === -1) return [...prev, p];
       const copy = [...prev]; copy[i] = p; return copy;
     });
-    try { await dbSave(p); if (msg) setToast(msg); }
+    try {
+      await dbSave(p); if (msg) setToast(msg);
+      if (events.length) {
+        const at = new Date().toISOString();
+        const rows = events.map((e) => ({ id: NOTIF_PREFIX + uid(), ...notifBase(p), type: e.type, text: e.text, author: user.name, createdAt: at, readBy: [] }));
+        setNotifs((prev) => [...prev, ...rows]);
+        dbSaveNotifs(rows).catch(() => {});
+      }
+    }
     catch (e) { setError(e.message); }
+  };
+  // Who sees a notification: the job's consultant, co-ordinators for that department, and the Developer
+  const notifVisible = (n) => {
+    if (!user || !user.pin) return false;
+    if (isDev) return true;
+    if (n.isTest) return false;
+    if (n.consultant && n.consultant === user.name) return true;
+    return isCoord && canEditDept(n.department);
+  };
+  const isUnread = (n) => !(n.readBy || []).includes(user?.pin);
+  const markRead = (list) => {
+    const rows = list.filter(isUnread).map((n) => ({ ...n, readBy: [...(n.readBy || []), user.pin] }));
+    if (!rows.length) return;
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    setNotifs((prev) => prev.map((n) => byId[n.id] || n));
+    dbSaveNotifs(rows).catch(() => {});
   };
 
   const active = useMemo(() => projects.filter((p) => !p.deleted && (isDev || !p.isTest)), [projects, isDev]);
@@ -665,6 +828,12 @@ export default function App() {
     return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon") };
   }, [active, level, user]);
   const etaCount = etaAlerts.overdue.length + etaAlerts.soon.length;
+  const myNotifs = useMemo(() => {
+    const cutoff = notifCutoff();
+    return notifs.filter((n) => n.createdAt >= cutoff && notifVisible(n)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [notifs, user, level]);
+  const unreadCount = myNotifs.filter(isUnread).length;
+  const bellCount = unreadCount + etaCount;
 
   // Global search: consultants only see their own placed/received orders
   const searchResults = useMemo(() => {
@@ -783,10 +952,22 @@ export default function App() {
                 <Calendar size={16} /> Public holidays
               </button>
             )}
-            <button onClick={() => setView("eta")} className="relative p-2 rounded-lg hover:bg-[#161b22] text-slate-300" title={etaCount ? `${etaAlerts.overdue.length} overdue · ${etaAlerts.soon.length} due within ${ETA_WARN_DAYS} days` : "No ETA alerts"}>
-              <Bell size={18} />
-              {etaCount > 0 && <span className={`absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaCount}</span>}
-            </button>
+            <div className="relative">
+              <button onClick={() => setBellOpen((v) => !v)} className={`relative p-2 rounded-lg hover:bg-[#161b22] ${bellOpen ? "bg-[#161b22] text-white" : "text-slate-300"}`} title={`${unreadCount} unread · ${etaCount} ETA alert${etaCount === 1 ? "" : "s"}`} aria-label="Notifications">
+                <Bell size={18} />
+                {bellCount > 0 && <span className={`absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${unreadCount || etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{bellCount > 99 ? "99+" : bellCount}</span>}
+              </button>
+              {bellOpen && (
+                <BellPanel
+                  notifs={myNotifs} isUnread={isUnread} canSeeNotifs={!!user.pin} etaAlerts={etaAlerts}
+                  onClose={() => setBellOpen(false)}
+                  onOpenNotif={(n) => { markRead([n]); setBellOpen(false); const pj = projects.find((x) => x.id === n.projectId); if (pj && !pj.deleted) setSelected(pj); }}
+                  onMarkAll={() => markRead(myNotifs)}
+                  onOpenJob={(pj) => { setBellOpen(false); setSelected(pj); }}
+                  onViewAllEta={() => { setBellOpen(false); setView("eta"); }}
+                />
+              )}
+            </div>
             {actions.length > 0 && (
               <div className="relative md:hidden">
                 <button onClick={() => setMoreOpen((v) => !v)} className={`p-2 rounded-lg hover:bg-[#161b22] ${moreOpen ? "bg-[#161b22] text-white" : "text-slate-300"}`} aria-label="More actions"><MoreVertical size={19} /></button>
@@ -1093,6 +1274,76 @@ function CapacityPanel({ capacity, openDept, isDev, onSetClose }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* =========================================================
+   PHASE 10.2 — BELL PANEL (notifications + ETA alerts)
+   ========================================================= */
+function BellPanel({ notifs, isUnread, canSeeNotifs, etaAlerts, onClose, onOpenNotif, onMarkAll, onOpenJob, onViewAllEta }) {
+  const unread = notifs.filter(isUnread).length;
+  const etaList = [...etaAlerts.overdue, ...etaAlerts.soon];
+  const [tab, setTab] = useState(() => (canSeeNotifs && (unread > 0 || etaList.length === 0) ? "notifs" : "eta"));
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="fixed md:absolute left-2 right-2 md:left-auto md:right-0 top-[calc(3.5rem+env(safe-area-inset-top))] md:top-full md:mt-2 z-50 md:w-[400px] max-h-[75vh] flex flex-col bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl overflow-hidden">
+        <div className="flex items-center border-b border-[#30363d]">
+          {canSeeNotifs && (
+            <button onClick={() => setTab("notifs")} className={`flex-1 px-4 py-3 text-sm font-medium border-b-2 ${tab === "notifs" ? "border-[#1f6feb] text-white" : "border-transparent text-slate-400"}`}>
+              Notifications {unread > 0 && <span className="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">{unread}</span>}
+            </button>
+          )}
+          <button onClick={() => setTab("eta")} className={`flex-1 px-4 py-3 text-sm font-medium border-b-2 ${tab === "eta" ? "border-[#1f6feb] text-white" : "border-transparent text-slate-400"}`}>
+            ETA alerts {etaList.length > 0 && <span className={`ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaList.length}</span>}
+          </button>
+        </div>
+        {tab === "notifs" ? (
+          <>
+            <div className="flex items-center justify-between px-4 py-2 text-[11px] text-slate-500 border-b border-[#30363d]">
+              <span>Last {NOTIF_DAYS} days · your jobs and departments</span>
+              {unread > 0 && <button onClick={onMarkAll} className="text-slate-300 hover:text-white underline">Mark all read</button>}
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {notifs.length === 0 ? <div className="text-sm text-slate-500 text-center py-8">No updates this week.</div> : notifs.map((n) => {
+                const meta = NOTIF_META[n.type] || { label: "Update", cls: "bg-slate-400" };
+                const un = isUnread(n);
+                const d = deptOf(n.department);
+                return (
+                  <button key={n.id} onClick={() => onOpenNotif(n)} className={`w-full text-left px-4 py-3 border-b border-[#30363d] last:border-0 flex gap-3 hover:bg-[#1c222b] ${un ? "bg-[#1f6feb]/5" : ""}`}>
+                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${un ? meta.cls : "bg-transparent border border-slate-600"}`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className={`text-sm truncate ${un ? "text-white font-semibold" : "text-slate-300"}`}>{n.clientName || "Job"}</span>
+                        <span className="text-[10px] text-slate-500 shrink-0">{d.label}</span>
+                        <span className="ml-auto text-[10px] text-slate-500 shrink-0">{ago(n.createdAt)}</span>
+                      </div>
+                      <div className={`text-xs mt-0.5 ${un ? "text-slate-200" : "text-slate-400"}`}><span className="font-medium">{meta.label}</span> · {n.text}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate">{n.author ? `by ${n.author}` : ""}{n.consultant ? ` · ${n.consultant}'s job` : ""}{n.po ? ` · PO ${n.po}` : ""}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="overflow-y-auto flex-1">
+              {etaList.length === 0 ? <div className="text-sm text-slate-500 text-center py-8">No orders overdue or due within {ETA_WARN_DAYS} days.</div> : etaList.map((p) => (
+                <button key={p.id} onClick={() => onOpenJob(p)} className="w-full text-left px-4 py-3 border-b border-[#30363d] last:border-0 flex items-center gap-3 hover:bg-[#1c222b]">
+                  <EtaBadge p={p} small />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-white truncate">{p.clientName}</div>
+                    <div className="text-[11px] text-slate-400 truncate">{deptOf(p.department).label} · PO {p.po} · {etaLabel(p)}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+            <button onClick={onViewAllEta} className="px-4 py-2.5 text-xs text-slate-300 hover:text-white border-t border-[#30363d] text-center">Open ETA alerts page</button>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
