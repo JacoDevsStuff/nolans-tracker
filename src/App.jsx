@@ -447,7 +447,7 @@ function useIsMobile() {
 }
 
 // PWA / "Add to Home Screen". Everything lives in App.jsx, so the tags are added to <head> at start-up
-// instead of editing index.html. The icon is drawn once on a canvas (the Nolans double bar on dark).
+// instead of editing index.html. The icon is drawn once on a canvas (the Nolans mark, white on dark).
 function installPwaTags() {
   if (typeof document === "undefined" || document.getElementById("nolans-pwa")) return;
   const head = document.head;
@@ -457,9 +457,9 @@ function installPwaTags() {
     const c = document.createElement("canvas"); c.width = c.height = 512;
     const g = c.getContext("2d");
     g.fillStyle = "#0d1117"; g.fillRect(0, 0, 512, 512);
-    g.fillStyle = "#4a7bd1";
-    g.save(); g.translate(256, 256); g.transform(1, 0, -0.21, 1, 0, 0);
-    g.fillRect(-92, -150, 70, 300); g.fillRect(22, -150, 70, 300);
+    g.save(); g.translate(256, 256); g.scale(1.45, 1.45); g.translate(-192, -197.5);
+    g.strokeStyle = "#ffffff"; g.lineWidth = 21; g.lineCap = "round"; g.lineJoin = "round";
+    g.stroke(new Path2D("M112 183 L94 208 L94 296.5 L144 296.5 L144 98 L215 98 L289.5 160 L289.5 296.5 L225.5 296.5 L225.5 200 L178 158"));
     g.restore();
     icon = c.toDataURL("image/png");
   } catch { /* canvas unavailable — skip icon */ }
@@ -514,19 +514,38 @@ function Login({ onLogin }) {
   );
 }
 
+// Phase 10.1 — the Nolans logo, drawn as a single-weight line (21-unit stroke, round ends and corners)
+// traced from the brand artwork. Colour follows the surrounding text colour.
+const LOGO_ICON_PATH = "M112 183 L94 208 L94 296.5 L144 296.5 L144 98 L215 98 L289.5 160 L289.5 296.5 L225.5 296.5 L225.5 200 L178 158";
+const LogoStrokes = ({ word }) => (
+  <g fill="none" stroke="currentColor" strokeWidth="21" strokeLinecap="round" strokeLinejoin="round">
+    <path d={LOGO_ICON_PATH} />
+    {word && (
+      <g transform="translate(1 1.5)">
+        <path d="M402.5 277.5 V184.5 L487 277.5 V184.5" />
+        <rect x="537.5" y="184.5" width="82" height="93" rx="36" />
+        <path d="M669.5 184.5 V277.5 H737.5" />
+        <path d="M773 277.5 L818.5 186 L864 277.5 M785 257 H852" />
+        <path d="M909.5 277.5 V184.5 L993.5 277.5 V184.5" />
+        <path d="M1112 194 C1100 187 1088 184.5 1074 184.5 C1054 184.5 1041.5 193 1041.5 206 C1041.5 220 1054 226 1074 229.5 L1090 232.5 C1110 236 1119.5 244 1119.5 256 C1119.5 270 1106 277.5 1086 277.5 L1074 277.5 C1062 277.5 1050 274 1041.5 266" />
+      </g>
+    )}
+  </g>
+);
 function Logo({ small }) {
+  if (small) {
+    return (
+      <svg viewBox="78 84 230 230" className="h-8 w-8 text-white" role="img" aria-label="Nolans">
+        <LogoStrokes />
+      </svg>
+    );
+  }
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex gap-[3px] -skew-x-12">
-        <span className="block w-2.5 h-7 bg-[#4a7bd1] rounded-sm" />
-        <span className="block w-2.5 h-7 bg-[#4a7bd1] rounded-sm" />
-      </div>
-      {!small && (
-        <div className="leading-tight">
-          <div className="text-white font-extrabold tracking-[0.25em] text-lg">NOLANS</div>
-          <div className="text-slate-400 text-[10px] tracking-[0.2em]">INSTALLATION MANAGEMENT</div>
-        </div>
-      )}
+    <div className="flex flex-col items-start leading-none text-white">
+      <svg viewBox="78 84 1060 230" className="h-8 w-auto" role="img" aria-label="Nolans">
+        <LogoStrokes word />
+      </svg>
+      <div className="text-slate-400 text-[8px] tracking-[0.2em] mt-1.5 whitespace-nowrap">INSTALLATION MANAGEMENT</div>
     </div>
   );
 }
@@ -835,7 +854,8 @@ export default function App() {
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
             <HomeView user={user} lists={lists} setView={setView} openDept={openDept} etaAlerts={etaAlerts} onOpen={setSelected}
-              capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays)} />
+              capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays, closeDateOf(settings))}
+              isDev={isDev} onSetClose={() => setShowHolidays(true)} />
           ) : view === "eta" ? (
             <EtaAlertsView alerts={etaAlerts} onOpen={setSelected} level={level} />
           ) : view === "performance" ? (
@@ -882,7 +902,8 @@ export default function App() {
         />
       )}
       {showHolidays && (
-        <HolidaysModal custom={customHolidays} onSave={(list) => saveSettings({ ...settings, customHolidays: list })} onClose={() => setShowHolidays(false)} />
+        <HolidaysModal custom={customHolidays} closeDate={closeDateOf(settings)}
+          onSave={(list, closeDate) => saveSettings({ ...settings, customHolidays: list, closeDate })} onClose={() => setShowHolidays(false)} />
       )}
       {user.pin && <NotesWidget user={user} view={view} />}
       {toast && (
@@ -934,7 +955,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
 /* =========================================================
    HOME DASHBOARD
    ========================================================= */
-function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity }) {
+function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity, isDev, onSetClose }) {
   const myCount = lists.placed.length + lists.received.length;
   const cards = [
     { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
@@ -989,27 +1010,31 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity 
           ))}
         </div>
       </div>
-      {capacity && <CapacityPanel capacity={capacity} openDept={openDept} />}
+      {capacity && <CapacityPanel capacity={capacity} openDept={openDept} isDev={isDev} onSetClose={onSetClose} />}
     </div>
   );
 }
 
 /* =========================================================
    PHASE 9.1 — TEAM CAPACITY (home screen, all levels)
-   Per department calendar over the next 10 working days (weekends and public holidays skipped).
+   Per department calendar from today to the year-end close date (weekends and public holidays skipped).
    A team counts as booked on a day if it has any install, planned/reserved day or snag return visit.
-   Departments with two teams are measured in team-days (2 teams × 10 days = 20).
+   Departments with two teams are measured in team-days (2 teams × 30 days = 60).
    ========================================================= */
-const CAPACITY_WORKDAYS = 10;
-const workingDaysFrom = (start, n, custom) => {
+// Phase 10.1 — capacity runs from today up to and including the year-end close date (set by the Developer).
+const DEFAULT_CLOSE_DATE = "2026-12-18"; // used until a date has been saved in settings
+const closeDateOf = (settings) => (settings && settings.closeDate !== undefined ? settings.closeDate : DEFAULT_CLOSE_DATE);
+const workingDaysBetween = (start, end, custom) => {
   const out = []; let cur = start;
-  while (out.length < n) { if (!isWeekend(cur) && !holidayName(cur, custom)) out.push(cur); cur = addDays(cur, 1); }
+  while (cur <= end) { if (!isWeekend(cur) && !holidayName(cur, custom)) out.push(cur); cur = addDays(cur, 1); if (out.length > 400) break; }
   return out;
 };
-function computeCapacity(projects, custom = []) {
+// Returns { closeDate, workingDays, rows } or { closeDate, missing: true } when no future close date is set
+function computeCapacity(projects, custom = [], closeDate) {
   const today = todayIso();
-  const windowDays = workingDaysFrom(today, CAPACITY_WORKDAYS, custom);
-  return CALENDARS.map((cal) => {
+  if (!closeDate || closeDate < today) return { closeDate, missing: true };
+  const windowDays = workingDaysBetween(today, closeDate, custom);
+  const rows = CALENDARS.map((cal) => {
     const teamCount = teamsOf(cal.id).length;
     const inCal = projects.filter((p) => calendarOf(p.department) === cal.id);
     const occ = {}; // date -> set of occupied team slots
@@ -1019,18 +1044,12 @@ function computeCapacity(projects, custom = []) {
     const usedOn = (d) => Math.min(teamCount, occ[d] ? occ[d].size : 0);
     const total = windowDays.length * teamCount;
     const booked = windowDays.reduce((n, d) => n + usedOn(d), 0);
-    // Earliest clear week: first Mon–Fri week (this week only if today is Monday) where a full team is free every working day
-    let wk = weekStart(today); if (wk < today) wk = addDays(wk, 7);
-    let clearWeek = null;
-    for (let i = 0; i < 26 && !clearWeek; i++, wk = addDays(wk, 7)) {
-      const days = [0, 1, 2, 3, 4].map((o) => addDays(wk, o)).filter((d) => !holidayName(d, custom));
-      if (days.length && days.every((d) => usedOn(d) < teamCount)) clearWeek = wk;
-    }
-    return { cal, teamCount, total, booked, free: total - booked, clearWeek };
+    return { cal, teamCount, total, booked, free: total - booked };
   });
+  return { closeDate, workingDays: windowDays.length, rows };
 }
-function CapacityPanel({ capacity, openDept }) {
-  const today = todayIso();
+function CapacityPanel({ capacity, openDept, isDev, onSetClose }) {
+  const { closeDate, missing, workingDays, rows } = capacity;
   return (
     <div className="mt-5 bg-[#0d1117] border border-[#30363d] rounded-2xl p-4">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
@@ -1038,29 +1057,41 @@ function CapacityPanel({ capacity, openDept }) {
           <Gauge size={18} className="text-slate-300" />
           <h2 className="text-lg font-semibold text-white">Team capacity</h2>
         </div>
-        <span className="text-xs text-slate-500">Next {CAPACITY_WORKDAYS} working days · weekends and public holidays excluded</span>
+        {!missing && <span className="text-xs text-slate-500">{workingDays} working days to year-end close · {fmt(closeDate, { day: "numeric", month: "short", year: "numeric" })}</span>}
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-        {capacity.map(({ cal, teamCount, total, booked, free, clearWeek }) => {
-          const pct = total ? booked / total : 0;
-          const bar = pct > 0.8 ? "bg-red-500" : pct > 0.5 ? "bg-amber-400" : "bg-emerald-500";
-          const unit = teamCount > 1 ? "team-days" : "days";
-          return (
-            <button key={cal.id} onClick={() => openDept(cal.id)} className="text-left bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-3">
-              <div className="flex items-center gap-2 text-sm font-medium text-white">
-                <cal.icon size={16} className="text-slate-400" /> <span className="truncate">{cal.label}</span>
-                {teamCount > 1 && <span className="ml-auto text-[10px] text-slate-500">{teamCount} teams</span>}
-              </div>
-              <div className="mt-2 h-2 rounded-full bg-[#21262d] overflow-hidden"><div className={`h-full ${bar}`} style={{ width: `${Math.round(pct * 100)}%` }} /></div>
-              <div className="mt-2 text-xs text-slate-300">{booked} of {total} {unit} booked</div>
-              <div className={`text-xs font-semibold ${free === 0 ? "text-red-300" : "text-emerald-300"}`}>{free} {unit} free</div>
-              <div className="mt-1.5 text-[11px] text-slate-400" title="First Mon–Fri week where a full team is free every working day">
-                Earliest clear week: <span className="text-slate-200">{clearWeek ? `w/c ${fmtShort(clearWeek)}${clearWeek === weekStart(today) ? " (this week)" : ""}` : "none in 6 months"}</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+      {missing ? (
+        <div className="text-sm text-slate-400 border border-dashed border-[#30363d] rounded-xl px-4 py-5 text-center">
+          {closeDate ? <>The year-end close date ({fmt(closeDate, { day: "numeric", month: "short", year: "numeric" })}) has passed.</> : "No year-end close date is set."}
+          {isDev
+            ? <> <button onClick={onSetClose} className="underline text-slate-200 hover:text-white">Set the next close date</button></>
+            : " Capacity will show once the next close date is set."}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+          {rows.map(({ cal, teamCount, total, booked, free }) => {
+            const pct = total ? booked / total : 0;
+            const bar = pct > 0.8 ? "bg-red-500" : pct > 0.5 ? "bg-amber-400" : "bg-emerald-500";
+            return (
+              <button key={cal.id} onClick={() => openDept(cal.id)} className="text-left bg-[#161b22] hover:bg-[#1c222b] border border-[#30363d] rounded-xl p-3"
+                title={teamCount > 1 ? `${teamCount} teams, counted in team-days` : ""}>
+                <div className="flex items-center gap-2 text-sm font-medium text-white">
+                  <cal.icon size={16} className="text-slate-400" /> <span className="truncate">{cal.label}</span>
+                  {teamCount > 1 && <span className="ml-auto text-[10px] text-slate-500">{teamCount} teams</span>}
+                </div>
+                <div className="mt-2 flex items-center text-xs text-slate-400 divide-x divide-[#30363d]">
+                  <span className="pr-2"><span className={`font-semibold ${free === 0 ? "text-red-300" : "text-white"}`}>{free}</span> free</span>
+                  <span className="px-2"><span className="font-semibold text-slate-200">{booked}</span> booked</span>
+                  <span className="pl-2"><span className="font-semibold text-slate-200">{total}</span> total</span>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="flex-1 h-2 rounded-full bg-[#21262d] overflow-hidden"><div className={`h-full ${bar}`} style={{ width: `${Math.round(pct * 100)}%` }} /></div>
+                  <span className="text-xs font-semibold text-slate-200 w-9 text-right">{Math.round(pct * 100)}%</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1984,8 +2015,9 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
 /* =========================================================
    PUBLIC HOLIDAYS MANAGER (Developer only)
    ========================================================= */
-function HolidaysModal({ custom, onSave, onClose }) {
+function HolidaysModal({ custom, closeDate: initialClose, onSave, onClose }) {
   const [list, setList] = useState(() => [...(custom || [])].sort((a, b) => a.date.localeCompare(b.date)));
+  const [closeDate, setCloseDate] = useState(initialClose || "");
   const [date, setDate] = useState("");
   const [name, setName] = useState("");
   const year = new Date().getFullYear();
@@ -1997,10 +2029,19 @@ function HolidaysModal({ custom, onSave, onClose }) {
     setList(next); setDate(""); setName("");
   };
   const remove = (d) => setList(list.filter((h) => h.date !== d));
-  const commit = () => { onSave(list); onClose(); };
+  const commit = () => { onSave(list, closeDate || ""); onClose(); };
 
   return (
-    <Modal title="Public holidays" onClose={onClose}>
+    <Modal title="Public holidays & year-end" onClose={onClose}>
+      <div className="border border-[#30363d] rounded-xl p-3 mb-4">
+        <div className="text-xs text-slate-500 mb-2">Year-end close date</div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} className={`${inputCls} w-auto`} />
+          {closeDate && <button onClick={() => setCloseDate("")} className="text-xs text-slate-400 hover:text-red-300">Clear</button>}
+        </div>
+        <div className="text-[11px] text-slate-500 mt-2">Team capacity on the home screen counts working days from today up to and including this date. Set the next one after the year-end meeting.</div>
+      </div>
+
       <p className="text-sm text-slate-400 mb-4">South African public holidays are built in automatically. Add custom dates below (for example a company shutdown day). They show on every calendar but do not block booking.</p>
 
       <div className="border border-[#30363d] rounded-xl p-3 mb-4">
@@ -2045,7 +2086,7 @@ function HolidaysModal({ custom, onSave, onClose }) {
 
       <div className="flex justify-end gap-2 pt-2 border-t border-[#30363d]">
         <button onClick={onClose} className={btnGhost}>Cancel</button>
-        <button onClick={commit} className={btnPrimary}>Save holidays</button>
+        <button onClick={commit} className={btnPrimary}>Save</button>
       </div>
     </Modal>
   );
@@ -2064,6 +2105,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
   const isMobile = useIsMobile();
   const [weekOf, setWeekOf] = useState(() => weekStart(initialMonth || todayIso()));
   const [showTrays, setShowTrays] = useState(false);
+  const [pickDay, setPickDay] = useState(null); // Phase 10.1 — mobile: date whose job picker is open
   useEffect(() => { setExpandedKey(null); }, [month, weekOf]);
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
@@ -2194,6 +2236,31 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
     const weekLabel = `${fmt(weekOf, { day: "numeric", month: "short" })} – ${fmt(weekEnd, { day: "numeric", month: "short", year: "numeric" })}`;
     const thisWeek = weekStart(today);
     const trayCount = ordered.length + received.length + returns.length;
+    // Phase 10.1 — tap-to-book: same jobs the desktop lets you drag, grouped by whether stock is in
+    const readyPick = [...returns.filter((p) => canBook(p)).map((p) => ({ p, kind: "return" })),
+      ...received.filter((p) => canBook(p) && !isReserved(p)).map((p) => ({ p, kind: "received" }))];
+    const awaitingPick = ordered.filter((p) => canBook(p) && !isReserved(p)).map((p) => ({ p, kind: "ordered" }));
+    const canPick = isCoord && readyPick.length + awaitingPick.length > 0;
+    const choose = ({ p, kind }) => { const date = pickDay; setPickDay(null); setBooking({ project: p, date, mode: kind === "return" ? "return" : "book" }); };
+    const PickRow = ({ item, awaiting }) => {
+      const { p, kind } = item;
+      const d = deptOf(p.department);
+      return (
+        <button onClick={() => choose(item)} className={`w-full text-left rounded-xl border px-3 py-2.5 flex items-center gap-3 ${awaiting ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15" : kind === "return" ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/15" : "border-[#30363d] bg-[#0d1117] hover:bg-[#12181f]"}`}>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}</div>
+            <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
+            {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
+          </div>
+          <div className="shrink-0 text-right">
+            {awaiting ? <div className="text-[11px] text-amber-300">ETA {fmtShort(p.materialEta)}</div>
+              : kind === "return" ? <div className="text-[11px] text-red-300">Snag return</div>
+              : <div className="text-[11px] text-emerald-300">Stock in</div>}
+            <EtaBadge p={p} small />
+          </div>
+        </button>
+      );
+    };
     return (
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-2">
@@ -2237,7 +2304,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
                   {ordered.map((p) => <Sticker key={p.id} p={p} inTray onClick={() => onOpen(p)} variant="ordered" />)}
                 </div>
               </div>
-              {isCoord && trayCount > 0 && <div className="text-[11px] text-slate-500">Booking by dragging onto a date works on a computer. On the phone, tap a job to open it.</div>}
+              {isCoord && trayCount > 0 && <div className="text-[11px] text-slate-500">To book, tap a day below and pick the job.</div>}
             </div>
           )}
         </div>
@@ -2251,20 +2318,24 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
             const isToday = key === today;
             if (wk && !items.length && !hol) {
               return (
-                <div key={key} className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#30363d]/60 bg-[#0d1117]/40 text-xs text-slate-600">
+                <div key={key} onClick={() => canPick && setPickDay(key)} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#30363d]/60 bg-[#0d1117]/40 text-xs text-slate-600 ${canPick ? "cursor-pointer" : ""}`}>
                   <span className="w-20">{fmt(key, { weekday: "short", day: "numeric", month: "short" })}</span> Weekend
+                  {canPick && <Plus size={12} className="ml-auto" />}
                 </div>
               );
             }
             return (
-              <div key={key} className={`rounded-xl border p-2.5 ${isToday ? "border-[#1f6feb]" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]"} ${key < today ? "opacity-70" : ""}`}>
+              <div key={key} onClick={() => { if (canPick && !items.length) setPickDay(key); }} className={`${canPick && !items.length ? "cursor-pointer active:bg-[#161b22]" : ""} rounded-xl border p-2.5 ${isToday ? "border-[#1f6feb]" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]"} ${key < today ? "opacity-70" : ""}`}>
                 <div className="flex items-center gap-2 mb-1.5">
                   <span className={`text-sm font-semibold ${isToday ? "text-white" : "text-slate-300"}`}>{fmt(key, { weekday: "long" })}</span>
                   <span className={`text-xs ${isToday ? "px-1.5 py-0.5 rounded-full bg-[#1f6feb] text-white" : "text-slate-500"}`}>{fmt(key, { day: "numeric", month: "short" })}</span>
                   {items.length > 0 && <span className="ml-auto text-[11px] text-slate-500">{items.length} {items.length === 1 ? "job" : "jobs"}</span>}
+                  {items.length > 0 && canPick && (
+                    <button onClick={(e) => { e.stopPropagation(); setPickDay(key); }} className="ml-1 p-1.5 -my-1 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d]" aria-label="Book another job on this day"><Plus size={14} /></button>
+                  )}
                 </div>
                 {hol && <div className="text-[11px] mb-1.5 px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30 text-amber-200">{hol}</div>}
-                {items.length ? <div className="space-y-1.5">{renderItems(items, true)}</div> : !hol && <div className="text-xs text-slate-600">Nothing booked</div>}
+                {items.length ? <div className="space-y-1.5">{renderItems(items, true)}</div> : !hol && <div className="text-xs text-slate-600">{canPick ? "Nothing booked · tap to book a job" : "Nothing booked"}</div>}
               </div>
             );
           })}
@@ -2275,6 +2346,22 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           <div className="flex items-center gap-x-4 gap-y-2 mt-2 flex-wrap">{legendItems}</div>
         </details>
 
+        {pickDay && (
+          <Modal title={`Book a job · ${fmt(pickDay, { weekday: "short", day: "numeric", month: "short" })}`} onClose={() => setPickDay(null)}>
+            {holidayName(pickDay, customHolidays) && <div className="text-xs mb-3 px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-200">Public holiday: {holidayName(pickDay, customHolidays)}</div>}
+            <div className="text-xs font-semibold text-white mb-2 flex items-center gap-2">Ready to book <RBadge /> <span className="text-slate-500 font-normal">{readyPick.length}</span></div>
+            <div className="space-y-2 mb-5">
+              {readyPick.length === 0 && <div className="text-xs text-slate-500">Nothing with stock in.</div>}
+              {readyPick.map((it) => <PickRow key={`${it.kind}-${it.p.id}`} item={it} />)}
+            </div>
+            <div className="text-xs font-semibold text-amber-300 mb-1 flex items-center gap-2">Awaiting material <span className="text-slate-500 font-normal">{awaitingPick.length}</span></div>
+            <div className="text-[11px] text-slate-500 mb-2">Stock not in yet. These can be planned but show with a red outline until received.</div>
+            <div className="space-y-2">
+              {awaitingPick.length === 0 && <div className="text-xs text-slate-500">No outstanding orders.</div>}
+              {awaitingPick.map((it) => <PickRow key={`o-${it.p.id}`} item={it} awaiting />)}
+            </div>
+          </Modal>
+        )}
         {booking && <BookingModal booking={booking} onClose={() => setBooking(null)} onConfirm={confirmBooking} />}
       </div>
     );
