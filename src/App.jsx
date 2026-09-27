@@ -18,7 +18,7 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true }, // app partner — full access, all departments
+  "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true }, // app partner — full access, all departments, sees everyone's feedback notes
   "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments (Performance Report locked: Beta card)
   "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
   "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
@@ -502,8 +502,11 @@ async function dbDeleteOldNotifs() {
 // Phase 9.1 — personal feedback notes. Each note is its own row (id "note:<uuid>") so two people
 // posting at once can never overwrite each other. A user only ever loads their own notes; the Developer loads all.
 const NOTE_PREFIX = "note:";
+// Phase 11.2 — the Developer and anyone flagged canSeeNotes (Franco) see everyone's notes
+const seesAllNotes = (user) => (user?.level ?? 0) >= 3 || !!user?.canSeeNotes;
+const noteReaders = () => ["the developer", ...Object.values(USERS).filter((u) => u.canSeeNotes).map((u) => u.name)];
 async function dbLoadNotes(user) {
-  const isDevUser = (user?.level ?? 0) >= 3;
+  const isDevUser = seesAllNotes(user);
   const mineOnly = isDevUser ? "" : `&data->>pin=eq.${encodeURIComponent(user.pin)}`;
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(NOTE_PREFIX)}*${mineOnly}`, { headers });
   if (!r.ok) throw new Error(`Notes load failed (${r.status})`);
@@ -1602,6 +1605,10 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "11.2", date: "2026-09-27", items: [
+    "Material ETA now opens a calendar: tap a date, use the arrows to move between months.",
+    "Franco can see everyone's feedback notes.",
+  ] },
   { phase: "11.1", date: "2026-09-27", items: [
     "Snag review fix: picking a cause no longer saves straight away. Choose the cause, add cost lines, then press Save.",
   ] },
@@ -1699,7 +1706,11 @@ function ChangelogView() {
 }
 
 function NotesWidget({ user, view }) {
-  const isDevUser = (user.level ?? 0) >= 3;
+  const isDevUser = seesAllNotes(user);
+  const readers = noteReaders().filter((n) => n !== user.name && !(n === "the developer" && (user.level ?? 0) >= 3));
+  const joinAnd = (a) => (a.length > 1 ? `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}` : a[0] || "");
+  const readersText = joinAnd(readers);
+  const withYou = joinAnd(["you", ...readers]);
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState([]);
   const [text, setText] = useState("");
@@ -1727,7 +1738,7 @@ function NotesWidget({ user, view }) {
   return (
     <div className="print:hidden">
       {!open && (
-        <button onClick={() => setOpen(true)} className="fixed bottom-5 left-5 z-40 w-12 h-12 rounded-full bg-[#1f6feb] hover:bg-[#388bfd] text-white shadow-xl flex items-center justify-center" title="My notes — ideas and feedback, only you and the developer can see these">
+        <button onClick={() => setOpen(true)} className="fixed bottom-5 left-5 z-40 w-12 h-12 rounded-full bg-[#1f6feb] hover:bg-[#388bfd] text-white shadow-xl flex items-center justify-center" title={`My notes — ideas and feedback, visible to ${withYou} only`}>
           <MessageSquarePlus size={20} />
           {isDevUser && openCount > 0 && <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-red-600 text-[10px] font-bold flex items-center justify-center">{openCount}</span>}
         </button>
@@ -1737,7 +1748,7 @@ function NotesWidget({ user, view }) {
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#30363d]">
             <div>
               <div className="text-sm font-semibold text-white">{isDevUser ? "All feedback notes" : "My notes"}</div>
-              <div className="text-[11px] text-slate-500">{isDevUser ? "Everyone's notes · only you see all of them" : "Only you and the developer can see these"}</div>
+              <div className="text-[11px] text-slate-500">{isDevUser ? `Everyone's notes · also visible to ${readersText}` : `Only ${withYou} can see these`}</div>
             </div>
             <button onClick={() => setOpen(false)} className="p-1 rounded hover:bg-[#21262d] text-slate-400"><X size={16} /></button>
           </div>
@@ -1922,6 +1933,56 @@ function LineMeasureFields({ dept, l, onColour, onChange }) {
   );
 }
 
+/* Phase 11.2 — tap-to-pick calendar for dates (used for Material ETA). Opens as a small centred popup,
+   so it behaves the same on phones and desktop. Value is "YYYY-MM-DD" like the rest of the app. */
+function DatePicker({ value, onChange, placeholder = "Pick a date" }) {
+  const [open, setOpen] = useState(false);
+  const [month, setMonth] = useState(() => (value || todayIso()).slice(0, 7)); // "YYYY-MM"
+  const openPicker = () => { setMonth((value || todayIso()).slice(0, 7)); setOpen(true); };
+  const first = `${month}-01`;
+  const lead = (fromIso(first).getDay() + 6) % 7; // blank cells before the 1st (week starts Monday)
+  const dim = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+  const cells = [...Array(lead).fill(null), ...Array.from({ length: dim }, (_, i) => `${month}-${pad(i + 1)}`)];
+  const shift = (n) => { const d = fromIso(first); d.setMonth(d.getMonth() + n); setMonth(iso(d).slice(0, 7)); };
+  const today = todayIso();
+  const pickDate = (d) => { onChange(d); setOpen(false); };
+  return (
+    <>
+      <button type="button" onClick={openPicker} className={`${inputCls} flex items-center gap-2 text-left`}>
+        <Calendar size={15} className="text-slate-400 shrink-0" />
+        <span className={value ? "text-slate-100" : "text-slate-500"}>{value ? fmt(value) : placeholder}</span>
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" onClick={() => setOpen(false)}>
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative w-full max-w-xs bg-[#161b22] border border-[#30363d] rounded-2xl shadow-2xl p-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-2">
+              <button type="button" onClick={() => shift(-1)} className="p-2 rounded-lg hover:bg-[#21262d] text-slate-300" aria-label="Previous month"><ChevronLeft size={18} /></button>
+              <span className="text-sm font-semibold text-white">{fromIso(first).toLocaleDateString("en-ZA", { month: "long", year: "numeric" })}</span>
+              <button type="button" onClick={() => shift(1)} className="p-2 rounded-lg hover:bg-[#21262d] text-slate-300" aria-label="Next month"><ChevronRight size={18} /></button>
+            </div>
+            <div className="grid grid-cols-7 text-[11px] text-slate-500 text-center mb-1">
+              {["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => <div key={d} className="py-1">{d}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((d, i) => d ? (
+                <button type="button" key={d} onClick={() => pickDate(d)}
+                  className={`h-10 rounded-lg text-sm tabular-nums ${d === value ? "bg-[#1f6feb] text-white font-semibold" : d === today ? "border border-[#1f6feb] text-white" : isWeekend(d) ? "text-slate-500 hover:bg-[#21262d]" : "text-slate-200 hover:bg-[#21262d]"}`}>
+                  {Number(d.slice(8))}
+                </button>
+              ) : <div key={`b${i}`} />)}
+            </div>
+            <div className="flex items-center justify-between mt-3 pt-2 border-t border-[#30363d]">
+              <button type="button" onClick={() => pickDate(today)} className="text-xs px-3 py-1.5 rounded-lg hover:bg-[#21262d] text-slate-300">Today</button>
+              <button type="button" onClick={() => setOpen(false)} className="text-xs px-3 py-1.5 rounded-lg hover:bg-[#21262d] text-slate-400">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave }) {
   const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
   const [f, setF] = useState(() => {
@@ -2102,7 +2163,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
         {noMaterial ? (
           <Field label="Material ETA"><div className="text-sm text-slate-500 py-2">Not needed — no material on this repair</div></Field>
         ) : (
-          <Field label="Material ETA"><input type="date" className={inputCls} value={f.materialEta || ""} onChange={(e) => set("materialEta", e.target.value)} /></Field>
+          <Field label="Material ETA"><DatePicker value={f.materialEta || ""} onChange={(v) => set("materialEta", v)} /></Field>
         )}
         <Field label="Estimated install duration (working days)"><input type="number" min="1" max="30" className={inputCls} value={f.installDays} onChange={(e) => set("installDays", e.target.value)} /></Field>
         <div className="md:col-span-2">
