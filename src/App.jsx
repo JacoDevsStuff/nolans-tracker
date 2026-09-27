@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen
 } from "lucide-react";
 
 /* =========================================================
@@ -317,7 +317,22 @@ const hoursPerDay = (p) => Number(p.estHours) || DEFAULT_HOURS_PER_DAY;
 const isReserved = (p) => !!p.reserveStage && p.status !== "booked" && p.status !== "installed";
 const onCalendar = (p) => !p.invoiced && (p.status === "booked" || p.status === "installed" || isReserved(p));
 // Received but some line items still outstanding
-const partiallyReceived = (p) => p.received && (p.lineItems || []).some((li) => !li.received);
+// Phase 11 — lines can also be flagged "partially received" with a note (e.g. "3 of 5 rolls in")
+const hasPartialFlag = (p) => !!p.mainPartial || productLinesOf(p).some((l) => l.partial) || (p.lineItems || []).some((li) => li.partial);
+const partiallyReceived = (p) => p.received && ((p.lineItems || []).some((li) => !li.received) || hasPartialFlag(p));
+// Show the "!" badge while the job is still waiting to be installed
+const showPartial = (p) => partiallyReceived(p) && (p.status === "received" || p.status === "booked");
+
+/* Phase 11 — repairs and snag material */
+const isRepair = (p) => !!(p && p.isRepair);
+const RepairIcon = ({ small }) => (
+  <span title="Repair" className={`inline-flex items-center justify-center rounded-full bg-sky-600 text-white shrink-0 ${small ? "w-4 h-4" : "w-5 h-5"}`}><Wrench size={small ? 9 : 11} strokeWidth={2.5} /></span>
+);
+// Snags flagged as needing material that nobody has confirmed as ordered yet
+const snagMaterialPending = (p) => (p.snags || []).filter((s) => s.materialRequired && !s.materialOrdered);
+// PO numbers on new jobs: exactly 6 digits, saved as "PL 123456"
+const poDigits = (v) => (v || "").replace(/\D/g, "").slice(0, 6);
+const formatPo = (digits) => `PL ${digits}`;
 
 /* Phase 9.1 — ETA follow-up
    Overdue  = ETA date has passed and the order is still not received
@@ -352,7 +367,8 @@ const EtaBadge = ({ p, small }) => {
    ========================================================= */
 const NOTIF_META = {
   received: { label: "Received", cls: "bg-emerald-500" },
-  partial: { label: "Item received", cls: "bg-amber-400" },
+  partial: { label: "Partial receipt", cls: "bg-amber-400" },
+  snagMaterial: { label: "Snag material", cls: "bg-sky-400" },
   eta: { label: "ETA changed", cls: "bg-amber-400" },
   planned: { label: "Planned", cls: "bg-slate-300" },
   reserved: { label: "Reserved", cls: "bg-yellow-400" },
@@ -376,6 +392,14 @@ function diffEvents(prev, next) {
     const out = (next.lineItems || []).filter((l) => !l.received).length;
     add("partial", `${newlyIn.map((l) => l.description).join(", ")} received${out ? ` · ${out} item${out > 1 ? "s" : ""} still outstanding` : " · all items in"}`);
   }
+  // Phase 11 — a line newly flagged as partially received
+  const flagged = (x) => [
+    ...(x.mainPartial ? [{ key: "main", label: x.productType || "Main item", note: x.mainPartialNote }] : []),
+    ...productLinesOf(x).filter((l) => l.partial).map((l) => ({ key: "pl-" + l.id, label: l.productType || l.productRange || "Product", note: l.partialNote })),
+    ...(x.lineItems || []).filter((l) => l.partial).map((l) => ({ key: "li-" + l.id, label: l.description, note: l.partialNote })),
+  ];
+  const wasFlagged = new Set(flagged(prev).map((f) => f.key));
+  flagged(next).filter((f) => !wasFlagged.has(f.key)).forEach((f) => add("partial", `Partially received: ${f.label}${f.note ? ` (${f.note})` : ""}`));
   if (prev.materialEta && next.materialEta && prev.materialEta !== next.materialEta && !next.received) add("eta", `ETA changed from ${fmtShort(prev.materialEta)} to ${fmtShort(next.materialEta)}`);
   const ps = prev.reserveStage || null, ns = next.reserveStage || null;
   const wasOn = !!prev.installDate, isOn = !!next.installDate;
@@ -394,7 +418,8 @@ function diffEvents(prev, next) {
   const prevSnags = Object.fromEntries((prev.snags || []).map((x) => [x.id, x]));
   (next.snags || []).forEach((sn) => {
     const old = prevSnags[sn.id];
-    if (!old) add("snag", `Snag logged (${sn.category}): ${sn.description || ""}`.trim());
+    if (!old) add("snag", `Snag logged (${sn.category}): ${sn.description || ""}${sn.materialRequired ? " · material to be ordered" : ""}`.trim());
+    else if (old.materialRequired && !old.materialOrdered && sn.materialOrdered) add("snagMaterial", `Snag material ordered${sn.materialNote ? `: ${sn.materialNote}` : ""}`);
     else if (!old.resolved && sn.resolved) add("snagResolved", `Snag resolved${sn.resolveReason ? `: ${sn.resolveReason}` : ""}`);
   });
   return ev;
@@ -858,6 +883,12 @@ export default function App() {
     }
     catch (e) { setError(e.message); }
   };
+  // Phase 11 — anyone who can see the reminder can confirm the snag material has been ordered
+  const markSnagMaterialOrdered = (p, snag) => {
+    const at = new Date().toISOString();
+    const snags = (p.snags || []).map((s) => (s.id === snag.id ? { ...s, materialOrdered: true, materialOrderedBy: user.name, materialOrderedAt: at } : s));
+    save({ ...p, snags, log: [...(p.log || []), { id: uid(), text: `Snag material ordered${snag.materialNote ? `: ${snag.materialNote}` : ""}`, author: user.name, createdAt: at }] }, "Snag material marked as ordered");
+  };
   // Who sees a notification: the job's consultant, co-ordinators for that department, and the Developer
   const notifVisible = (n) => {
     if (!user || !user.pin) return false;
@@ -918,6 +949,12 @@ export default function App() {
     return notifs.filter((n) => n.createdAt >= cutoff && notifVisible(n)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }, [notifs, user, level]);
   const unreadCount = myNotifs.filter(isUnread).length;
+  // Phase 11 — snag material still to be ordered: shown to the job's consultant and the co-ordinators for that department
+  const snagMaterialJobs = useMemo(() => active
+    .filter((p) => snagMaterialPending(p).length > 0)
+    .filter((p) => isDev || p.consultant === user?.name || (isCoord && canEditDept(p.department)))
+    .flatMap((p) => snagMaterialPending(p).map((s) => ({ p, s })))
+    .sort((a, b) => (a.s.createdAt || "").localeCompare(b.s.createdAt || "")), [active, user, level]);
   const bellCount = unreadCount + etaCount;
 
   // Global search: consultants only see their own placed/received orders
@@ -947,6 +984,8 @@ export default function App() {
       { id: "availability", label: "Availability", icon: CalendarCheck },
       { id: "reports", label: "Reports", icon: FileText },
     ] : []),
+    // Phase 11 — changelog, desktop only (hidden in the phone menu)
+    { id: "updates", label: "App updates", icon: Sparkles, desktopOnly: true },
   ];
 
   const logout = () => { sessionStorage.removeItem("nolans_user"); setUser(null); setView("home"); };
@@ -980,7 +1019,7 @@ export default function App() {
           return (
             <button
               key={n.id} onClick={pick(() => setView(n.id))}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+              className={`${n.desktopOnly ? "hidden md:flex" : "flex"} w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
             >
               <n.icon size={18} className="shrink-0" />
               <span className="flex-1 text-left">{n.label}</span>
@@ -1126,10 +1165,13 @@ export default function App() {
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
             <HomeView user={user} lists={lists} setView={setView} openDept={openDept} etaAlerts={etaAlerts} onOpen={setSelected}
+              snagMaterial={snagMaterialJobs} onMaterialOrdered={markSnagMaterialOrdered}
               capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays, closeDateOf(settings))}
               isDev={isDev} onSetClose={() => setShowHolidays(true)} />
           ) : view === "eta" ? (
             <EtaAlertsView alerts={scope === "all" ? etaAll : etaAlerts} onOpen={setSelected} level={scope === "all" ? 2 : level} />
+          ) : view === "updates" ? (
+            <ChangelogView />
           ) : view === "performance" ? (
             canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <PerformanceBeta />
           ) : view === "reports" ? (
@@ -1211,9 +1253,10 @@ function SearchDropdown({ results, onOpen, onClose }) {
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {p.isTest && <span className="text-[10px] text-orange-300 font-semibold">TEST</span>}
+              {isRepair(p) && <RepairIcon />}
               {hasOpenSnags(p) && <SnagFlag />}
               {isReserved(p) && <span className={`text-[10px] ${p.received ? "text-slate-300" : "text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"}</span>}
-              {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
+              {showPartial(p) && <PartialBadge />}
               <Badge status={p.status} />
               {p.invoiced && <span className="text-[10px] text-slate-500">Invoiced</span>}
             </div>
@@ -1227,7 +1270,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
 /* =========================================================
    HOME DASHBOARD
    ========================================================= */
-function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity, isDev, onSetClose }) {
+function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity, isDev, onSetClose, snagMaterial = [], onMaterialOrdered }) {
   const myCount = lists.placed.length + lists.received.length;
   const cards = [
     { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
@@ -1247,6 +1290,7 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity,
         <div className="flex items-center gap-2 text-xs md:text-sm text-slate-400 md:text-slate-300 shrink-0"><Calendar size={16} /> {fmt(todayIso())}</div>
       </div>
       {etaAlerts && <EtaBanner alerts={etaAlerts} onOpen={onOpen} onViewAll={() => setView("eta")} />}
+      <SnagMaterialBanner items={snagMaterial} onOpen={onOpen} onOrdered={onMaterialOrdered} />
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,1fr)_1.6fr] gap-5">
         <div className="bg-[#0d1117] border border-[#30363d] rounded-2xl p-3 space-y-2">
           {cards.map((c) => (
@@ -1441,6 +1485,40 @@ function BellPanel({ notifs, isUnread, canSeeNotifs, etaAlerts, onClose, onOpenN
 /* =========================================================
    PHASE 9.1 — ETA FOLLOW-UP (home banner + dedicated view)
    ========================================================= */
+/* Phase 11 — snag material reminder (home screen). Visible to the job's consultant and that department's
+   co-ordinators until someone ticks it off as ordered. */
+function SnagMaterialBanner({ items, onOpen, onOrdered }) {
+  const [confirming, setConfirming] = useState(null); // snag id awaiting a second tap
+  if (!items.length) return null;
+  return (
+    <div className="mb-5 rounded-xl border border-sky-500/50 bg-sky-500/10 px-4 py-3">
+      <div className="flex items-center gap-3 mb-2">
+        <PackageOpen size={18} className="text-sky-300" />
+        <span className="text-sm text-white font-medium">Snag material to be ordered <span className="text-slate-400 font-normal">· {items.length}</span></span>
+      </div>
+      <div className="space-y-2">
+        {items.map(({ p, s }) => (
+          <div key={s.id} className="flex items-center gap-3 flex-wrap bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2">
+            <button onClick={() => onOpen(p)} className="flex-1 min-w-0 text-left">
+              <div className="text-sm text-white truncate flex items-center gap-1.5">{p.clientName} {isRepair(p) && <RepairIcon small />}</div>
+              <div className="text-xs text-slate-400 truncate">{deptOf(p.department).label} · PO {p.po} · {p.consultant}{s.materialNote ? ` · ${s.materialNote}` : ""}</div>
+            </button>
+            {confirming === s.id ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs text-slate-300">Ordered?</span>
+                <button onClick={() => { onOrdered(p, s); setConfirming(null); }} className="text-xs px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white">Yes</button>
+                <button onClick={() => setConfirming(null)} className="text-xs px-2.5 py-1 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d]">No</button>
+              </div>
+            ) : (
+              <button onClick={() => setConfirming(s.id)} className="text-xs px-2.5 py-1 rounded-lg border border-sky-500/50 text-sky-200 hover:bg-sky-500/15 shrink-0 flex items-center gap-1"><Check size={12} /> Mark as ordered</button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function EtaBanner({ alerts, onOpen, onViewAll }) {
   const { overdue, soon } = alerts;
   if (!overdue.length && !soon.length) return null;
@@ -1517,8 +1595,106 @@ function EtaAlertsView({ alerts, onOpen, level }) {
    Each user sees only their own notes; the Developer sees everyone's.
    Used as a feedback channel for personalised changes.
    ========================================================= */
-const SCREEN_NAMES = { home: "Home", placed: "Placed orders", received: "Received orders", booked: "Booked orders", eta: "ETA alerts", snags: "Snags", completed: "Completed orders", history: "History", review: "Snag review", performance: "Performance Report", availability: "Availability", reports: "Reports" };
+const SCREEN_NAMES = { home: "Home", placed: "Placed orders", received: "Received orders", booked: "Booked orders", eta: "ETA alerts", snags: "Snags", completed: "Completed orders", history: "History", review: "Snag review", updates: "App updates", performance: "Performance Report", availability: "Availability", reports: "Reports" };
 const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).label} calendar` : SCREEN_NAMES[v] || v || "");
+/* =========================================================
+   PHASE 11 — APP UPDATES (changelog, desktop only)
+   Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
+   ========================================================= */
+const CHANGELOG = [
+  { phase: "11", date: "2026-09-27", items: [
+    "Repairs: new jobs can be created as a Repair (small wrench icon). A repair with no material goes straight to Ready to book.",
+    "Calendar filter for co-ordinators: All, New jobs or Repairs. Snag return visits show under Repairs.",
+    "Snag material: when logging a snag you can tick \"Material required\". The consultant and the department co-ordinator see a reminder on the home screen until it's marked as ordered.",
+    "Partial receipt: any received line can be flagged as partially received with a note (e.g. 3 of 5 rolls in).",
+    "PO numbers on new jobs are 6 digits and saved as PL 123456.",
+    "Performance Report shows installations and repairs separately.",
+    "This App updates page.",
+  ] },
+  { phase: "10.3", date: "2026-09-27", items: [
+    "Blinds and Shutters product catalogues, plus Turf, Laminates and Louvre Roofs & Carports.",
+    "Measurements per department: blind quantities, shutter references and panels, carpet roll width × linear metres.",
+    "SOW Submitted tick box on shutter jobs.",
+    "Completed jobs turn light grey on the calendar until invoiced.",
+    "My jobs / All jobs toggle on the list tabs.",
+    "Desktop calendar shows a rolling 4 weeks.",
+  ] },
+  { phase: "10.2", date: "2026-09-26", items: [
+    "Notifications in the bell: received, reserved, booked, completed, invoiced, moves, snags and ETA changes.",
+    "Marco, Luciano and Office added to the consultant list.",
+  ] },
+  { phase: "10.1", date: "2026-09-26", items: [
+    "Real Nolans logo.",
+    "Capacity panel counts working days up to the year-end close date.",
+    "Phones: tap an empty day to book a job.",
+  ] },
+  { phase: "10", date: "2026-09-26", items: [
+    "Phone layout: slide-out menu, full-screen windows, week view calendar.",
+    "Add to Home Screen support.",
+  ] },
+  { phase: "9.2", date: "2026-09-25", items: [
+    "Edit details fixed for older hand-typed products, with colour per product line.",
+  ] },
+  { phase: "9.1", date: "2026-09-24", items: [
+    "Team capacity on the home screen.",
+    "ETA alerts for orders due soon or overdue.",
+    "Floating notes button for feedback.",
+  ] },
+  { phase: "9", date: "2026-09-23", items: [
+    "Performance Report (consultants and install teams), with PDF export.",
+  ] },
+  { phase: "8", date: "2026-09-22", items: [
+    "Public holidays on every calendar.",
+    "Jobs stay on the calendar until invoiced.",
+  ] },
+  { phase: "7", date: "2026-09-20", items: [
+    "Department permissions for co-ordinators.",
+    "New 3-bar status on stickers: planned, reserved, confirmed.",
+  ] },
+  { phase: "6", date: "2026-09-20", items: [
+    "Multiple product lines per job with m² per line.",
+    "Tap-to-expand calendar stickers.",
+  ] },
+  { phase: "5", date: "2026-09-19", items: [
+    "Product catalogue dropdowns for Carpets and Vinyl.",
+  ] },
+  { phase: "4", date: "", items: [
+    "Snag review: cause and cost per snag.",
+  ] },
+  { phase: "3", date: "", items: [
+    "Calore Fireplaces department (shares the Shutters calendar).",
+  ] },
+  { phase: "2", date: "", items: [
+    "Snags: log problems on a job and book return visits.",
+    "Search, multi-day installs, additional line items and invoicing.",
+  ] },
+  { phase: "1", date: "", items: [
+    "Launch: projects, department calendars, drag-and-drop booking, trays and PDF reports.",
+  ] },
+];
+function ChangelogView() {
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6 max-w-3xl">
+      <h1 className="text-xl md:text-2xl font-bold text-white flex items-center gap-2 mb-1"><Sparkles size={22} className="text-slate-300" /> App updates</h1>
+      <p className="text-sm text-slate-400 mb-6">What's changed in each version of the tracker, newest first.</p>
+      <div className="space-y-5">
+        {CHANGELOG.map((c, i) => (
+          <div key={c.phase} className={`border-l-2 pl-4 ${i === 0 ? "border-[#1f6feb]" : "border-[#30363d]"}`}>
+            <div className="flex items-baseline gap-3 mb-1.5">
+              <span className="text-white font-semibold">Phase {c.phase}</span>
+              {c.date && <span className="text-xs text-slate-500">{fmt(c.date, { day: "numeric", month: "long", year: "numeric" })}</span>}
+              {i === 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#1f6feb] text-white">Latest</span>}
+            </div>
+            <ul className="space-y-1">
+              {c.items.map((t, j) => <li key={j} className="text-sm text-slate-300 flex gap-2"><span className="text-slate-600">•</span><span>{t}</span></li>)}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function NotesWidget({ user, view }) {
   const isDevUser = (user.level ?? 0) >= 3;
   const [open, setOpen] = useState(false);
@@ -1615,7 +1791,7 @@ function ListView({ title, status, items, onOpen, level }) {
             return (
               <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
-                  <div className="font-medium text-white truncate">{p.clientName}</div>
+                  <div className="font-medium text-white truncate flex items-center gap-1.5"><span className="truncate">{p.clientName}</span>{isRepair(p) && <RepairIcon small />}</div>
                   <div className="text-xs text-slate-400 truncate">{p.address}</div>
                 </div>
                 <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
@@ -1630,7 +1806,7 @@ function ListView({ title, status, items, onOpen, level }) {
                   {hasOpenSnags(p) && <SnagFlag />}
                   <EtaBadge p={p} />
                   {isReserved(p) && <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span>}
-                  {partiallyReceived(p) && p.status === "received" && <PartialBadge />}
+                  {showPartial(p) && <PartialBadge />}
                   <Badge status={p.status} />
                 </div>
               </button>
@@ -1751,6 +1927,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
       clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: defaultDept, team: teamsOf(defaultDept)[0],
       productType: "", productCategory: "", supplier: "", productRange: "",
       productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
+      isRepair: false, repairNeedsMaterial: true,
     };
     // Seed the product-line list for catalogued departments (carries old single-product jobs across)
     if (hasCatalog(base.department)) {
@@ -1806,7 +1983,12 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     setBusy(false);
   };
 
-  const valid = f.clientName.trim() && f.po.trim() && f.materialEta;
+  // Phase 11 — new jobs: PO must be exactly 6 digits (saved as "PL 123456"). Existing jobs keep whatever they had.
+  const [poNum, setPoNum] = useState("");
+  const poOk = initial ? !!(f.po || "").trim() : poNum.length === 6;
+  // A repair with no material skips the ETA and goes straight to Ready to book
+  const noMaterial = !initial && f.isRepair && !f.repairNeedsMaterial;
+  const valid = f.clientName.trim() && poOk && (noMaterial || f.materialEta || (initial && initial.received));
   const submit = async () => {
     if (!valid) return;
     setBusy(true);
@@ -1814,6 +1996,10 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     const lineItems = f.lineItems.filter((li) => li.description.trim())
       .map((li) => ({ ...li, qty: (li.qty === "" || li.qty == null) ? null : Number(li.qty) }));
     const base = { ...f, lineItems, installDays: Number(f.installDays) || 1, estHours: f.estHours === "" ? null : Number(f.estHours) };
+    if (!initial) base.po = formatPo(poNum);
+    base.isRepair = !!f.isRepair;
+    if (!base.isRepair) delete base.repairNeedsMaterial;
+    if (noMaterial) base.materialEta = null;
     if (hasCatalog(f.department)) {
       // keep only lines that actually have a product; store area as a number
       const lines = (f.productLines || []).filter((l) => l.productRange || l.productType)
@@ -1838,11 +2024,13 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     } else {
       base.productLines = [];
     }
+    const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}`;
     const p = initial
       ? base
-      : { ...base, id: uid(), createdAt: now, createdBy: user.name, status: "ordered", received: false, installed: false,
+      : { ...base, id: uid(), createdAt: now, createdBy: user.name, installed: false,
+          ...(noMaterial ? { status: "received", received: true, receivedAt: now } : { status: "ordered", received: false }),
           ...(isTest ? { isTest: true } : {}),
-          log: [{ id: uid(), text: isTest ? "Test project created" : "Project created", author: user.name, createdAt: now }] };
+          log: [{ id: uid(), text: createdText, author: user.name, createdAt: now }] };
     await onSave(p);
     setBusy(false);
   };
@@ -1855,10 +2043,44 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
         </div>
       )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Phase 11 — project type */}
+        <div className="md:col-span-2">
+          <div className="text-xs text-slate-400 mb-1">Project type</div>
+          <div className="flex gap-1 bg-[#0d1117] border border-[#30363d] rounded-xl p-1 w-fit">
+            {[[false, "Installation"], [true, "Repair"]].map(([rep, label]) => (
+              <button key={label} type="button" onClick={() => set("isRepair", rep)}
+                className={`px-4 py-1.5 rounded-lg text-sm flex items-center gap-1.5 ${!!f.isRepair === rep ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>
+                {rep && <Wrench size={14} />}{label}
+              </button>
+            ))}
+          </div>
+          {f.isRepair && !initial && (
+            <div className="mt-3 flex items-center gap-3 flex-wrap">
+              <span className="text-sm text-slate-200">Material required?</span>
+              <div className="flex gap-1 bg-[#0d1117] border border-[#30363d] rounded-xl p-1">
+                {[[true, "Yes"], [false, "No"]].map(([v, label]) => (
+                  <button key={label} type="button" onClick={() => set("repairNeedsMaterial", v)}
+                    className={`px-4 py-1 rounded-lg text-sm ${f.repairNeedsMaterial === v ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>{label}</button>
+                ))}
+              </div>
+              <span className="text-xs text-slate-500">{f.repairNeedsMaterial ? "Follows the normal ordered → received flow." : "Goes straight to Ready to book."}</span>
+            </div>
+          )}
+        </div>
         <Field label="Client name"><input className={inputCls} value={f.clientName} onChange={(e) => set("clientName", e.target.value)} autoFocus /></Field>
         <Field label="Contact number"><input className={inputCls} value={f.contact} onChange={(e) => set("contact", e.target.value)} /></Field>
         <div className="md:col-span-2"><Field label="Address"><input className={inputCls} value={f.address} onChange={(e) => set("address", e.target.value)} /></Field></div>
-        <Field label="Purchase order number"><input className={inputCls} value={f.po} onChange={(e) => set("po", e.target.value)} /></Field>
+        {initial ? (
+          <Field label="Purchase order number"><input className={inputCls} value={f.po} onChange={(e) => set("po", e.target.value)} /></Field>
+        ) : (
+          <Field label="Purchase order number (6 digits)">
+            <div className="flex items-stretch">
+              <span className="px-3 flex items-center rounded-l-lg border border-r-0 border-[#30363d] bg-[#21262d] text-sm text-slate-300 font-medium">PL</span>
+              <input className={`${inputCls} rounded-l-none`} inputMode="numeric" value={poNum} onChange={(e) => setPoNum(poDigits(e.target.value))} placeholder="123456" />
+            </div>
+            {poNum.length > 0 && poNum.length < 6 && <div className="text-xs text-amber-300 mt-1">{6 - poNum.length} more digit{6 - poNum.length === 1 ? "" : "s"} needed</div>}
+          </Field>
+        )}
         <Field label="Consultant">
           <select className={inputCls} value={f.consultant} onChange={(e) => set("consultant", e.target.value)}>
             {CONSULTANTS.map((c) => <option key={c}>{c}</option>)}
@@ -1874,7 +2096,11 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
             {teamsOf(f.department).map((t) => <option key={t}>{t}</option>)}
           </select>
         </Field>
-        <Field label="Material ETA"><input type="date" className={inputCls} value={f.materialEta} onChange={(e) => set("materialEta", e.target.value)} /></Field>
+        {noMaterial ? (
+          <Field label="Material ETA"><div className="text-sm text-slate-500 py-2">Not needed — no material on this repair</div></Field>
+        ) : (
+          <Field label="Material ETA"><input type="date" className={inputCls} value={f.materialEta || ""} onChange={(e) => set("materialEta", e.target.value)} /></Field>
+        )}
         <Field label="Estimated install duration (working days)"><input type="number" min="1" max="30" className={inputCls} value={f.installDays} onChange={(e) => set("installDays", e.target.value)} /></Field>
         <div className="md:col-span-2">
           <Field label="Estimated hours on site per day (used by Availability; blank = 4h)"><input type="number" min="1" max="10" step="0.5" className={inputCls} value={f.estHours ?? ""} onChange={(e) => set("estHours", e.target.value)} placeholder="4" /></Field>
@@ -2001,6 +2227,8 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   const [snagModal, setSnagModal] = useState(false);
   const [resolving, setResolving] = useState(null); // snag being resolved
   const [addingDay, setAddingDay] = useState(false);
+  const [partialEdit, setPartialEdit] = useState(null); // Phase 11 — { kind: "main" | "pl" | "li", id, label, on, note }
+  const noMaterialRepair = isRepair(p) && p.repairNeedsMaterial === false;
   const now = () => new Date().toISOString();
   const log = (text, base = p) => [...(base.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
   const schedule = scheduleOf(p);
@@ -2046,6 +2274,34 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
     save(withSchedule({ ...p, installDays: next.length, log: log(`Day ${dayIndex} removed`) }, next), "Day removed");
   };
 
+  // Phase 11 — flag (or clear) a line as partially received, with a short note
+  const savePartial = ({ kind, id, label }, on, note) => {
+    const n = on ? (note || "").trim() : "";
+    let next = { ...p };
+    if (kind === "main") next = { ...next, mainPartial: on, mainPartialNote: n };
+    if (kind === "pl") next = { ...next, productLines: productLinesOf(p).map((l) => (l.id === id ? { ...l, partial: on, partialNote: n } : l)) };
+    if (kind === "li") next = { ...next, lineItems: lineItems.map((l) => (l.id === id ? { ...l, partial: on, partialNote: n } : l)) };
+    save({ ...next, log: log(on ? `Partially received: ${label}${n ? ` — ${n}` : ""}` : `Partial flag cleared: ${label}`) }, on ? "Flagged as partially received" : "Partial flag cleared");
+    setPartialEdit(null);
+  };
+  // Phase 11 — confirm snag material has been ordered (same as the home screen reminder)
+  const snagMaterialOrdered = (snag) => {
+    const next = snags.map((s) => (s.id === snag.id ? { ...s, materialOrdered: true, materialOrderedBy: user.name, materialOrderedAt: now() } : s));
+    save({ ...p, snags: next, log: log(`Snag material ordered${snag.materialNote ? `: ${snag.materialNote}` : ""}`) }, "Snag material marked as ordered");
+  };
+  // A small "partially received" control for one line
+  const partialCtl = (target, on, note, allowed) => (
+    on ? (
+      <button disabled={!canEdit} onClick={() => setPartialEdit({ ...target, on, note })} title={note || "Partially received"}
+        className={`text-xs px-2 py-1 rounded-lg border border-yellow-500/50 text-yellow-300 flex items-center gap-1 ${canEdit ? "hover:bg-yellow-500/10" : "cursor-default"}`}>
+        <PartialBadge /> Partial
+      </button>
+    ) : (canEdit && allowed) ? (
+      <button onClick={() => setPartialEdit({ ...target, on, note: "" })} className="text-xs px-2 py-1 rounded-lg border border-[#30363d] text-slate-400 hover:bg-[#21262d]">Flag partial</button>
+    ) : null
+  );
+  const partialNote = (on, note) => (on && note ? <div className="text-xs text-yellow-200/80 pb-1.5 -mt-0.5">Partial: {note}</div> : null);
+
   // Snags
   const logSnag = (snag) => {
     const wasDone = p.status === "installed";
@@ -2073,6 +2329,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
     <Modal title={p.clientName} onClose={onClose} wide>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Badge status={p.status} />
+        {isRepair(p) && <span className="text-xs px-2 py-0.5 rounded-full border border-sky-500/50 text-sky-200 flex items-center gap-1"><RepairIcon small /> Repair{noMaterialRepair ? " · no material" : ""}</span>}
         {p.isTest && <span className="text-xs px-2 py-0.5 rounded-full border-2 border-orange-500 text-orange-300 font-semibold">TEST</span>}
         {p.invoiced && <span className="text-xs px-2 py-0.5 rounded-full border border-slate-500/30 text-slate-400">Invoiced</span>}
         <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
@@ -2091,7 +2348,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         <Row icon={Phone} label="Contact" value={p.contact} />
         <Row icon={Hash} label="Purchase order" value={p.po} />
         <div className="md:col-span-2"><Row icon={MapPin} label="Address" value={p.address} /></div>
-        <Row icon={Truck} label="Material ETA" value={fmt(p.materialEta)} />
+        <Row icon={Truck} label="Material ETA" value={noMaterialRepair && !p.materialEta ? "Not required (repair)" : fmt(p.materialEta)} />
         <Row icon={Clock} label="Install estimate" value={`${p.installDays || 1} working day${(p.installDays || 1) > 1 ? "s" : ""} · ${hoursPerDay(p)}h per day`} />
         {schedule.length > 0 && (
           <div className="md:col-span-2">
@@ -2142,19 +2399,34 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
       <div className="mt-4 border border-[#30363d] rounded-xl p-3">
         <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><Layers size={14} /> Line items</div>
         {productLinesOf(p).length > 0 ? productLinesOf(p).map((l, i) => (
-          <div key={l.id || i} className={`flex items-center justify-between py-1.5 text-sm ${i > 0 ? "border-t border-[#30363d]" : ""}`}>
-            <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{measureText(l, p.department) && <span className="text-slate-400 text-xs"> · {measureText(l, p.department)}</span>}</span>
-            {i === 0 && (p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>)}
+          <div key={l.id || i} className={i > 0 ? "border-t border-[#30363d]" : ""}>
+            <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
+              <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{measureText(l, p.department) && <span className="text-slate-400 text-xs"> · {measureText(l, p.department)}</span>}</span>
+              <span className="flex items-center gap-2 shrink-0">
+                {partialCtl({ kind: "pl", id: l.id, label: l.productType || l.productRange || "Product" }, !!l.partial, l.partialNote, p.received)}
+                {i === 0 && (p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>)}
+              </span>
+            </div>
+            {partialNote(!!l.partial, l.partialNote)}
           </div>
         )) : (
-          <div className="flex items-center justify-between py-1.5 text-sm">
-            <span className="text-slate-100">{p.productType || "—"} <span className="text-slate-500 text-xs">(main)</span></span>
-            {p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>}
+          <div>
+            <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
+              <span className="text-slate-100">{p.productType || "—"} <span className="text-slate-500 text-xs">(main)</span></span>
+              <span className="flex items-center gap-2 shrink-0">
+                {partialCtl({ kind: "main", label: p.productType || "Main item" }, !!p.mainPartial, p.mainPartialNote, p.received)}
+                {p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>}
+              </span>
+            </div>
+            {partialNote(!!p.mainPartial, p.mainPartialNote)}
           </div>
         )}
         {lineItems.map((li) => (
-          <div key={li.id} className="flex items-center justify-between py-1.5 text-sm border-t border-[#30363d]">
+          <div key={li.id} className="border-t border-[#30363d]">
+          <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
             <span className="text-slate-200">{li.description}{(li.qty != null && li.qty !== "") ? <span className="text-slate-400 text-xs"> · qty {li.qty}</span> : null}</span>
+            <span className="flex items-center gap-2 shrink-0">
+            {partialCtl({ kind: "li", id: li.id, label: li.description }, !!li.partial, li.partialNote, li.received)}
             {canEdit ? (
               <button onClick={() => toggleLine(li)} className={`text-xs px-2 py-1 rounded-lg border ${li.received ? "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10" : "border-yellow-500/40 text-yellow-300 hover:bg-yellow-500/10"}`}>
                 {li.received ? "Received" : "Mark received"}
@@ -2162,6 +2434,9 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
             ) : (
               <span className={`text-xs ${li.received ? "text-emerald-300" : "text-yellow-300"}`}>{li.received ? "Received" : "Not received"}</span>
             )}
+            </span>
+          </div>
+          {partialNote(!!li.partial, li.partialNote)}
           </div>
         ))}
         {lineItems.length === 0 && productLinesOf(p).length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
@@ -2185,6 +2460,19 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
                   <span className="text-[11px] text-slate-500">· {s.author}, {fmtShort((s.createdAt || "").slice(0, 10))}</span>
                 </div>
                 <div className="text-sm text-slate-300 mt-1">{s.description}</div>
+                {s.materialRequired && (
+                  <div className={`text-xs mt-1.5 flex items-center gap-2 flex-wrap ${s.materialOrdered ? "text-emerald-200/80" : "text-sky-200"}`}>
+                    <PackageOpen size={13} />
+                    <span>Material required{s.materialNote ? `: ${s.materialNote}` : ""}</span>
+                    <span className="text-slate-500">·</span>
+                    {s.materialOrdered
+                      ? <span>Ordered by {s.materialOrderedBy} on {fmtShort((s.materialOrderedAt || "").slice(0, 10))}</span>
+                      : <span className="text-sky-300 font-medium">To be ordered</span>}
+                    {!s.materialOrdered && (isDev || canEdit || p.consultant === user.name) && (
+                      <button onClick={() => snagMaterialOrdered(s)} className="px-2 py-0.5 rounded-lg border border-sky-500/50 text-sky-200 hover:bg-sky-500/15">Mark as ordered</button>
+                    )}
+                  </div>
+                )}
                 {s.resolved && <div className="text-xs text-emerald-200/80 mt-1">Resolved by {s.resolvedBy} on {fmtShort((s.resolvedAt || "").slice(0, 10))}: {s.resolveReason}</div>}
               </div>
               {!s.resolved && canSnag && <button onClick={() => setResolving(s)} className="text-xs px-2 py-1 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 shrink-0">Resolve</button>}
@@ -2217,7 +2505,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
             </>
           )}
           {p.status === "ordered" && <button onClick={markReceived} className={isReserved(p) ? btnGhost : btnPrimary}>Mark main item received</button>}
-          {p.status === "received" && !isReserved(p) && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
+          {p.status === "received" && !isReserved(p) && !noMaterialRepair && <button onClick={undoReceived} className={btnGhost}>Undo received</button>}
           {p.status === "booked" && <button onClick={markInstalled} className={btnPrimary}>Mark as completed</button>}
           {p.status === "booked" && <button onClick={unbook} className={btnGhost}>Remove booking</button>}
           {p.status === "installed" && !p.invoiced && <button onClick={undoInstalled} className={btnGhost}>Undo completion</button>}
@@ -2255,6 +2543,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
       {snagModal && <SnagLogModal user={user} onClose={() => setSnagModal(false)} onSave={logSnag} />}
       {resolving && <SnagResolveModal snag={resolving} onClose={() => setResolving(null)} onConfirm={(note) => resolveSnag(resolving, note)} />}
       {addingDay && <AddDayModal project={p} schedule={schedule} onClose={() => setAddingDay(false)} onConfirm={addDay} />}
+      {partialEdit && <PartialModal target={partialEdit} onClose={() => setPartialEdit(null)} onSave={(note) => savePartial(partialEdit, true, note)} onClear={() => savePartial(partialEdit, false)} />}
     </Modal>
   );
 }
@@ -2264,6 +2553,8 @@ function SnagLogModal({ user, onClose, onSave }) {
   const [description, setDescription] = useState("");
   const [photo, setPhoto] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [materialRequired, setMaterialRequired] = useState(false); // Phase 11
+  const [materialNote, setMaterialNote] = useState("");
   const fileRef = useRef();
   const pick = async (file) => { if (!file || !file.type.startsWith("image/")) return; setBusy(true); setPhoto(await compressImage(file, 1200, 0.75)); setBusy(false); };
   return (
@@ -2285,14 +2576,45 @@ function SnagLogModal({ user, onClose, onSave }) {
             <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { pick(e.target.files[0]); e.target.value = ""; }} />
           </div>
         </Field>
+        <div className={`border rounded-xl px-3 py-2.5 ${materialRequired ? "border-sky-500/50 bg-sky-500/5" : "border-[#30363d]"}`}>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" className="w-4 h-4" checked={materialRequired} onChange={(e) => setMaterialRequired(e.target.checked)} />
+            <span className="text-sm text-slate-100">Material required to resolve</span>
+          </label>
+          {materialRequired && (
+            <>
+              <input className={`${inputCls} mt-2`} value={materialNote} onChange={(e) => setMaterialNote(e.target.value)} placeholder="What's needed, e.g. 2 m² replacement vinyl" />
+              <div className="text-[11px] text-slate-500 mt-1.5">The job's consultant and the department co-ordinator get a "to be ordered" reminder on their home screen until it's marked as ordered.</div>
+            </>
+          )}
+        </div>
       </div>
       <div className="flex justify-end gap-2 mt-6">
         <button onClick={onClose} className={btnGhost}>Cancel</button>
         <button
           disabled={!description.trim() || busy}
-          onClick={() => onSave({ id: uid(), category, description: description.trim(), photo, createdAt: new Date().toISOString(), author: user.name, resolved: false, acknowledged: false })}
+          onClick={() => onSave({ id: uid(), category, description: description.trim(), photo, createdAt: new Date().toISOString(), author: user.name, resolved: false, acknowledged: false,
+            ...(materialRequired ? { materialRequired: true, materialNote: materialNote.trim(), materialOrdered: false } : {}) })}
           className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm disabled:opacity-50"
         >Log snag</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Phase 11 — flag one line as partially received, with a note of what's in and what's outstanding
+function PartialModal({ target, onClose, onSave, onClear }) {
+  const [note, setNote] = useState(target.note || "");
+  return (
+    <Modal title="Partially received" onClose={onClose}>
+      <div className="text-sm text-slate-300 mb-3"><span className="font-medium text-white">{target.label}</span></div>
+      <Field label="Note (what's in, what's still outstanding)">
+        <textarea className={`${inputCls} min-h-[80px]`} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. 3 of 5 rolls in, 2 on backorder" autoFocus />
+      </Field>
+      <div className="flex justify-end gap-2 mt-6 flex-wrap">
+        {target.on && <button onClick={onClear} className="mr-auto px-4 py-2 rounded-lg text-sm text-slate-300 hover:bg-[#21262d]">Clear flag (all received)</button>}
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={() => onSave(note)} className="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-sm font-medium">{target.on ? "Save note" : "Flag as partial"}</button>
       </div>
     </Modal>
   );
@@ -2386,11 +2708,12 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={expandable ? onToggle : onClick}
       className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${ringCls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
-      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}${variant === "return" ? " · Snag return visit" : ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}${isRepair(p) ? " · Repair" : ""}${variant === "return" ? " · Snag return visit" : ""}`}
     >
       {compact ? (
         <div className="flex items-center gap-1.5">
           <span className="font-semibold truncate flex-1">{p.clientName}</span>
+          {isRepair(p) && variant !== "return" && <RepairIcon small />}
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
           <EtaBadge p={p} small />
@@ -2400,10 +2723,11 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
         <>
           <div className="flex items-center gap-1.5">
             <span className="font-semibold truncate flex-1">{p.clientName}</span>
+            {isRepair(p) && variant !== "return" && <RepairIcon small />}
             {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
             {(flagged || variant === "return") && <SnagFlag small />}
             {variant !== "return" && <EtaBadge p={p} small />}
-            {p.status === "received" && partiallyReceived(p) && <PartialBadge />}
+            {showPartial(p) && <PartialBadge />}
             {p.status === "received" && variant !== "return" && <RBadge />}
           </div>
           <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
@@ -2521,11 +2845,28 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
   const [showTrays, setShowTrays] = useState(false);
   const [pickDay, setPickDay] = useState(null); // Phase 10.1 — mobile: date whose job picker is open
   useEffect(() => { setExpandedKey(null); }, [winStart, weekOf]);
+  // Phase 11 — co-ordinators can narrow trays and calendar to All / New jobs / Repairs (remembered for the session).
+  // Snag return visits count as repair work, so they show under Repairs and hide under New jobs.
+  const [jobFilter, setJobFilterState] = useState(() => { try { return (isCoord && sessionStorage.getItem("nolans_cal_filter")) || "all"; } catch { return "all"; } });
+  const setJobFilter = (v) => { setJobFilterState(v); try { sessionStorage.setItem("nolans_cal_filter", v); } catch { /* ignore */ } };
+  const filterOn = isCoord ? jobFilter : "all";
+  const showJob = (p) => filterOn === "all" || (filterOn === "repairs" ? isRepair(p) : !isRepair(p));
+  const showReturns = filterOn !== "new";
+  const shown = projects.filter(showJob);
 
-  const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
-  const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
-  const returns = projects.filter((p) => p.snagReturn); // completed jobs with a snag, waiting for a return visit to be booked
-  const onCal = projects.filter(onCalendar); // booked, installed, or planned/reserved
+  const ordered = shown.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
+  const received = shown.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
+  const returns = showReturns ? projects.filter((p) => p.snagReturn) : []; // completed jobs with a snag, waiting for a return visit to be booked
+  const onCal = shown.filter(onCalendar); // booked, installed, or planned/reserved
+  const filterBar = isCoord ? (
+    <div className="flex gap-1 bg-[#161b22] border border-[#30363d] rounded-xl p-1 w-fit">
+      {[["all", "All"], ["new", "New jobs"], ["repairs", "Repairs"]].map(([id, label]) => (
+        <button key={id} onClick={() => setJobFilter(id)} className={`px-3 py-1 rounded-lg text-xs md:text-sm flex items-center gap-1.5 ${filterOn === id ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>
+          {id === "repairs" && <Wrench size={13} />}{label}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   // map date → items: install days and snag return visits
   const byDay = useMemo(() => {
@@ -2534,10 +2875,10 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
       const sched = scheduleOf(p);
       sched.forEach((s) => { (m[s.date] = m[s.date] || []).push({ kind: "day", p, day: s, total: sched.length }); });
     });
-    projects.forEach((p) => (p.returnVisits || []).forEach((v) => { (m[v.date] = m[v.date] || []).push({ kind: "return", p, visit: v }); }));
+    if (showReturns) projects.forEach((p) => (p.returnVisits || []).forEach((v) => { (m[v.date] = m[v.date] || []).push({ kind: "return", p, visit: v }); }));
     Object.values(m).forEach((arr) => arr.sort((a, b) => ((a.day || a.visit).time || "99").localeCompare((b.day || b.visit).time || "99")));
     return m;
-  }, [onCal, projects]);
+  }, [projects, filterOn]);
 
   const cells = useMemo(() => Array.from({ length: 28 }, (_, i) => fromIso(addDays(winStart, i))), [winStart]);
 
@@ -2632,6 +2973,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
             <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-500/40" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Reserved</span>
             <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
+            <span className="flex items-center gap-1.5"><RepairIcon small /> Repair</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-orange-500 border border-orange-500" /> Test (dev only)</span>
     </>
   );
@@ -2655,7 +2997,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
       return (
         <button onClick={() => choose(item)} className={`w-full text-left rounded-xl border px-3 py-2.5 flex items-center gap-3 ${awaiting ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15" : kind === "return" ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/15" : "border-[#30363d] bg-[#0d1117] hover:bg-[#12181f]"}`}>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}</div>
+            <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}{kind !== "return" && isRepair(p) && <RepairIcon small />}</div>
             <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
             {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
           </div>
@@ -2686,6 +3028,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           </div>
           <button onClick={() => setWeekOf(addDays(weekOf, 7))} className="p-2.5 rounded-lg hover:bg-[#21262d]" aria-label="Next week"><ChevronRight size={20} /></button>
         </div>
+        {filterBar}
 
         {/* Trays, folded away until needed */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-xl">
@@ -2792,6 +3135,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           <div className="flex items-center gap-3">
             <cal.icon size={22} className="text-slate-300" />
             <h1 className="text-xl md:text-2xl font-bold text-white">{cal.label}</h1>
+            {filterBar && <div className="ml-2">{filterBar}</div>}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setWinStart(addDays(winStart, -7))} className="p-2 rounded-lg hover:bg-[#161b22]" title="Back one week"><ChevronLeft size={18} /></button>
@@ -3511,7 +3855,7 @@ function periodOf({ mode, month, quarter, from, to }) {
   return { from: null, to: null, label: "All time" };
 }
 
-const blankStats = () => ({ ordered: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
+const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
 
 // The single loop every number in the report comes from.
 function computePerformance(projects, { from, to }, deptFilter) {
@@ -3532,6 +3876,7 @@ function computePerformance(projects, { from, to }, deptFilter) {
     // Ordered = job created in the period. Consultant m² and ranges count here (what was sold).
     if (inPeriod(dayOf(p.createdAt), from, to)) {
       c.ordered++; t.ordered++;
+      if (isRepair(p)) { c.repairs++; t.repairs++; } // Phase 11 — repairs are part of Ordered, also shown on their own
       c.m2 += area;
       if (area) c.m2ByDept[p.department] = (c.m2ByDept[p.department] || 0) + area;
       productLinesOf(p).forEach((l) => {
@@ -3561,7 +3906,7 @@ function computePerformance(projects, { from, to }, deptFilter) {
   const deptOrder = DEPARTMENTS.map((d) => d.id);
   const teamRows = Object.values(teams)
     .sort((a, b) => deptOrder.indexOf(a.dept) - deptOrder.indexOf(b.dept) || a.team.localeCompare(b.team));
-  const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost }), blankStats());
+  const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, repairs: acc.repairs + r.repairs, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost }), blankStats());
   return { consultantRows, teamRows, cTotal: sum(consultantRows), tTotal: sum(teamRows) };
 }
 const sortedRanges = (ranges) => Object.entries(ranges).sort((a, b) => b[1].m2 - a[1].m2 || b[1].lines - a[1].lines);
@@ -3601,6 +3946,7 @@ function PerformanceView({ projects, user }) {
   const pipelineCells = (r, bold) => (
     <>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.ordered}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""} ${r.repairs ? "text-sky-300" : ""}`}>{r.repairs}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.booked}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.completed}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.invoiced}</td>
@@ -3612,6 +3958,7 @@ function PerformanceView({ projects, user }) {
   const pipelineHeads = (m2Label, snagLabel) => (
     <>
       <th className={`${th} text-right`}>Ordered</th>
+      <th className={`${th} text-right`}>Repairs</th>
       <th className={`${th} text-right`}>Booked</th>
       <th className={`${th} text-right`}>Completed</th>
       <th className={`${th} text-right`}>Invoiced</th>
@@ -3660,6 +4007,11 @@ function PerformanceView({ projects, user }) {
 
       {/* ---------- Screen view ---------- */}
       <div className="print:hidden">
+        <div className="flex items-center gap-3 mb-3 text-sm text-slate-300 flex-wrap">
+          <span className="px-3 py-1.5 rounded-lg bg-[#161b22] border border-[#30363d]">Installations <span className="text-white font-semibold tabular-nums">{data.cTotal.ordered - data.cTotal.repairs}</span></span>
+          <span className="px-3 py-1.5 rounded-lg bg-[#161b22] border border-sky-500/40 flex items-center gap-1.5"><RepairIcon small /> Repairs <span className="text-white font-semibold tabular-nums">{data.cTotal.repairs}</span></span>
+          <span className="text-xs text-slate-500">jobs created in this period</span>
+        </div>
         <div className="flex gap-1 mb-4 bg-[#161b22] border border-[#30363d] rounded-xl p-1 w-fit">
           {[["consultants", "Consultants"], ["teams", "Install teams"]].map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} className={`px-4 py-1.5 rounded-lg text-sm ${tab === id ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>{label}</button>
@@ -3736,18 +4088,19 @@ function PerformanceView({ projects, user }) {
         <div className="border-b-2 border-black pb-3 mb-5">
           <div className="text-xs tracking-widest text-gray-600">NOLANS PERFORMANCE REPORT</div>
           <h2 className="text-2xl font-bold">{period.label} · {deptLabel}</h2>
+          <div className="text-sm mt-1">Installations {data.cTotal.ordered - data.cTotal.repairs} · Repairs {data.cTotal.repairs} (jobs created in the period)</div>
           <div className="text-xs text-gray-600 mt-1">Period: {period.from ? fmt(period.from) : "Start of records"} to {period.to ? fmt(period.to) : "today"} · Generated {generated} by {user.name}</div>
         </div>
 
         <h3 className="text-lg font-bold mb-2">1. Consultant performance</h3>
         <table className="w-full text-sm border-collapse mb-5">
           <thead><tr className="border-b border-black text-left">
-            <th className="py-1 pr-2">Consultant</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² sold</th><th className="py-1 px-2 text-right">Consultant snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
+            <th className="py-1 pr-2">Consultant</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Repairs</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² sold</th><th className="py-1 px-2 text-right">Consultant snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
           </tr></thead>
           <tbody>
             {[...data.consultantRows, { name: "TOTAL", ...data.cTotal, isTotal: true }].map((r) => (
               <tr key={r.name} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
-                <td className="py-1 pr-2">{r.name}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+                <td className="py-1 pr-2">{r.name}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
               </tr>
             ))}
           </tbody>
@@ -3772,12 +4125,12 @@ function PerformanceView({ projects, user }) {
         <h3 className="text-lg font-bold mb-2 mt-6">3. Install team performance</h3>
         <table className="w-full text-sm border-collapse mb-5">
           <thead><tr className="border-b border-black text-left">
-            <th className="py-1 pr-2">Department · Team</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² installed</th><th className="py-1 px-2 text-right">Installation snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
+            <th className="py-1 pr-2">Department · Team</th><th className="py-1 px-2 text-right">Ordered</th><th className="py-1 px-2 text-right">Repairs</th><th className="py-1 px-2 text-right">Booked</th><th className="py-1 px-2 text-right">Completed</th><th className="py-1 px-2 text-right">Invoiced</th><th className="py-1 px-2 text-right">m² installed</th><th className="py-1 px-2 text-right">Installation snags</th><th className="py-1 pl-2 text-right">Snag cost</th>
           </tr></thead>
           <tbody>
             {[...data.teamRows, { dept: "", team: "TOTAL", ...data.tTotal, isTotal: true }].map((r) => (
               <tr key={`${r.dept}|${r.team}`} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
-                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${r.team}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${r.team}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
               </tr>
             ))}
           </tbody>
@@ -3785,7 +4138,7 @@ function PerformanceView({ projects, user }) {
 
         <div className="perf-block text-xs text-gray-700 border-t border-gray-400 pt-3">
           <div className="font-semibold text-black mb-1">How to read this report</div>
-          <div>Ordered: jobs created in the period. Booked: jobs whose first install day falls in the period. Completed: jobs marked installed in the period. Invoiced: jobs moved to History in the period. A single job can appear in several columns if it moved through several stages in the same period.</div>
+          <div>Ordered: jobs created in the period. Repairs: the repair jobs within Ordered (already included in that count). Booked: jobs whose first install day falls in the period. Completed: jobs marked installed in the period. Invoiced: jobs moved to History in the period. A single job can appear in several columns if it moved through several stages in the same period.</div>
           <div>m² sold (consultants) counts on the order date. m² installed (teams) counts on the completion date. Only Carpets and Vinyl record m² and ranges; other departments show job counts only.</div>
           <div>Consultant snags are snags whose cause is Consultant boo-boo; installation snags are those whose cause is Installation boo-boo. The cause allocated in Snag review is used where set, otherwise the category logged. Snags count on the date logged. Snag cost is the total of cost lines entered in Snag review. Test projects are excluded.</div>
         </div>
