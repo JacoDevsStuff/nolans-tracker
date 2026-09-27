@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy
 } from "lucide-react";
 
 /* =========================================================
@@ -48,9 +48,19 @@ const CALENDARS = [
 const calendarOf = (deptId) => deptOf(deptId).calendar;
 const calOf = (calId) => CALENDARS.find((c) => c.id === calId) || CALENDARS[0];
 
-// Team names are placeholders until phase 4; Calore uses the Shutters team
+// Teams are stored on jobs as "Team 1" / "Team 2" (so older jobs keep working); Calore uses the Shutters team
 const TEAMS = { blinds: ["Team 1", "Team 2"], shutters: ["Team 1"], calore: ["Team 1"], carpets: ["Team 1"], vinyl: ["Team 1", "Team 2"], wood: ["Team 1", "Team 2"] };
 const teamsOf = (dept) => TEAMS[dept] || ["Team 1"];
+// Phase 12A — real team names, shown everywhere a team appears. Vinyl Team 2 (Alton) is formed from Desmond's crew when needed.
+const TEAM_NAMES = {
+  blinds: { "Team 1": "Navin", "Team 2": "Henro" },
+  shutters: { "Team 1": "Joey" },
+  calore: { "Team 1": "Joey" },
+  carpets: { "Team 1": "Darren" },
+  vinyl: { "Team 1": "Desmond", "Team 2": "Alton" },
+  wood: { "Team 1": "Jacques", "Team 2": "Aiden" },
+};
+const teamLabel = (dept, team) => (team ? ((TEAM_NAMES[dept] || {})[team] || team) : "");
 
 // Phase 5 — product catalogue: Department -> Category -> Supplier -> Range
 const PRODUCT_CATALOG = {
@@ -181,7 +191,7 @@ const jobMeasureText = (p) => {
 };
 // One string holding everything searchable on a job, including every product line and item.
 const searchText = (p) => [
-  p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact,
+  p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact, teamLabel(p.department, p.team),
   ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty]),
   ...(p.lineItems || []).map((li) => li.description),
 ].filter(Boolean).join(" ").toLowerCase();
@@ -334,6 +344,12 @@ const snagMaterialPending = (p) => (p.snags || []).filter((s) => s.materialRequi
 const poDigits = (v) => (v || "").replace(/\D/g, "").slice(0, 6);
 const formatPo = (digits) => `PL ${digits}`;
 
+/* Phase 12A — overlocking (Carpets only). Stage: null = still to order, "ordered", "received" (flag cleared). */
+const hasOverlock = (p) => !!(p && p.department === "carpets" && p.overlock);
+const needsOverlock = (p) => hasOverlock(p) && p.overlockStage !== "received";
+const overlockSizesOf = (p) => (p.overlockSizes || []).map((x) => (x || "").trim()).filter(Boolean);
+const overlockStatusText = (p) => (p.overlockStage === "received" ? "received" : p.overlockStage === "ordered" ? "ordered, not yet received" : "to be ordered");
+
 /* Phase 9.1 — ETA follow-up
    Overdue  = ETA date has passed and the order is still not received
    Due soon = ETA is today or within the next ETA_WARN_DAYS days, still not received */
@@ -379,6 +395,8 @@ const NOTIF_META = {
   invoiced: { label: "Invoiced", cls: "bg-slate-400" },
   snag: { label: "Snag logged", cls: "bg-red-500" },
   snagResolved: { label: "Snag resolved", cls: "bg-emerald-400" },
+  overlockOrdered: { label: "Overlocking ordered", cls: "bg-amber-400" },
+  overlockReceived: { label: "Overlocking received", cls: "bg-emerald-400" },
 };
 const schedKey = (p) => scheduleOf(p).map((d) => d.date).sort().join(",");
 function diffEvents(prev, next) {
@@ -415,6 +433,9 @@ function diffEvents(prev, next) {
   if (wasOn && !isOn && next.status !== "installed") add("removed", prev.status === "booked" ? "Booking removed" : "Removed from calendar");
   if (next.status === "installed" && prev.status !== "installed") add("completed", "Installation completed");
   if (!prev.invoiced && next.invoiced) add("invoiced", "Invoiced and moved to History");
+  // Phase 12A — overlocking
+  if (hasOverlock(next) && prev.overlockStage !== "ordered" && next.overlockStage === "ordered") add("overlockOrdered", `Overlocking ordered${overlockSizesOf(next).length ? `: ${overlockSizesOf(next).join(", ")}` : ""}`);
+  if (hasOverlock(next) && prev.overlockStage !== "received" && next.overlockStage === "received") add("overlockReceived", "Overlocking received");
   const prevSnags = Object.fromEntries((prev.snags || []).map((x) => [x.id, x]));
   (next.snags || []).forEach((sn) => {
     const old = prevSnags[sn.id];
@@ -431,6 +452,7 @@ const LOG_RULES = [
   [/^Reserved for/, "reserved"], [/^Reservation removed/, "removed"], [/^Booking confirmed/, "booked"],
   [/^Day \d+(\/\d+)? (moved|added|removed)/, "moved"], [/^Booking removed|^Removed from calendar/, "removed"],
   [/^Installation completed/, "completed"], [/^Invoiced/, "invoiced"], [/^Snag logged/, "snag"], [/^Snag resolved/, "snagResolved"],
+  [/^Overlocking ordered/, "overlockOrdered"], [/^Overlocking received/, "overlockReceived"],
 ];
 function backlogNotifs(projects, since, until) {
   const out = [];
@@ -590,6 +612,15 @@ const RBadge = () => (
 const PartialBadge = () => (
   <span title="Received, but not in full" className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-400 text-black text-[11px] font-bold leading-none">!</span>
 );
+// Phase 12A — amber overlocking badge: solid = still to order, light = ordered and waiting to come back
+const OverlockBadge = ({ p, small }) => {
+  if (!needsOverlock(p)) return null;
+  const ordered = p.overlockStage === "ordered";
+  return (
+    <span title={ordered ? "Overlocking ordered, not yet received" : "Overlocking required, not yet ordered"}
+      className={`inline-flex items-center justify-center rounded-full font-bold leading-none shrink-0 ${small ? "h-4 px-1 text-[9px]" : "h-5 px-1.5 text-[10px]"} ${ordered ? "bg-amber-100 text-amber-800 border border-amber-500" : "bg-amber-400 text-black"}`}>OL</span>
+  );
+};
 const SnagFlag = ({ small }) => (
   <span title="Open snag" className={`inline-flex items-center justify-center rounded-full bg-red-600 text-white ${small ? "w-4 h-4" : "w-5 h-5"}`}><Flag size={small ? 9 : 11} strokeWidth={3} /></span>
 );
@@ -1176,7 +1207,7 @@ export default function App() {
           ) : view === "updates" ? (
             <ChangelogView />
           ) : view === "performance" ? (
-            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <PerformanceBeta />
+            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest)} user={user} /></>
           ) : view === "reports" ? (
             <ReportsView projects={active} />
           ) : view === "availability" ? (
@@ -1251,7 +1282,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
             <d.icon size={16} className="text-slate-500 shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-white truncate">{p.clientName} <span className="text-slate-500 font-normal">· PO {p.po}</span></div>
-              <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
+              <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
               {(p.productType || jobMeasureText(p)) && <div className="text-[11px] text-slate-500 truncate">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1} more` : ""}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -1605,6 +1636,14 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "12A", date: "2026-09-27", items: [
+    "Overlocking (Carpets): tick \"Overlocking required\" on a job and add the sizes. An amber OL badge shows on the job until the overlocking is ordered and received.",
+    "The job's consultant or co-ordinator presses Place order, then Mark overlocking received. Both send a notification.",
+    "Overlocking shows on the daily and weekly PDF schedule.",
+    "Leaderboard added to the Performance Report: top m² sold, jobs invoiced, team m² installed, fewest snags per m², and top ranges by m² and by number of jobs.",
+    "Consultants can see their own standing on the Performance Report page.",
+    "Install teams now show real names: Navin, Henro, Joey, Darren, Desmond, Alton, Jacques and Aiden.",
+  ] },
   { phase: "11.2", date: "2026-09-27", items: [
     "Material ETA now opens a calendar: tap a date, use the arrows to move between months.",
     "Franco can see everyone's feedback notes.",
@@ -1816,7 +1855,7 @@ function ListView({ title, status, items, onOpen, level }) {
                    <>Done {fmtShort((p.installedAt || "").slice(0, 10))}</>}
                 </div>
                 <div className="col-span-12 md:col-span-2 flex items-center justify-start md:justify-end gap-2 text-xs text-slate-400 flex-wrap">
-                  <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                  <span className="truncate">PO {p.po} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</span>
                   {hasOpenSnags(p) && <SnagFlag />}
                   <EtaBadge p={p} />
                   {isReserved(p) && <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span>}
@@ -1987,11 +2026,12 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
   const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
   const [f, setF] = useState(() => {
     const defaultDept = (allowedDepts && allowedDepts.length) ? allowedDepts[0] : "blinds";
-    const base = initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0] } : {
+    const base = initial ? { ...initial, lineItems: initial.lineItems || [], team: initial.team || teamsOf(initial.department)[0], overlock: !!initial.overlock, overlockSizes: (initial.overlockSizes && initial.overlockSizes.length) ? initial.overlockSizes : [""] } : {
       clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: defaultDept, team: teamsOf(defaultDept)[0],
       productType: "", productCategory: "", supplier: "", productRange: "",
       productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
       isRepair: false, repairNeedsMaterial: true,
+      overlock: false, overlockSizes: [""],
     };
     // Seed the product-line list for catalogued departments (carries old single-product jobs across)
     if (hasCatalog(base.department)) {
@@ -2088,7 +2128,17 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     } else {
       base.productLines = [];
     }
-    const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}`;
+    // Phase 12A — overlocking only applies to Carpets; sizes are free text, blanks dropped
+    const olOn = f.department === "carpets" && !!f.overlock;
+    const olWas = !!(initial && hasOverlock(initial));
+    base.overlock = olOn;
+    base.overlockSizes = olOn ? (f.overlockSizes || []).map((x) => (x || "").trim()).filter(Boolean) : [];
+    if (!olOn) { base.overlockStage = null; base.overlockOrderedAt = null; base.overlockOrderedBy = null; base.overlockReceivedAt = null; base.overlockReceivedBy = null; }
+    else if (!olWas) { base.overlockStage = null; }
+    const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}${olOn ? " · overlocking required" : ""}`;
+    if (initial && olOn !== olWas) {
+      base.log = [...(initial.log || []), { id: uid(), text: olOn ? "Overlocking required" : "Overlocking no longer required", author: user.name, createdAt: now }];
+    }
     const p = initial
       ? base
       : { ...base, id: uid(), createdAt: now, createdBy: user.name, installed: false,
@@ -2157,7 +2207,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
         </Field>
         <Field label="Install team">
           <select className={inputCls} value={f.team} onChange={(e) => set("team", e.target.value)} disabled={!isCoord}>
-            {teamsOf(f.department).map((t) => <option key={t}>{t}</option>)}
+            {teamsOf(f.department).map((t) => <option key={t} value={t}>{teamLabel(f.department, t)}</option>)}
           </select>
         </Field>
         {noMaterial ? (
@@ -2246,6 +2296,32 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
           </div>
           <button onClick={addLine} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add item</button>
         </div>
+
+        {/* Phase 12A — overlocking (Carpets only) */}
+        {f.department === "carpets" && (
+          <div className={`md:col-span-2 border rounded-xl p-4 ${f.overlock ? "border-amber-500/50 bg-amber-500/5" : "border-[#30363d]"}`}>
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <input type="checkbox" className="w-4 h-4" checked={!!f.overlock} onChange={(e) => set("overlock", e.target.checked)} />
+              <span className="text-sm text-slate-100 font-medium">Overlocking required</span>
+              <span className="text-xs text-slate-500 ml-auto text-right">Adds 2 to 3 weeks to lead time — order it early</span>
+            </label>
+            {f.overlock && (
+              <div className="mt-3 space-y-2">
+                <div className="text-xs text-slate-400">Sizes to overlock</div>
+                {(f.overlockSizes || [""]).map((sz, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input className={`${inputCls} flex-1`} value={sz} placeholder={i === 0 ? "e.g. 2.4 x 1.8 m lounge rug" : "Another size"}
+                      onChange={(e) => set("overlockSizes", (f.overlockSizes || [""]).map((x, j) => (j === i ? e.target.value : x)))} />
+                    {(f.overlockSizes || []).length > 1 && (
+                      <button onClick={() => set("overlockSizes", f.overlockSizes.filter((_, j) => j !== i))} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0" title="Remove this size"><X size={14} /></button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={() => set("overlockSizes", [...(f.overlockSizes || []), ""])} className={`${btnGhost} flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add more sizes</button>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="md:col-span-2">
           <Field label="Job cards (JPEG)">
@@ -2366,6 +2442,11 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   );
   const partialNote = (on, note) => (on && note ? <div className="text-xs text-yellow-200/80 pb-1.5 -mt-0.5">Partial: {note}</div> : null);
 
+  // Phase 12A — overlocking: the job's own consultant or a co-ordinator for this department
+  const canOverlock = canEdit || isDev || p.consultant === user.name;
+  const overlockOrdered = () => save({ ...p, overlockStage: "ordered", overlockOrderedAt: now(), overlockOrderedBy: user.name, log: log(`Overlocking ordered${overlockSizesOf(p).length ? `: ${overlockSizesOf(p).join(", ")}` : ""}`) }, "Overlocking marked as ordered");
+  const overlockReceived = () => save({ ...p, overlockStage: "received", overlockReceivedAt: now(), overlockReceivedBy: user.name, log: log("Overlocking received") }, "Overlocking received");
+
   // Snags
   const logSnag = (snag) => {
     const wasDone = p.status === "installed";
@@ -2398,9 +2479,10 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         {p.invoiced && <span className="text-xs px-2 py-0.5 rounded-full border border-slate-500/30 text-slate-400">Invoiced</span>}
         <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
         <span className="text-xs text-slate-400">· {p.consultant}</span>
-        {p.team && <span className="text-xs text-slate-400">· {p.team}</span>}
+        {p.team && <span className="text-xs text-slate-400">· {teamLabel(p.department, p.team)}</span>}
         {p.received && p.status === "received" && <RBadge />}
         {partiallyReceived(p) && <span className="flex items-center gap-1 text-xs text-yellow-300"><PartialBadge /> not received in full</span>}
+        {needsOverlock(p) && <span className="flex items-center gap-1 text-xs text-amber-300"><OverlockBadge p={p} /> overlocking {overlockStatusText(p)}</span>}
         {isReserved(p) && (
           <span className={`text-xs px-2 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>
             {p.reserveStage === "reserved" ? "Reserved" : "Planned"} · {fmt(p.installDate)}{p.received ? "" : " · no stock yet"}
@@ -2457,6 +2539,32 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
           <span className="text-sm text-slate-100 font-medium">SOW Submitted</span>
           <span className="text-xs text-slate-400 ml-auto text-right">{p.sowSubmitted ? `${p.sowBy || ""}${p.sowAt ? ` · ${fmtShort(p.sowAt.slice(0, 10))}` : ""}` : "Schedule of works not yet submitted"}</span>
         </label>
+      )}
+
+      {/* Phase 12A — overlocking */}
+      {hasOverlock(p) && (
+        <div className={`mt-4 border rounded-xl p-3 ${needsOverlock(p) ? "border-amber-500/50 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5"}`}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <OverlockBadge p={p} />
+            <span className="text-sm text-slate-100 font-medium">Overlocking</span>
+            <span className={`text-xs ${needsOverlock(p) ? "text-amber-300" : "text-emerald-300"}`}>· {overlockStatusText(p)}</span>
+            <span className="ml-auto flex gap-2">
+              {canOverlock && !p.overlockStage && <button onClick={overlockOrdered} className="text-xs px-2.5 py-1 rounded-lg border border-amber-500/60 text-amber-200 hover:bg-amber-500/15">Place order</button>}
+              {canOverlock && p.overlockStage === "ordered" && <button onClick={overlockReceived} className="text-xs px-2.5 py-1 rounded-lg border border-emerald-500/50 text-emerald-200 hover:bg-emerald-500/15">Mark overlocking received</button>}
+            </span>
+          </div>
+          {overlockSizesOf(p).length > 0 && (
+            <ul className="text-sm text-slate-300 mt-2 space-y-0.5">
+              {overlockSizesOf(p).map((sz, i) => <li key={i}>• {sz}</li>)}
+            </ul>
+          )}
+          {(p.overlockOrderedBy || p.overlockReceivedBy) && (
+            <div className="text-xs text-slate-500 mt-2">
+              {p.overlockOrderedBy && <span>Ordered by {p.overlockOrderedBy}{p.overlockOrderedAt ? ` on ${fmtShort(p.overlockOrderedAt.slice(0, 10))}` : ""}</span>}
+              {p.overlockReceivedBy && <span> · Received by {p.overlockReceivedBy}{p.overlockReceivedAt ? ` on ${fmtShort(p.overlockReceivedAt.slice(0, 10))}` : ""}</span>}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Line items */}
@@ -2772,7 +2880,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={expandable ? onToggle : onClick}
       className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${ringCls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
-      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${p.team}` : ""}${isRepair(p) ? " · Repair" : ""}${variant === "return" ? " · Snag return visit" : ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}${isRepair(p) ? " · Repair" : ""}${variant === "return" ? " · Snag return visit" : ""}`}
     >
       {compact ? (
         <div className="flex items-center gap-1.5">
@@ -2780,6 +2888,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           {isRepair(p) && variant !== "return" && <RepairIcon small />}
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
+          {variant !== "return" && <OverlockBadge p={p} small />}
           <EtaBadge p={p} small />
           {showBars && <StageBars p={p} />}
         </div>
@@ -2790,12 +2899,13 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
             {isRepair(p) && variant !== "return" && <RepairIcon small />}
             {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
             {(flagged || variant === "return") && <SnagFlag small />}
+            {variant !== "return" && <OverlockBadge p={p} small />}
             {variant !== "return" && <EtaBadge p={p} small />}
             {showPartial(p) && <PartialBadge />}
             {p.status === "received" && variant !== "return" && <RBadge />}
           </div>
           <div className="flex items-center justify-between gap-2 opacity-80 mt-0.5">
-            <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+            <span className="truncate">{variant === "return" ? "Snag return" : p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</span>
             {inTray && isReserved(p) && p.installDate ? <span className="text-[10px] font-semibold">{p.reserveStage === "reserved" ? "Reserved" : "Planned"} {fmtShort(p.installDate)}</span> : null}
             {!inTray && time && <span>{time}{endTime ? `–${endTime}` : ""}</span>}
             {!inTray && !time && p.materialEta && p.status === "ordered" && !isReserved(p) && <span>ETA {fmtShort(p.materialEta)}</span>}
@@ -3062,7 +3172,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
         <button onClick={() => choose(item)} className={`w-full text-left rounded-xl border px-3 py-2.5 flex items-center gap-3 ${awaiting ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15" : kind === "return" ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/15" : "border-[#30363d] bg-[#0d1117] hover:bg-[#12181f]"}`}>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}{kind !== "return" && isRepair(p) && <RepairIcon small />}</div>
-            <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
+            <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</div>
             {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
           </div>
           <div className="shrink-0 text-right">
@@ -3301,7 +3411,7 @@ function BookingModal({ booking, onClose, onConfirm }) {
   return (
     <Modal title={title} onClose={onClose}>
       <div className="text-sm text-slate-300 mb-4">
-        <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}{p.team ? ` · ${p.team}` : ""}
+        <span className="font-semibold text-white">{p.clientName}</span> · PO {p.po}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}
         {isBook && <div className="text-xs text-slate-400 mt-1">This plans the job on the date. It stays in its tray until you reserve or confirm it from the job screen.{!p.received ? " Material has not been received yet, so it will show with a red outline." : ""}</div>}
         {isMoveDay && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}. Only this day moves; the other days stay where they are.</div>}
         {isMoveReturn && <div className="text-xs text-slate-400 mt-1">Currently {fmt(current?.date)}{current?.time ? ` at ${current.time}` : ""}.</div>}
@@ -3379,7 +3489,7 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
                   <td className="py-1.5 pr-3"><div className="font-semibold">{p.clientName}</div><div className="text-xs text-gray-600">{p.address}</div></td>
                   <td className="py-1.5 pr-3">{p.po}</td>
                   <td className="py-1.5 pr-3">{deptOf(p.department).label}<div className="text-xs text-gray-600">{p.productType}</div></td>
-                  <td className="py-1.5 pr-3">{p.team || "—"}</td>
+                  <td className="py-1.5 pr-3">{teamLabel(p.department, p.team) || "—"}</td>
                   <td className="py-1.5 pr-3">{p.consultant}</td>
                   <td className="py-1.5 pr-3">{fmtShort(p.installDate)}{p.installEndDate && p.installEndDate !== p.installDate ? ` – ${fmtShort(p.installEndDate)}` : ""}</td>
                 </tr>
@@ -3420,7 +3530,7 @@ function CompletedView({ items, isCoord, canEdit, isDev, user, save, onOpen, set
                     <div className="font-medium text-white truncate">{p.clientName}</div>
                     <div className="text-xs text-slate-400 truncate">{p.address}</div>
                   </div>
-                  <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}{p.team ? ` · ${p.team}` : ""}</div>
+                  <div className="col-span-6 md:col-span-3 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</div>
                   <div className="col-span-12 md:col-span-4 text-xs text-slate-400 text-left md:text-right flex items-center justify-start md:justify-end gap-2 flex-wrap">
                     {hasOpenSnags(p) && <span className="flex items-center gap-1 text-red-300"><SnagFlag small /> {openSnags(p).length} open</span>}
                     <span>PO {p.po} · {p.consultant} · done {fmtShort((p.installedAt || "").slice(0, 10))}</span>
@@ -3664,12 +3774,17 @@ function ReportsView({ projects }) {
                     {totalArea(p) > 0 && productLinesOf(p).length > 1 && <div className="font-semibold">Total: {totalArea(p)} m²</div>}
                   </div>
                 )}
+                {day.dayIndex === 1 && !isReturn && hasOverlock(p) && (
+                  <div className={`text-sm mt-1 ${needsOverlock(p) ? "font-semibold text-amber-800" : "text-gray-800"}`}>
+                    Overlocking ({overlockStatusText(p)}){overlockSizesOf(p).length ? `: ${overlockSizesOf(p).join(", ")}` : ""}
+                  </div>
+                )}
               </div>
               <div className="text-right text-sm">
                 <div className="font-semibold">{fmt(day.date)}</div>
                 <div className="text-gray-800">{day.time ? `${day.time}${day.endTime ? ` – ${day.endTime}` : ""}` : "Continuation"}</div>
                 <div className="text-gray-800">PO {p.po}</div>
-                <div className="text-gray-600">{productLinesOf(p).length === 0 && p.productType ? `${p.productType} · ` : ""}{p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
+                <div className="text-gray-600">{productLinesOf(p).length === 0 && p.productType ? `${p.productType} · ` : ""}{p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</div>
               </div>
             </div>
           </div>
@@ -3711,7 +3826,7 @@ function SnagsView({ items, onOpen }) {
                 <div className="flex items-center gap-3 flex-wrap">
                   <SnagFlag />
                   <span className="font-medium text-white">{p.clientName}</span>
-                  <span className="text-xs text-slate-400">PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                  <span className="text-xs text-slate-400">PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</span>
                   <span className="ml-auto flex items-center gap-2">
                     {p.snagReturn && <span className="text-[11px] text-red-300">Return visit to book</span>}
                     {(p.returnVisits || []).length > 0 && !p.snagReturn && <span className="text-[11px] text-slate-400">Return {fmtShort([...p.returnVisits].sort((a, b) => b.date.localeCompare(a.date))[0].date)}</span>}
@@ -3864,7 +3979,7 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
                     {s.photo && <img src={s.photo} alt="Snag" className="w-14 h-14 object-cover rounded-lg border border-[#30363d] shrink-0" />}
                     <div className="flex-1 min-w-0">
                       <button onClick={() => onOpen(p)} className="font-medium text-white hover:underline">{p.clientName}</button>
-                      <span className="text-xs text-slate-400"> · PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.productType} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</span>
+                      <span className="text-xs text-slate-400"> · PO {p.po} · <d.icon size={12} className="inline" /> {d.label} · {p.productType} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</span>
                       <div className="text-sm text-slate-300 mt-1"><span className="text-[11px] px-1.5 py-0.5 rounded border border-slate-500/40 text-slate-400 mr-2">Logged as {s.category}</span>{s.description}</div>
                       <div className="text-xs text-emerald-200/80 mt-1">Resolved by {s.resolvedBy} on {fmtShort((s.resolvedAt || "").slice(0, 10))}: {s.resolveReason}</div>
                     </div>
@@ -3961,6 +4076,7 @@ const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, inv
 function computePerformance(projects, { from, to }, deptFilter) {
   const scope = projects.filter((p) => deptFilter === "all" || p.department === deptFilter);
   const consultants = {}, teams = {};
+  const allRanges = {}; // Phase 12A — every range sold in the period: m² and number of jobs it appeared on
   const cStat = (name) => (consultants[name] = consultants[name] || blankStats());
   const tStat = (dept, team) => { const k = `${dept}|${team}`; return (teams[k] = teams[k] || { dept, team, ...blankStats() }); };
   // Seed known people/teams so zero rows still show
@@ -3979,11 +4095,14 @@ function computePerformance(projects, { from, to }, deptFilter) {
       if (isRepair(p)) { c.repairs++; t.repairs++; } // Phase 11 — repairs are part of Ordered, also shown on their own
       c.m2 += area;
       if (area) c.m2ByDept[p.department] = (c.m2ByDept[p.department] || 0) + area;
+      const seenRanges = new Set();
       productLinesOf(p).forEach((l) => {
         const a = Number(l.area) || 0;
         const k = rangeLabel(l);
         const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0, panels: 0 });
         r.m2 += a; r.lines++; r.panels += Number(l.panels) || 0;
+        const g = (allRanges[k] = allRanges[k] || { m2: 0, jobs: 0 });
+        g.m2 += a; if (!seenRanges.has(k)) { seenRanges.add(k); g.jobs++; }
       });
     }
     // Booked = first install day falls in the period (still booked or already done)
@@ -4007,7 +4126,140 @@ function computePerformance(projects, { from, to }, deptFilter) {
   const teamRows = Object.values(teams)
     .sort((a, b) => deptOrder.indexOf(a.dept) - deptOrder.indexOf(b.dept) || a.team.localeCompare(b.team));
   const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, repairs: acc.repairs + r.repairs, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost }), blankStats());
-  return { consultantRows, teamRows, cTotal: sum(consultantRows), tTotal: sum(teamRows) };
+  return { consultantRows, teamRows, cTotal: sum(consultantRows), tTotal: sum(teamRows), allRanges };
+}
+
+/* =========================================================
+   PHASE 12A — LEADERBOARD
+   Six boards built from the same numbers as the rest of the report (same period and department filter).
+   Ties keep list order (no shared ranks). Anyone with nothing to count sits at the bottom.
+   ========================================================= */
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const RANGE_BOARD_LIMIT = 10;
+function computeLeaderboard(data) {
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const rank = (rows) => rows.map((r, i) => ({ ...r, rank: i + 1, gold: i === 0 && r.active }));
+
+  const consultantM2 = rank(data.consultantRows.map((r) => ({ key: r.name, name: r.name, score: r.m2, display: m2(r.m2), active: r.m2 > 0 }))
+    .sort((a, b) => b.score - a.score || byName(a, b)));
+
+  const invoiced = rank(data.consultantRows.map((r) => ({ key: r.name, name: r.name, score: r.invoiced, display: plural(r.invoiced, "job"), active: r.invoiced > 0 }))
+    .sort((a, b) => b.score - a.score || byName(a, b)));
+
+  // Teams: Shutters and Calore are one team (Joey), so they're merged by calendar
+  const teamMap = {};
+  data.teamRows.forEach((r) => {
+    const cal = calendarOf(r.dept);
+    const k = `${cal}|${r.team}`;
+    const t = (teamMap[k] = teamMap[k] || { key: k, name: teamLabel(r.dept, r.team), sub: calOf(cal).label, score: 0 });
+    t.score += r.m2;
+  });
+  const teamM2 = rank(Object.values(teamMap).map((t) => ({ ...t, display: m2(t.score), active: t.score > 0 }))
+    .sort((a, b) => b.score - a.score || byName(a, b)));
+
+  // Fewest consultant snags per m² sold. Nobody with m² sold can be scored, so they go to the bottom.
+  const snagRate = rank(data.consultantRows.map((r) => {
+    const active = r.m2 > 0;
+    const rate = active ? r.snags / r.m2 : Infinity;
+    return { key: r.name, name: r.name, score: rate, m2: r.m2, active,
+      display: active ? `${plural(r.snags, "snag")} · ${(Math.round(rate * 10000) / 100).toLocaleString("en-ZA")} per 100 m²` : "No m² sold" };
+  }).sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1) || a.score - b.score || b.m2 - a.m2 || byName(a, b)));
+
+  const ranges = Object.entries(data.allRanges || {}).filter(([k]) => k !== "Range not specified");
+  const rangeM2 = rank(ranges.filter(([, v]) => v.m2 > 0).map(([k, v]) => ({ key: k, name: k, score: v.m2, jobs: v.jobs, display: m2(v.m2), active: true }))
+    .sort((a, b) => b.score - a.score || b.jobs - a.jobs || byName(a, b)));
+  const rangeJobs = rank(ranges.map(([k, v]) => ({ key: k, name: k, score: v.jobs, m2: v.m2, display: plural(v.jobs, "job"), active: v.jobs > 0 }))
+    .sort((a, b) => b.score - a.score || b.m2 - a.m2 || byName(a, b)));
+
+  return [
+    { id: "consultantM2", title: "Top consultant · m² sold", kind: "consultant", rows: consultantM2 },
+    { id: "invoiced", title: "Top consultant · jobs invoiced", kind: "consultant", rows: invoiced },
+    { id: "teamM2", title: "Top install team · m² installed", kind: "team", rows: teamM2 },
+    { id: "snagRate", title: "Fewest snags per m² sold", kind: "consultant", rows: snagRate },
+    { id: "rangeM2", title: "Top range · m²", kind: "range", rows: rangeM2, limit: RANGE_BOARD_LIMIT },
+    { id: "rangeJobs", title: "Top range · number of jobs", kind: "range", rows: rangeJobs, limit: RANGE_BOARD_LIMIT },
+  ];
+}
+
+const RankMark = ({ row }) => (
+  row.gold
+    ? <span title="First place" className="w-6 h-6 rounded-full bg-gradient-to-b from-yellow-300 to-amber-500 text-black flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(251,191,36,0.45)]"><Crown size={13} strokeWidth={2.5} /></span>
+    : <span className="w-6 h-6 rounded-full bg-[#0d1117] border border-[#30363d] text-slate-400 text-[11px] font-semibold flex items-center justify-center shrink-0 tabular-nums">{row.rank}</span>
+);
+
+function LeaderboardBoard({ board }) {
+  const shown = board.limit ? board.rows.slice(0, board.limit) : board.rows;
+  return (
+    <div className="bg-[#0d1117] border border-[#30363d] rounded-xl p-4">
+      <div className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-3">{board.title}</div>
+      {shown.length === 0 ? (
+        <div className="text-xs text-slate-500">Nothing to rank in this period.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {shown.map((r) => (
+            <div key={r.key} className={`flex items-center gap-2.5 rounded-lg px-2 py-1.5 ${r.gold ? "bg-amber-400/10 border border-amber-400/40" : ""} ${r.active ? "" : "opacity-50"}`}>
+              <RankMark row={r} />
+              <span className="flex-1 min-w-0 truncate text-sm">
+                <span className={r.gold ? "text-amber-200 font-semibold" : "text-slate-100"}>{r.name}</span>
+                {r.sub && <span className="text-slate-500 text-xs"> · {r.sub}</span>}
+              </span>
+              <span className={`text-xs tabular-nums shrink-0 ${r.gold ? "text-amber-200" : "text-slate-400"}`}>{r.display}</span>
+            </div>
+          ))}
+          {board.limit && board.rows.length > board.limit && <div className="text-[11px] text-slate-500 pt-1">Top {board.limit} of {board.rows.length}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Full board — Franco and Developer (inside the Performance Report)
+function LeaderboardPanel({ boards }) {
+  return (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-5 mt-4">
+      <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-1"><Trophy size={18} className="text-amber-300" /> Leaderboard</h2>
+      <div className="text-xs text-slate-500 mb-4">Same period and department as the report above. Everyone else only sees their own position.</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {boards.map((b) => <LeaderboardBoard key={b.id} board={b} />)}
+      </div>
+    </div>
+  );
+}
+
+// Own position only — shown to everyone who can't open the full report
+function MyStanding({ projects, user }) {
+  const now = new Date();
+  const [mode, setMode] = useState("month");
+  const period = periodOf({ mode, month: `${now.getFullYear()}-${pad(now.getMonth() + 1)}`, quarter: quarterOptions()[0] });
+  const boards = useMemo(() => computeLeaderboard(computePerformance(projects, period, "all")), [projects, period.from, period.to]);
+  const mine = boards.filter((b) => b.kind === "consultant")
+    .map((b) => ({ board: b, row: b.rows.find((r) => r.name === user.name), total: b.rows.length }))
+    .filter((x) => x.row);
+  if (!mine.length) return null;
+  return (
+    <div className="max-w-2xl mx-auto mt-4 bg-[#161b22] border border-[#30363d] rounded-2xl p-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <h2 className="text-base font-semibold text-white flex items-center gap-2"><Trophy size={17} className="text-amber-300" /> Your standing</h2>
+        <div className="flex gap-1 bg-[#0d1117] border border-[#30363d] rounded-xl p-1">
+          {[["month", "This month"], ["quarter", "This quarter"], ["all", "All time"]].map(([id, label]) => (
+            <button key={id} onClick={() => setMode(id)} className={`px-3 py-1 rounded-lg text-xs ${mode === id ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>{label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-2">
+        {mine.map(({ board, row, total }) => (
+          <div key={board.id} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 border ${row.gold ? "bg-amber-400/10 border-amber-400/40" : "bg-[#0d1117] border-[#30363d]"}`}>
+            <RankMark row={row} />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-slate-100">{board.title}</div>
+              <div className="text-xs text-slate-500">{row.active ? `Position ${row.rank} of ${total}` : "Not ranked yet this period"}</div>
+            </div>
+            <span className={`text-xs tabular-nums ${row.gold ? "text-amber-200" : "text-slate-400"}`}>{row.display}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 const sortedRanges = (ranges) => Object.entries(ranges).sort((a, b) => b[1].m2 - a[1].m2 || b[1].lines - a[1].lines);
 
@@ -4037,6 +4289,7 @@ function PerformanceView({ projects, user }) {
 
   const period = periodOf({ mode, month, quarter, from, to });
   const data = useMemo(() => computePerformance(projects, period, dept), [projects, period.from, period.to, dept]);
+  const boards = useMemo(() => computeLeaderboard(data), [data]);
   const deptLabel = dept === "all" ? "All departments" : deptOf(dept).label;
   const generated = new Date().toLocaleString("en-ZA", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -4173,7 +4426,7 @@ function PerformanceView({ projects, user }) {
               <tbody>
                 {data.teamRows.map((r) => {
                   const d = deptOf(r.dept);
-                  return <tr key={`${r.dept}|${r.team}`} className="border-b border-[#21262d]"><td className={td}><span className="inline-flex items-center gap-2"><d.icon size={14} className="text-slate-500" /><span className="text-white font-medium">{d.label}</span><span className="text-slate-400">· {r.team}</span></span></td>{pipelineCells(r)}</tr>;
+                  return <tr key={`${r.dept}|${r.team}`} className="border-b border-[#21262d]"><td className={td}><span className="inline-flex items-center gap-2"><d.icon size={14} className="text-slate-500" /><span className="text-white font-medium">{d.label}</span><span className="text-slate-400">· {teamLabel(r.dept, r.team)}</span></span></td>{pipelineCells(r)}</tr>;
                 })}
                 <tr className="bg-[#0d1117]"><td className={`${td} font-semibold text-white`}>Total</td>{pipelineCells(data.tTotal, true)}</tr>
               </tbody>
@@ -4181,6 +4434,7 @@ function PerformanceView({ projects, user }) {
           </div>
         )}
         <p className="text-[11px] text-slate-500 mt-3">Consultant snags count Consultant boo-boos only; team snags count Installation boo-boos only. The reviewed cause is used where one has been allocated. Test projects are excluded.</p>
+        <LeaderboardPanel boards={boards} />
       </div>
 
       {/* ---------- Printable report (PDF) ---------- */}
@@ -4230,17 +4484,42 @@ function PerformanceView({ projects, user }) {
           <tbody>
             {[...data.teamRows, { dept: "", team: "TOTAL", ...data.tTotal, isTotal: true }].map((r) => (
               <tr key={`${r.dept}|${r.team}`} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
-                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${r.team}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${teamLabel(r.dept, r.team)}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+
+        <h3 className="text-lg font-bold mb-2 mt-6">4. Leaderboard</h3>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 mb-5">
+          {boards.map((b) => {
+            const shown = b.limit ? b.rows.slice(0, b.limit) : b.rows;
+            return (
+              <div key={b.id} className="perf-block">
+                <div className="font-semibold text-sm border-b border-black mb-1">{b.title}</div>
+                {shown.length === 0 ? <div className="text-xs text-gray-600">Nothing to rank in this period.</div> : (
+                  <table className="w-full text-xs border-collapse"><tbody>
+                    {shown.map((r) => (
+                      <tr key={r.key} className={`border-b border-gray-200 ${r.gold ? "font-bold" : ""} ${r.active ? "" : "text-gray-500"}`}>
+                        <td className="py-0.5 pr-2 w-6">{r.gold ? "★" : r.rank}</td>
+                        <td className="py-0.5 pr-2">{r.name}{r.sub ? ` · ${r.sub}` : ""}</td>
+                        <td className="py-0.5 text-right">{r.display}</td>
+                      </tr>
+                    ))}
+                  </tbody></table>
+                )}
+                {b.limit && b.rows.length > b.limit && <div className="text-[10px] text-gray-500 mt-0.5">Top {b.limit} of {b.rows.length}</div>}
+              </div>
+            );
+          })}
+        </div>
 
         <div className="perf-block text-xs text-gray-700 border-t border-gray-400 pt-3">
           <div className="font-semibold text-black mb-1">How to read this report</div>
           <div>Ordered: jobs created in the period. Repairs: the repair jobs within Ordered (already included in that count). Booked: jobs whose first install day falls in the period. Completed: jobs marked installed in the period. Invoiced: jobs moved to History in the period. A single job can appear in several columns if it moved through several stages in the same period.</div>
           <div>m² sold (consultants) counts on the order date. m² installed (teams) counts on the completion date. Only Carpets and Vinyl record m² and ranges; other departments show job counts only.</div>
           <div>Consultant snags are snags whose cause is Consultant boo-boo; installation snags are those whose cause is Installation boo-boo. The cause allocated in Snag review is used where set, otherwise the category logged. Snags count on the date logged. Snag cost is the total of cost lines entered in Snag review. Test projects are excluded.</div>
+          <div>Leaderboard: m² sold and ranges count on the order date, jobs invoiced on the invoice date, team m² on the completion date (Shutters and Calore count as one team). Fewest snags per m² divides a consultant's consultant boo-boos by their m² sold, shown per 100 m²; consultants with no m² sold go to the bottom. Ties keep list order. The star marks first place.</div>
         </div>
       </div>
 
