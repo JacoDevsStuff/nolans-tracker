@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck
 } from "lucide-react";
 
 /* =========================================================
@@ -18,7 +18,7 @@ const USERS = {
   "0002": { name: "James", level: 1 },
   "0003": { name: "Trent", level: 1 },
   "0004": { name: "Theo", level: 1 },
-  "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true }, // app partner — full access, all departments, sees everyone's feedback notes
+  "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true, canSeeReviews: true }, // app partner — full access, all departments, sees everyone's feedback notes
   "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments (Performance Report locked: Beta card)
   "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
   "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
@@ -487,10 +487,11 @@ const SETTINGS_ID = "__app_settings__"; // reserved row in projects_v2 for app-w
 async function dbLoad() {
   // Personal notes live in the same table under ids starting "note:" — they are never loaded as projects
   // Notifications live there too under "notif:" — also never loaded as projects
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*&id=not.like.${encodeURIComponent(NOTIF_PREFIX)}*`, { headers });
+  // Phase 12C — installation reviews live there too under "review:" — never loaded as projects
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*&id=not.like.${encodeURIComponent(NOTIF_PREFIX)}*&id=not.like.${encodeURIComponent(REVIEW_PREFIX)}*`, { headers });
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
-  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX) && !String(row.id).startsWith(REVIEW_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
 }
 
 /* Phase 10.2 — notifications. One row per event (id "notif:<id>") so people acting at the same time
@@ -543,6 +544,29 @@ async function dbSaveNote(note) {
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`Note save failed (${r.status})`);
+}
+/* Phase 12C — installation reviews. CONFIDENTIAL: Franco and the Developer only.
+   Each review is its own row (id "review:<uuid>"), never stored on the job, so it never reaches search,
+   stickers, notifications, the activity log or any PDF. Only users allowed to see reviews ever load them;
+   everyone else can only write one. */
+const REVIEW_PREFIX = "review:";
+const canSeeReviews = (user) => (user?.level ?? 0) >= 3 || !!user?.canSeeReviews;
+const REVIEW_CONCERNS = ["Punctuality", "Quality of work", "Client communication", "Site cleanliness", "Preparedness", "Damage / care of property", "Adherence to booking time"];
+async function dbLoadReviews(user) {
+  if (!canSeeReviews(user)) return [];
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(REVIEW_PREFIX)}*`, { headers });
+  if (!r.ok) throw new Error(`Reviews load failed (${r.status})`);
+  const rows = await r.json();
+  return rows.map((row) => ({ ...row.data, id: row.id })).filter((v) => !v.deleted);
+}
+async function dbSaveReview(review) {
+  const body = [{ id: review.id, data: review, updated_at: new Date().toISOString() }];
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Review save failed (${r.status})`);
 }
 async function dbLoadSettings() {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${SETTINGS_ID}&select=data`, { headers });
@@ -823,6 +847,7 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   // Phase 10.2 — notifications
   const [notifs, setNotifs] = useState([]);
+  const [reviews, setReviews] = useState([]); // Phase 12C — only ever filled for Franco and the Developer
   const [bellOpen, setBellOpen] = useState(false);
   // Phase 10.3 — "My jobs" / "All jobs" on list tabs; always starts on My jobs when a tab is opened
   const [scope, setScope] = useState("mine");
@@ -875,6 +900,8 @@ export default function App() {
         }
         setNotifs(ns);
       } catch { /* notifications are optional */ }
+      // Phase 12C — confidential reviews: fetched only for users allowed to see them
+      if (canSeeReviews(user)) { try { setReviews(await dbLoadReviews(user)); } catch { /* optional */ } }
     }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
@@ -897,6 +924,20 @@ export default function App() {
     const t = setTimeout(() => setToast(""), 2500);
     return () => clearTimeout(t);
   }, [toast]);
+
+  // Phase 12C — submit a confidential installation review (never touches the job itself)
+  const submitReview = async (p, { rating, concerns, comment }) => {
+    const review = {
+      id: REVIEW_PREFIX + uid(), projectId: p.id, clientName: p.clientName || "", po: p.po || "",
+      department: p.department, team: p.team || teamsOf(p.department)[0], jobConsultant: p.consultant || "",
+      jobStatus: p.status, isTest: !!p.isTest,
+      author: user.name, authorPin: user.pin || "", rating, concerns, comment: comment.trim(), createdAt: new Date().toISOString(),
+    };
+    await dbSaveReview(review);
+    if (canSeeReviews(user)) setReviews((prev) => [...prev, review]);
+    try { localStorage.setItem(`nolans_reviewed_${p.id}_${user.pin || user.name}`, "1"); } catch { /* ignore */ }
+    setToast("Review submitted confidentially");
+  };
 
   const save = async (p, msg) => {
     const before = projectsRef.current.find((x) => x.id === p.id);
@@ -1207,7 +1248,7 @@ export default function App() {
           ) : view === "updates" ? (
             <ChangelogView />
           ) : view === "performance" ? (
-            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest)} user={user} /></>
+            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} reviews={canSeeReviews(user) ? reviews.filter((v) => !v.isTest) : null} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest)} user={user} /></>
           ) : view === "reports" ? (
             <ReportsView projects={active} />
           ) : view === "availability" ? (
@@ -1246,6 +1287,7 @@ export default function App() {
         <ProjectDetail
           project={projects.find((p) => p.id === selected.id) || selected}
           user={user} level={level} isCoord={isCoord} canEdit={canEdit(projects.find((p) => p.id === selected.id) || selected)} isDev={isDev} save={save}
+          reviews={canSeeReviews(user) ? reviews.filter((v) => v.projectId === selected.id) : null} onSubmitReview={submitReview}
           onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
         />
       )}
@@ -1636,6 +1678,10 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "12C", date: "2026-09-27", items: [
+    "Installation reviews: any job now has a \"Leave installation review\" button. Give an overall star rating, tick any areas of concern and add a comment. Reviews are confidential.",
+    "Once a job is completed, the consultant gets a prompt to leave a considered review.",
+  ] },
   { phase: "12A", date: "2026-09-27", items: [
     "Overlocking (Carpets): tick \"Overlocking required\" on a job and add the sizes. An amber OL badge shows on the job until the overlocking is ordered and received.",
     "The job's consultant or co-ordinator presses Place order, then Mark overlocking received. Both send a notification.",
@@ -2359,7 +2405,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
 /* =========================================================
    PROJECT DETAIL
    ========================================================= */
-function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit }) {
+function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit, reviews, onSubmitReview }) {
   const d = deptOf(p.department);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [reason, setReason] = useState("");
@@ -2368,6 +2414,12 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   const [resolving, setResolving] = useState(null); // snag being resolved
   const [addingDay, setAddingDay] = useState(false);
   const [partialEdit, setPartialEdit] = useState(null); // Phase 11 — { kind: "main" | "pl" | "li", id, label, on, note }
+  // Phase 12C — confidential installation reviews
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const reviewKey = `nolans_reviewed_${p.id}_${user.pin || user.name}`;
+  const [reviewedHere, setReviewedHere] = useState(() => { try { return !!localStorage.getItem(reviewKey); } catch { return false; } });
+  const canReview = (level ?? 0) >= 1 && !!onSubmitReview;
+  const showReviewPrompt = canReview && p.status === "installed" && p.consultant === user.name && !reviewedHere;
   const noMaterialRepair = isRepair(p) && p.repairNeedsMaterial === false;
   const now = () => new Date().toISOString();
   const log = (text, base = p) => [...(base.log || []), { id: uid(), text, author: user.name, createdAt: now() }];
@@ -2614,6 +2666,18 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         {lineItems.length === 0 && productLinesOf(p).length === 0 && <div className="text-xs text-slate-500 pt-1">No additional items.</div>}
       </div>
 
+      {/* Phase 12C — installation review prompt once the job is completed */}
+      {showReviewPrompt && (
+        <div className="mt-4 border border-amber-400/40 bg-amber-400/5 rounded-xl p-3 flex items-center gap-3 flex-wrap">
+          <Star size={18} className="text-amber-300 shrink-0" />
+          <div className="flex-1 min-w-[200px]">
+            <div className="text-sm text-slate-100 font-medium">This installation is complete</div>
+            <div className="text-xs text-slate-400">Now that the dust has settled, would you like to leave a considered review of the install team? Reviews are confidential.</div>
+          </div>
+          <button onClick={() => setReviewOpen(true)} className="text-xs px-3 py-1.5 rounded-lg border border-amber-400/60 text-amber-200 hover:bg-amber-400/15">Leave review</button>
+        </div>
+      )}
+
       {/* Snags */}
       <div className={`mt-4 border rounded-xl p-3 ${open.length ? "border-red-500/50" : "border-[#30363d]"}`}>
         <div className="flex items-center justify-between mb-2">
@@ -2652,6 +2716,13 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
           </div>
         ))}
       </div>
+
+      {canReview && (
+        <div className="mt-3 flex items-center justify-end gap-2">
+          {reviewedHere && <span className="text-[11px] text-slate-500 flex items-center gap-1"><ShieldCheck size={12} /> You've reviewed this installation</span>}
+          <button onClick={() => setReviewOpen(true)} className="text-xs px-2.5 py-1 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d] flex items-center gap-1.5"><Star size={12} /> Leave installation review</button>
+        </div>
+      )}
 
       <div className="mt-4">
         <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><ImageIcon size={14} /> Job cards ({(p.jobCards || []).length})</div>
@@ -2707,6 +2778,18 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         </div>
       )}
 
+      {/* Phase 12C — confidential: only rendered when reviews were loaded (Franco and Developer) */}
+      {Array.isArray(reviews) && (
+        <div className="mt-5 border border-amber-400/30 rounded-xl p-3">
+          <div className="text-xs text-amber-300/90 mb-2 flex items-center gap-1.5"><ShieldCheck size={14} /> Installation reviews ({reviews.length}) · confidential</div>
+          {reviews.length === 0 ? <div className="text-xs text-slate-500">No reviews on this job.</div> : (
+            <div className="space-y-2">
+              {[...reviews].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map((v) => <ReviewCard key={v.id} review={v} />)}
+            </div>
+          )}
+        </div>
+      )}
+
       {lightbox && (
         <div className="fixed inset-0 z-[60] bg-black/85 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
           <img src={lightbox} alt="" className="max-w-full max-h-full rounded-lg" />
@@ -2715,7 +2798,89 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
       {snagModal && <SnagLogModal user={user} onClose={() => setSnagModal(false)} onSave={logSnag} />}
       {resolving && <SnagResolveModal snag={resolving} onClose={() => setResolving(null)} onConfirm={(note) => resolveSnag(resolving, note)} />}
       {addingDay && <AddDayModal project={p} schedule={schedule} onClose={() => setAddingDay(false)} onConfirm={addDay} />}
+      {reviewOpen && (
+        <ReviewModal project={p} onClose={() => setReviewOpen(false)}
+          onSubmit={async (data) => { await onSubmitReview(p, data); setReviewedHere(true); setReviewOpen(false); }} />
+      )}
       {partialEdit && <PartialModal target={partialEdit} onClose={() => setPartialEdit(null)} onSave={(note) => savePartial(partialEdit, true, note)} onClear={() => savePartial(partialEdit, false)} />}
+    </Modal>
+  );
+}
+
+/* =========================================================
+   PHASE 12C — INSTALLATION REVIEWS (confidential)
+   ========================================================= */
+const Stars = ({ value, size = 14 }) => (
+  <span className="inline-flex gap-0.5" title={`${value} of 5`}>
+    {[1, 2, 3, 4, 5].map((n) => <Star key={n} size={size} className={n <= value ? "text-amber-300 fill-amber-300" : "text-slate-600"} />)}
+  </span>
+);
+function ReviewCard({ review: v, showJob }) {
+  return (
+    <div className="bg-[#0d1117] border border-[#30363d] rounded-lg p-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <Stars value={v.rating} />
+        <span className="text-xs text-slate-300">{v.author}</span>
+        <span className="text-[11px] text-slate-500">· {fmtShort((v.createdAt || "").slice(0, 10))}{v.jobStatus === "installed" ? " · after completion" : v.jobStatus ? ` · while ${v.jobStatus}` : ""}</span>
+        {showJob && <span className="text-[11px] text-slate-400 ml-auto">{v.clientName} · PO {v.po}</span>}
+      </div>
+      {(v.concerns || []).length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-2">
+          {v.concerns.map((c) => <span key={c} className="text-[11px] px-2 py-0.5 rounded-full border border-red-500/40 text-red-200">{c}</span>)}
+        </div>
+      )}
+      <div className="text-sm text-slate-200 mt-2 whitespace-pre-wrap">{v.comment}</div>
+    </div>
+  );
+}
+function ReviewModal({ project: p, onClose, onSubmit }) {
+  const [rating, setRating] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [concerns, setConcerns] = useState([]);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const toggle = (c) => setConcerns((cur) => (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]));
+  const valid = rating >= 1 && comment.trim().length > 0;
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true); setErr("");
+    try { await onSubmit({ rating, concerns, comment }); }
+    catch (e) { setErr(e.message || "Could not submit the review"); setBusy(false); }
+  };
+  const shown = hover || rating;
+  return (
+    <Modal title="Installation review" onClose={onClose}>
+      <div className="text-xs text-slate-400 mb-4">
+        {p.clientName} · {deptOf(p.department).label} · install team <span className="text-slate-200">{teamLabel(p.department, p.team || teamsOf(p.department)[0])}</span>
+      </div>
+      <div className="text-xs text-slate-300 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 mb-4 flex items-start gap-2">
+        <ShieldCheck size={14} className="text-amber-300 shrink-0 mt-0.5" />
+        <span>Confidential. Only Franco and the developer can read reviews; the install team and other staff never see them. Please keep it fair and factual.</span>
+      </div>
+      <div className="text-sm text-slate-200 mb-1.5">Overall rating</div>
+      <div className="flex gap-1 mb-4" onMouseLeave={() => setHover(0)}>
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button key={n} type="button" onClick={() => setRating(n)} onMouseEnter={() => setHover(n)} className="p-1" title={`${n} of 5`}>
+            <Star size={28} className={n <= shown ? "text-amber-300 fill-amber-300" : "text-slate-600"} />
+          </button>
+        ))}
+      </div>
+      <div className="text-sm text-slate-200 mb-1.5">Areas of concern <span className="text-slate-500 text-xs">(tick any that apply)</span></div>
+      <div className="flex flex-wrap gap-1.5 mb-4">
+        {REVIEW_CONCERNS.map((c) => {
+          const on = concerns.includes(c);
+          return <button key={c} type="button" onClick={() => toggle(c)} className={`text-xs px-2.5 py-1 rounded-full border ${on ? "border-red-500/60 bg-red-500/15 text-red-100" : "border-[#30363d] text-slate-300 hover:bg-[#21262d]"}`}>{c}</button>;
+        })}
+      </div>
+      <Field label="Comment (required)">
+        <textarea className={`${inputCls} min-h-[96px]`} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="What happened, and what should be different next time?" />
+      </Field>
+      {err && <div className="text-xs text-red-300 mt-2">{err}</div>}
+      <div className="flex justify-end gap-2 mt-5">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={submit} disabled={!valid || busy} className={btnPrimary}>{busy ? "Submitting…" : "Submit review"}</button>
+      </div>
     </Modal>
   );
 }
@@ -4263,6 +4428,70 @@ function MyStanding({ projects, user }) {
 }
 const sortedRanges = (ranges) => Object.entries(ranges).sort((a, b) => b[1].m2 - a[1].m2 || b[1].lines - a[1].lines);
 
+/* Phase 12C — group confidential reviews by install team for the Performance Report */
+function groupReviews(reviews, projects, { from, to }, deptFilter) {
+  if (!Array.isArray(reviews)) return null;
+  const byId = Object.fromEntries(projects.map((p) => [p.id, p]));
+  const groups = {};
+  reviews.forEach((v) => {
+    if (v.isTest) return;
+    if (!inPeriod(dayOf(v.createdAt), from, to)) return;
+    const p = byId[v.projectId];
+    const dept = p ? p.department : v.department;
+    if (deptFilter !== "all" && dept !== deptFilter) return;
+    const team = (p ? p.team : v.team) || teamsOf(dept)[0];
+    const cal = calendarOf(dept);
+    const k = `${cal}|${team}`;
+    const g = (groups[k] = groups[k] || { key: k, name: teamLabel(dept, team), sub: calOf(cal).label, items: [], concerns: {} });
+    g.items.push({ ...v, clientName: p ? p.clientName : v.clientName, po: p ? p.po : v.po });
+    (v.concerns || []).forEach((c) => { g.concerns[c] = (g.concerns[c] || 0) + 1; });
+  });
+  return Object.values(groups).map((g) => ({
+    ...g,
+    avg: g.items.reduce((n, v) => n + (Number(v.rating) || 0), 0) / g.items.length,
+    items: g.items.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
+  })).sort((a, b) => a.avg - b.avg || b.items.length - a.items.length || a.name.localeCompare(b.name));
+}
+function TeamReviewsPanel({ groups }) {
+  const [openKey, setOpenKey] = useState(null);
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  return (
+    <div className="bg-[#161b22] border border-amber-400/30 rounded-2xl p-5 mt-4">
+      <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-1"><ShieldCheck size={18} className="text-amber-300" /> Installation reviews</h2>
+      <div className="text-xs text-slate-500 mb-4">Confidential · Franco and developer only · {total} review{total === 1 ? "" : "s"} in this period · lowest average first · not included in the PDF</div>
+      {groups.length === 0 ? <div className="text-sm text-slate-500">No reviews in this period.</div> : (
+        <div className="space-y-2">
+          {groups.map((g) => {
+            const isOpen = openKey === g.key;
+            const avg = Math.round(g.avg * 10) / 10;
+            return (
+              <div key={g.key} className="bg-[#0d1117] border border-[#30363d] rounded-xl">
+                <button onClick={() => setOpenKey(isOpen ? null : g.key)} className="w-full flex items-center gap-3 px-4 py-3 text-left">
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm text-white font-medium">{g.name}</span>
+                    <span className="text-xs text-slate-500"> · {g.sub}</span>
+                  </span>
+                  <Stars value={Math.round(g.avg)} />
+                  <span className="text-xs text-slate-300 tabular-nums w-24 text-right">{avg} avg · {g.items.length}</span>
+                  <ChevronDown size={16} className={`text-slate-500 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                </button>
+                {Object.keys(g.concerns).length > 0 && (
+                  <div className="flex flex-wrap gap-1 px-4 pb-3 -mt-1">
+                    {Object.entries(g.concerns).sort((a, b) => b[1] - a[1]).map(([c, n]) => (
+                      <span key={c} className="text-[11px] px-2 py-0.5 rounded-full border border-red-500/40 text-red-200">{c} × {n}</span>
+                    ))}
+                  </div>
+                )}
+                {isOpen && <div className="px-4 pb-4 space-y-2">{g.items.map((v) => <ReviewCard key={v.id} review={v} showJob />)}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PerformanceBeta() {
   return (
     <div className="max-w-2xl mx-auto mt-10 bg-[#161b22] border border-amber-400/30 rounded-2xl p-10 text-center">
@@ -4277,7 +4506,7 @@ function PerformanceBeta() {
   );
 }
 
-function PerformanceView({ projects, user }) {
+function PerformanceView({ projects, user, reviews }) {
   const now = new Date();
   const [mode, setMode] = useState("month");
   const [month, setMonth] = useState(`${now.getFullYear()}-${pad(now.getMonth() + 1)}`);
@@ -4290,6 +4519,8 @@ function PerformanceView({ projects, user }) {
   const period = periodOf({ mode, month, quarter, from, to });
   const data = useMemo(() => computePerformance(projects, period, dept), [projects, period.from, period.to, dept]);
   const boards = useMemo(() => computeLeaderboard(data), [data]);
+  // Phase 12C — confidential reviews grouped by install team (Shutters and Calore are one team)
+  const reviewGroups = useMemo(() => groupReviews(reviews, projects, period, dept), [reviews, projects, period.from, period.to, dept]);
   const deptLabel = dept === "all" ? "All departments" : deptOf(dept).label;
   const generated = new Date().toLocaleString("en-ZA", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -4433,6 +4664,7 @@ function PerformanceView({ projects, user }) {
             </table>
           </div>
         )}
+        {tab === "teams" && reviewGroups && <TeamReviewsPanel groups={reviewGroups} />}
         <p className="text-[11px] text-slate-500 mt-3">Consultant snags count Consultant boo-boos only; team snags count Installation boo-boos only. The reviewed cause is used where one has been allocated. Test projects are excluded.</p>
         <LeaderboardPanel boards={boards} />
       </div>
