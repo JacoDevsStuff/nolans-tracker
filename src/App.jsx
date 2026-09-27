@@ -1602,6 +1602,9 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "11.1", date: "2026-09-27", items: [
+    "Snag review fix: picking a cause no longer saves straight away. Choose the cause, add cost lines, then press Save.",
+  ] },
   { phase: "11", date: "2026-09-27", items: [
     "Repairs: new jobs can be created as a Repair (small wrench icon). A repair with no material goes straight to Ready to book.",
     "Calendar filter for co-ordinators: All, New jobs or Repairs. Snag return visits show under Repairs.",
@@ -3676,6 +3679,58 @@ function SnagsView({ items, onOpen }) {
    SNAG REVIEW — resolved snags: cause + cost to company
    Level 2+ edits; consultants can view and add notes.
    ========================================================= */
+/* Phase 11.1 — cause + cost lines for one snag, held as a local draft. Nothing is written until Save is pressed,
+   so picking a cause no longer submits the row (and no longer drops it out of "Needs allocation" mid-edit). */
+const draftOf = (r) => ({ cause: (r && r.cause) || "", costs: ((r && r.costs) || []).map((c) => ({ ...c, amount: c.amount == null ? "" : String(c.amount), note: c.note || "" })) });
+function ReviewEditor({ review, canEdit, onSave }) {
+  const [draft, setDraft] = useState(() => draftOf(review));
+  const saved = draftOf(review);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  // Pick up changes saved elsewhere (auto-refresh) only while there are no unsaved edits here
+  const savedKey = JSON.stringify(saved);
+  useEffect(() => { if (!dirty) setDraft(draftOf(review)); /* eslint-disable-next-line */ }, [savedKey]);
+  const upd = (id, patch) => setDraft((d) => ({ ...d, costs: d.costs.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
+  const add = () => setDraft((d) => ({ ...d, costs: [...d.costs, { id: uid(), category: COST_CATEGORIES[0], amount: "", note: "" }] }));
+  const del = (id) => setDraft((d) => ({ ...d, costs: d.costs.filter((c) => c.id !== id) }));
+  const total = draft.costs.reduce((n, c) => n + (Number(c.amount) || 0), 0);
+  return (
+    <div className={`mt-4 rounded-xl ${dirty ? "border border-amber-400/40 bg-amber-400/5 p-3" : ""}`}>
+      <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4">
+        <Field label="Cause">
+          <select className={inputCls} value={draft.cause} disabled={!canEdit} onChange={(e) => setDraft((d) => ({ ...d, cause: e.target.value }))}>
+            <option value="">Not yet allocated</option>
+            {SNAG_CAUSES.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <div>
+          <div className="text-xs text-slate-400 mb-1">Cost lines (ZAR)</div>
+          <div className="space-y-2">
+            {draft.costs.map((c) => (
+              <div key={c.id} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                <select className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} value={c.category} disabled={!canEdit} onChange={(e) => upd(c.id, { category: e.target.value })}>
+                  {COST_CATEGORIES.map((x) => <option key={x}>{x}</option>)}
+                </select>
+                <input type="number" min="0" step="0.01" className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} placeholder="0.00" value={c.amount} disabled={!canEdit} onChange={(e) => upd(c.id, { amount: e.target.value })} />
+                <input className={`${inputCls} flex-1 min-w-0`} placeholder="Note (optional)" value={c.note} disabled={!canEdit} onChange={(e) => upd(c.id, { note: e.target.value })} />
+                {canEdit && <button onClick={() => del(c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
+              </div>
+            ))}
+            {draft.costs.length === 0 && <div className="text-xs text-slate-500">No costs recorded.</div>}
+          </div>
+          {canEdit && <button onClick={add} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add cost line</button>}
+        </div>
+      </div>
+      {canEdit && (
+        <div className="flex items-center justify-end gap-2 mt-3 flex-wrap">
+          {dirty && <span className="text-xs text-amber-300 mr-auto">Unsaved changes · total {zar(total)}</span>}
+          {dirty && <button onClick={() => setDraft(draftOf(review))} className={`${btnGhost} py-1.5 text-xs`}>Cancel</button>}
+          <button onClick={() => onSave(draft)} disabled={!dirty} className={`${btnPrimary} py-1.5 text-xs flex items-center gap-1.5`}><Check size={14} /> Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
   const [filter, setFilter] = useState("pending"); // pending | all
   const [noteDraft, setNoteDraft] = useState({});
@@ -3684,13 +3739,21 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
     .filter(({ s }) => filter === "all" || !(s.review && s.review.cause))
     .sort((a, b) => (b.s.resolvedAt || "").localeCompare(a.s.resolvedAt || "")), [projects, filter]);
 
-  const patchReview = (p, s, patch) => {
+  const patchReview = (p, s, patch, extraLog, msg) => {
     const review = { cause: null, costs: [], notes: [], ...(s.review || {}), ...patch };
-    save({ ...p, snags: p.snags.map((x) => (x.id === s.id ? { ...x, review } : x)) });
+    const log = extraLog ? [...(p.log || []), { id: uid(), text: extraLog, author: user.name, createdAt: new Date().toISOString() }] : p.log;
+    save({ ...p, snags: p.snags.map((x) => (x.id === s.id ? { ...x, review } : x)), log }, msg);
   };
-  const addCost = (p, s) => patchReview(p, s, { costs: [...((s.review && s.review.costs) || []), { id: uid(), category: COST_CATEGORIES[0], amount: "", note: "" }] });
-  const updCost = (p, s, id, patch) => patchReview(p, s, { costs: (s.review.costs || []).map((c) => (c.id === id ? { ...c, ...patch } : c)) });
-  const delCost = (p, s, id) => patchReview(p, s, { costs: (s.review.costs || []).filter((c) => c.id !== id) });
+  // Phase 11.1 — cause and cost lines are edited as a draft and only saved when Save is pressed
+  const saveReview = (p, s, draft) => {
+    const costs = draft.costs
+      .filter((c) => c.amount !== "" || (c.note || "").trim())
+      .map((c) => ({ ...c, amount: c.amount === "" ? "" : Number(c.amount), note: (c.note || "").trim() }));
+    const total = costs.reduce((n, c) => n + (Number(c.amount) || 0), 0);
+    patchReview(p, s, { cause: draft.cause || null, costs, reviewedBy: user.name, reviewedAt: new Date().toISOString() },
+      `Snag review saved: ${draft.cause || "cause not allocated"} · ${zar(total)}`,
+      draft.cause ? "Snag review saved" : "Costs saved — cause still to be allocated");
+  };
   const addNote = (p, s) => {
     const text = (noteDraft[s.id] || "").trim();
     if (!text) return;
@@ -3750,31 +3813,7 @@ function SnagReviewView({ projects, user, isCoord, canEdit, save, onOpen }) {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 mt-4">
-                    <Field label="Cause">
-                      <select className={inputCls} value={r.cause || ""} disabled={!rowEdit} onChange={(e) => patchReview(p, s, { cause: e.target.value || null })}>
-                        <option value="">Not yet allocated</option>
-                        {SNAG_CAUSES.map((c) => <option key={c}>{c}</option>)}
-                      </select>
-                    </Field>
-                    <div>
-                      <div className="text-xs text-slate-400 mb-1">Cost lines (ZAR)</div>
-                      <div className="space-y-2">
-                        {(r.costs || []).map((c) => (
-                          <div key={c.id} className="flex flex-wrap sm:flex-nowrap items-center gap-2">
-                            <select className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} value={c.category} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { category: e.target.value })}>
-                              {COST_CATEGORIES.map((x) => <option key={x}>{x}</option>)}
-                            </select>
-                            <input type="number" min="0" step="0.01" className={`${inputCls} w-[calc(50%-0.25rem)] sm:w-32`} placeholder="0.00" value={c.amount} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { amount: e.target.value })} />
-                            <input className={`${inputCls} flex-1 min-w-0`} placeholder="Note (optional)" value={c.note || ""} disabled={!rowEdit} onChange={(e) => updCost(p, s, c.id, { note: e.target.value })} />
-                            {rowEdit && <button onClick={() => delCost(p, s, c.id)} className="p-1.5 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0"><X size={14} /></button>}
-                          </div>
-                        ))}
-                        {(r.costs || []).length === 0 && <div className="text-xs text-slate-500">No costs recorded.</div>}
-                      </div>
-                      {rowEdit && <button onClick={() => addCost(p, s)} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add cost line</button>}
-                    </div>
-                  </div>
+                  <ReviewEditor key={s.id} review={r} canEdit={rowEdit} onSave={(draft) => saveReview(p, s, draft)} />
 
                   <div className="mt-3 pt-3 border-t border-[#30363d]">
                     {(r.notes || []).map((n) => (
