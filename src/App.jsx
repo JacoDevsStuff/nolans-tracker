@@ -55,9 +55,11 @@ const teamsOf = (dept) => TEAMS[dept] || ["Team 1"];
 // Phase 5 — product catalogue: Department -> Category -> Supplier -> Range
 const PRODUCT_CATALOG = {
   "Carpets": {
-    "Belgotex": ["Arabica", "Conqueror", "Textured", "Aqua", "Softology Light", "Softology", "Softology Ultra", "Sensology Aural", "Serengeti", "Sensology Lush", "Westminster", "Baltimore", "Sensology Tactual", "Influence", "Inclusive", "Coexist", "CO-Create", "Merino", "Grace", "Latte", "Mood", "Longevity - Grandeur", "Longevity - Serenity", "Immerse", "Fliptile", "Mindful", "Attuned", "Perpetual", "City Life", "Rustic Grain", "Panthera", "Highlands", "Color Rib (Needlepunch)", "Garage Carpet (Needlepunch)", "Hercules (Needlepunch)", "Berber Point 650 (Needlepunch)", "Berber Point 920 (Needlepunch)", "Timbavati (Needlepunch)", "Color Rib (Resinbac)", "Hercules (Resinbac)", "Berber Point 650 (Resinbac)", "Berber Point 920 (Resinbac)", "Metro (Resinbac)", "Main Street (Resinbac)", "Diagonals (Resinbac)", "Berber Point 920 (Nexbac)", "Sportec Rubber Flooring"],
+    "Belgotex": ["Arabica", "Conqueror", "Textured", "Aqua", "Softology Light", "Softology", "Softology Ultra", "Sensology Aural", "Serengeti", "Sensology Lush", "Westminster", "Baltimore", "Sensology Tactual", "Influence", "Inclusive", "Coexist", "CO-Create", "Merino", "Grace", "Latte", "Mood", "Longevity - Grandeur", "Longevity - Serenity", "Immerse", "Fliptile", "Mindful", "Attuned", "Perpetual", "City Life", "Rustic Grain", "Panthera", "Highlands", "Color Rib (Needlepunch)", "Garage Carpet (Needlepunch)", "Hercules (Needlepunch)", "Berber Point 650 (Needlepunch)", "Berber Point 920 (Needlepunch)", "Timbavati (Needlepunch)", "Color Rib (Resinbac)", "Hercules (Resinbac)", "Berber Point 650 (Resinbac)", "Berber Point 920 (Resinbac)", "Metro (Resinbac)", "Main Street (Resinbac)", "Diagonals (Resinbac)", "Berber Point 920 (Nexbac)", "Sportec Rubber Flooring", "Turf"],
     "Nouwens": ["Berber Look", "Rustique", "Copenhagen", "Kirman", "Natural Flair", "Attitude", "Entertainer", "Icon", "Creations", "Harbour"],
     "Floornet": ["Carlton", "Manhattan Xtreme", "Prestige", "Imago", "Stockholm", "Palermo", "Etosha", "Islay", "Sorrento", "Saturnus", "Taurus", "Lewis", "Amber", "Ultimate Twist", "ART Fusion", "Passion", "Alexandria", "Nature", "Chambord", "Luxor", "Romeo", "Pinning Board", "Powerpoint", "Dirt Off", "Florpoint"],
+    "Synsport": ["Turf"],
+    "Fotakis": ["Novillon"],
     "Rowley & Hughes": ["Seagrass Beijing", "Coir Herringbone", "Coir Boucle", "Gold Hemp Platted", "Silver Hemp Platted", "Gold Hemp Ribbed Boucle", "Silver Hemp Ribbed Boucle", "Sisal Wild Honey", "Sisal Harvest Moon", "Sisal Grey Beard", "Sisal Artichoke", "Sisal Olive Bark", "Sisal Saffron", "Sisal Storm Cloud", "Sisal Monsoon Sky", "Sisal Oriental Topaz", "Sisal Honeyguide", "Sisal Francolin", "Sisal Buttonquail", "Sisal Nightjar", "Sisal Sand Grouse", "Sisal Partridge", "Sisal Groundscraper", "Sisal Arrowmarked", "Wool Sandpiper", "Coir PVC Backed 17mm", "Coir PVC Backed 20mm", "Seagrass Basic Natural", "Seagrass 4 X 4 Natural", "Seagrass Herringbone", "Coir Boucle Natural", "Coir Herringbone Natural", "Jute Xtra Heavy Boucle Natural", "Jute Xtra Heavy Panama Natural", "Sisal Fine Boucle Gunmetal", "Sisal Fine Boucle Oatmeal", "Sisal Fine Boucle Pewter", "Sisal Fine Boucle Sahara Sands", "Sisal Fine Boucle Zanzibar", "Sisal Panama Allegro", "Sisal Panama Cobblestone", "Sisal Panama Cocoa", "Sisal Panama Puma", "Sisal Panama Sable", "Sisal Panama Sandy Cove", "Sisal Fine Panama Gunmetal", "Sisal Fine Panama Namib Sands", "Sisal Fine Panama Silver", "Sisal Herringbone Ash Grey", "Sisal Longweave Natural", "Sisal Longweave Silver", "Sisal Togo Silver Gray", "Wool & Sisal Trellis Galena", "Wool & Sisal Kalahari Pearl Grey", "Wool & Sisal Chuncky weave Graphite", "Wool & Sisal Jacquard Clifton", "Wool & Sisal Chunky Karringmelk", "Wool & Sisal Chunky Smokey", "Multi-Use Fine Boucle Baltic", "Multi-Use Fine Boucle Storm Cloud", "Multi-Use Fine Boucle Light Grey/ Scoria", "Multi-use Flatweave Buiscuit", "Multi-Use Flatweave Anthracite,Clay Court", "Multi-Use Flatweave Pebble, Urban", "Multi-Use Flatweave Cayman", "Multi-Use Flatweave Zodiac", "Multi-Use Flatweave Amber", "Coir Brushed 17mm Black/ Burgandy/ Charcoal", "Coir Brushed 17mm Natural"],
   },
   "Glue Down Vinyl": {
@@ -86,6 +88,27 @@ const PRODUCT_CATALOG = {
     "Floornet": ["Milano"],
     "Wannabiwood": ["Desire"],
   },
+  // Phase 10.3 — installed by the Vinyl team, on the Vinyl calendar
+  "Louvre Roofs & Carports": {
+    "Hunter Douglas": ["Adjustable Louvre Roof"],
+    "AWA": ["Carport Recovery"],
+  },
+  // Phase 10.3 — Blinds department (awnings and screens are installed by the Blinds team)
+  "Blinds & Awnings": {
+    "Luxaflex": ["Roller Blinds", "25mm Alu Venetian Blinds", "50mm Alu Venetian Blinds", "50mm FormWood Venetian Blinds", "50mm Wood Venetian Blinds", "25mm Duette Blinds", "32mm Duette Blinds", "Twist Roller Blind", "Ambience Shade", "Drop Blind"],
+    "Blindsquip": ["Roller Blinds", "25mm Alu Venetian Blinds", "50mm Alu Venetian Blinds", "50mm FormWood Venetian Blinds", "50mm Wood Venetian Blinds", "Twist Roller Blind"],
+    "Bali Blinds": ["Bamboo Blinds"],
+    "Blinds Factory": ["Roller Blinds", "25mm Alu Venetian Blinds", "50mm Alu Venetian Blinds", "50mm FormWood Venetian Blinds", "50mm Wood Venetian Blinds", "Twist Roller Blind", "Vertical Blinds", "Drop Blinds"],
+    "Wonderblinds": ["Drop Blind", "Pergola Awning", "Fold Arm Awning"],
+    "AC Screens": ["Drop Blind", "Fold-Arm Awning", "Roller Shutter"],
+  },
+  // Phase 10.3 — Shutters department
+  "Shutters & Screens": {
+    "Blockhouse Shutters": ["Aluminium Shutters", "Fixed Louvre Shutters"],
+    "Plantation Shutters": ["Aluminium Shutters", "Timber Shutters"],
+    "Mediterranean": ["Shoji Screens"],
+    "Corner Star": ["Flyscreens", "Secure Screens"],
+  },
   "Laminates": {
     "Traviata": ["Silver", "Tru-Wood XL", "Tru-Wood", "Klasik", "Cadenza BerryAlloc"],
     "FinFloor": ["Parador", "AGT Bella Neo", "AGT Natura", "Armonia Large", "Authentic Herringbone", "Black Forest+"],
@@ -100,7 +123,28 @@ const PRODUCT_CATALOG = {
 // keep the old free-text product field until their product lists are loaded.
 const DEPT_CATEGORIES = {
   carpets: ["Carpets"],
-  vinyl: ["Glue Down Vinyl", "Click Vinyl", "Laminates"],
+  vinyl: ["Glue Down Vinyl", "Click Vinyl", "Laminates", "Louvre Roofs & Carports"],
+  blinds: ["Blinds & Awnings"],
+  shutters: ["Shutters & Screens"],
+};
+// Phase 10.3 — how each department measures a product line
+//   area    : m² typed in (Vinyl)
+//   roll    : roll width × linear metres = m², or m² typed in when no roll width is picked (Carpets)
+//   qty     : free-text quantity, e.g. "3 blinds" (Blinds)
+//   panels  : number of references and number of panels (Shutters)
+const MEASURE_OF = { carpets: "roll", vinyl: "area", blinds: "qty", shutters: "panels" };
+const measureOf = (dept) => MEASURE_OF[dept] || "area";
+const ROLL_WIDTHS = ["2", "3.66", "4"];
+const rollLabel = (w) => `${Number(w).toFixed(w === "3.66" ? 2 : 1)} m`;
+const rollArea = (w, lm) => { const a = Number(w) * Number(lm); return a > 0 ? Math.round(a * 100) / 100 : ""; };
+// Short text for a line's measurement, used on job details, stickers and search
+const measureText = (l, dept) => {
+  const m = measureOf(dept);
+  if (m === "qty") return (l.qty || "").toString().trim();
+  if (m === "panels") return [l.refs ? `${l.refs} ref${Number(l.refs) === 1 ? "" : "s"}` : "", l.panels ? `${l.panels} panel${Number(l.panels) === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+  const area = areaFmt(l.area);
+  if (m === "roll" && l.rollWidth && l.linearM) return `${area} (${l.linearM} lm × ${rollLabel(l.rollWidth)})`;
+  return area;
 };
 const categoriesOf = (dept) => DEPT_CATEGORIES[dept] || [];
 const hasCatalog = (dept) => categoriesOf(dept).length > 0;
@@ -112,7 +156,7 @@ const composeProduct = (sup, rng, colour) => [sup, rng, (colour || "").trim()].f
 
 // Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
 // A fresh, empty product line for a department (auto-picks the only category where there is just one).
-const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", colour: "", area: "" }; };
+const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", colour: "", area: "", rollWidth: "", linearM: "", qty: "", refs: "", panels: "" }; };
 // All product lines for a job. Falls back to a single synthesised line for older records that only
 // stored the top-level product fields, so nothing built before Phase 6 breaks.
 const productLinesOf = (p) => {
@@ -124,10 +168,21 @@ const productLinesOf = (p) => {
 };
 const areaFmt = (a) => { const n = Number(a); return (a === "" || a == null || isNaN(n)) ? "" : `${n} m²`; };
 const totalArea = (p) => productLinesOf(p).reduce((sum, l) => sum + (Number(l.area) || 0), 0);
+// Phase 10.3 — one-line size of the whole job in the department's own unit (m², refs/panels or quantities)
+const jobMeasureText = (p) => {
+  const m = measureOf(p.department);
+  const lines = productLinesOf(p);
+  if (m === "panels") {
+    const r = lines.reduce((n, l) => n + (Number(l.refs) || 0), 0), pn = lines.reduce((n, l) => n + (Number(l.panels) || 0), 0);
+    return [r ? `${r} ref${r === 1 ? "" : "s"}` : "", pn ? `${pn} panel${pn === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+  }
+  if (m === "qty") return lines.map((l) => (l.qty || "").toString().trim()).filter(Boolean).join(", ");
+  const a = totalArea(p); return a > 0 ? `${Math.round(a * 100) / 100} m²` : "";
+};
 // One string holding everything searchable on a job, including every product line and item.
 const searchText = (p) => [
   p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact,
-  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour]),
+  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty]),
   ...(p.lineItems || []).map((li) => li.description),
 ].filter(Boolean).join(" ").toLowerCase();
 
@@ -597,6 +652,22 @@ function installPwaTags() {
 }
 installPwaTags();
 
+// Phase 10.3 — list tabs that get the My jobs / All jobs switch
+const SCOPED_VIEWS = ["placed", "received", "booked", "eta", "snags", "completed", "history"];
+function ScopeToggle({ scope, setScope, mineCount, allCount, mineLabel }) {
+  const btn = (id, label, n) => (
+    <button onClick={() => setScope(id)} className={`px-3 md:px-4 py-1.5 rounded-lg text-sm flex items-center gap-2 ${scope === id ? "bg-[#1e3a6e] text-white" : "text-slate-400 hover:text-slate-200"}`}>
+      {label} <span className={`text-xs ${scope === id ? "text-slate-200" : "text-slate-500"}`}>{n}</span>
+    </button>
+  );
+  return (
+    <div className="mb-3 inline-flex items-center gap-1 p-1 bg-[#161b22] border border-[#30363d] rounded-xl">
+      {btn("mine", mineLabel, mineCount)}
+      {btn("all", "All jobs", allCount)}
+    </div>
+  );
+}
+
 function Login({ onLogin }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
@@ -694,12 +765,14 @@ export default function App() {
   // Phase 10.2 — notifications
   const [notifs, setNotifs] = useState([]);
   const [bellOpen, setBellOpen] = useState(false);
+  // Phase 10.3 — "My jobs" / "All jobs" on list tabs; always starts on My jobs when a tab is opened
+  const [scope, setScope] = useState("mine");
   const projectsRef = useRef([]);
   projectsRef.current = projects;
   const notifHousekeeping = useRef(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
-  useEffect(() => { setNavOpen(false); setMoreOpen(false); setBellOpen(false); }, [view]);
+  useEffect(() => { setNavOpen(false); setMoreOpen(false); setBellOpen(false); setScope("mine"); }, [view]);
   useEffect(() => {
     if (!navOpen) return;
     const prev = document.body.style.overflow; document.body.style.overflow = "hidden";
@@ -804,29 +877,41 @@ export default function App() {
 
   const active = useMemo(() => projects.filter((p) => !p.deleted && (isDev || !p.isTest)), [projects, isDev]);
   const deletedList = useMemo(() => projects.filter((p) => p.deleted).sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || "")), [projects]);
-  const mine = (list) => (level === 1 ? list.filter((p) => p.consultant === user.name) : list);
+  // Phase 10.3 — "my" jobs: consultants = jobs with their name as consultant; co-ordinators = their departments
+  // (owners and Franco cover every department); Developer and view-only see everything
+  const isMine = (p) => {
+    if (!user || isDev || level < 1) return true;
+    if (level === 1) return p.consultant === user.name;
+    return !user.depts || user.depts.includes(p.department) || p.consultant === user.name;
+  };
+  const mine = (list) => list.filter(isMine);
   const q = search.trim().toLowerCase();
   const matches = (p) => !q || searchText(p).includes(q);
 
-  const lists = useMemo(() => ({
-    placed: mine(active.filter((p) => p.status === "ordered")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
-    received: mine(active.filter((p) => p.status === "received")).sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
-    booked: active.filter((p) => p.status === "booked").sort((a, b) => (a.installDate || "").localeCompare(b.installDate || "")),
-    completed: active.filter((p) => p.status === "installed" && !p.invoiced).sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
-    history: active.filter((p) => p.status === "installed" && p.invoiced).sort((a, b) => (b.invoicedAt || "").localeCompare(a.invoicedAt || "")),
-    snags: active.filter(hasOpenSnags).sort((a, b) => {
+  const buildLists = (src) => ({
+    placed: src.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
+    received: src.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9")),
+    booked: src.filter((p) => p.status === "booked").sort((a, b) => (a.installDate || "").localeCompare(b.installDate || "")),
+    completed: src.filter((p) => p.status === "installed" && !p.invoiced).sort((a, b) => (b.installedAt || "").localeCompare(a.installedAt || "")),
+    history: src.filter((p) => p.status === "installed" && p.invoiced).sort((a, b) => (b.invoicedAt || "").localeCompare(a.invoicedAt || "")),
+    snags: src.filter(hasOpenSnags).sort((a, b) => {
       const la = Math.max(...openSnags(a).map((s) => s.createdAt || "")), lb = Math.max(...openSnags(b).map((s) => s.createdAt || ""));
       return String(lb).localeCompare(String(la));
     }),
-  }), [active, level, user]);
+  });
+  const allLists = useMemo(() => buildLists(active), [active]);
+  const lists = useMemo(() => buildLists(mine(active)), [active, level, user]); // "My jobs" — used for counts and home
+  const shownLists = scope === "all" ? allLists : lists;
   // Unacknowledged open snags — badge for co-ordinator+
   const newSnagCount = useMemo(() => active.reduce((n, p) => n + openSnags(p).filter((s) => !s.acknowledged).length, 0), [active]);
   const reviewCount = useMemo(() => active.reduce((n, p) => n + (p.snags || []).filter((s) => s.resolved && !(s.review && s.review.cause)).length, 0), [active]);
   // Phase 9.1 — orders overdue or due within 3 days, still not received. Consultants see only their own (same rule as Placed orders).
-  const etaAlerts = useMemo(() => {
-    const withState = mine(active.filter((p) => etaStateOf(p))).sort((a, b) => a.materialEta.localeCompare(b.materialEta));
+  const etaOf = (src) => {
+    const withState = src.filter((p) => etaStateOf(p)).sort((a, b) => a.materialEta.localeCompare(b.materialEta));
     return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon") };
-  }, [active, level, user]);
+  };
+  const etaAlerts = useMemo(() => etaOf(mine(active)), [active, level, user]);
+  const etaAll = useMemo(() => etaOf(active), [active]);
   const etaCount = etaAlerts.overdue.length + etaAlerts.soon.length;
   const myNotifs = useMemo(() => {
     const cutoff = notifCutoff();
@@ -1031,6 +1116,12 @@ export default function App() {
               <button onClick={refresh} className="underline">Retry</button>
             </div>
           )}
+          {!loading && SCOPED_VIEWS.includes(view) && (
+            <ScopeToggle scope={scope} setScope={setScope}
+              mineCount={view === "eta" ? etaAlerts.overdue.length + etaAlerts.soon.length : (lists[view] || []).length}
+              allCount={view === "eta" ? etaAll.overdue.length + etaAll.soon.length : (allLists[view] || []).length}
+              mineLabel={level === 1 || isDev ? "My jobs" : user.depts ? `My departments` : "My jobs"} />
+          )}
           {loading ? (
             <div className="text-slate-400 text-sm">Loading…</div>
           ) : view === "home" ? (
@@ -1038,7 +1129,7 @@ export default function App() {
               capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays, closeDateOf(settings))}
               isDev={isDev} onSetClose={() => setShowHolidays(true)} />
           ) : view === "eta" ? (
-            <EtaAlertsView alerts={etaAlerts} onOpen={setSelected} level={level} />
+            <EtaAlertsView alerts={scope === "all" ? etaAll : etaAlerts} onOpen={setSelected} level={scope === "all" ? 2 : level} />
           ) : view === "performance" ? (
             canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} /> : <PerformanceBeta />
           ) : view === "reports" ? (
@@ -1046,13 +1137,13 @@ export default function App() {
           ) : view === "availability" ? (
             <AvailabilityView projects={active} openDept={openDept} />
           ) : view === "snags" ? (
-            <SnagsView items={lists.snags} onOpen={setSelected} />
+            <SnagsView items={shownLists.snags} onOpen={setSelected} />
           ) : view === "review" ? (
             <SnagReviewView projects={active} user={user} isCoord={isCoord} canEdit={canEdit} save={save} onOpen={setSelected} />
           ) : view === "completed" ? (
-            <CompletedView items={lists.completed} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} setToast={setToast} />
+            <CompletedView items={shownLists.completed} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} setToast={setToast} />
           ) : view === "history" ? (
-            <HistoryView items={lists.history} deleted={deletedList} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} />
+            <HistoryView items={shownLists.history} deleted={deletedList} isCoord={isCoord} canEdit={canEdit} isDev={isDev} user={user} save={save} onOpen={setSelected} />
           ) : view.startsWith("dept:") ? (
             <CalendarView
               key={view} cal={calOf(view.slice(5))} projects={active.filter((p) => calendarOf(p.department) === view.slice(5))}
@@ -1061,7 +1152,7 @@ export default function App() {
           ) : (
             <ListView
               title={nav.find((n) => n.id === view)?.label} status={view}
-              items={lists[view]} onOpen={setSelected} level={level}
+              items={shownLists[view]} onOpen={setSelected} level={level}
             />
           )}
         </main>
@@ -1116,7 +1207,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-white truncate">{p.clientName} <span className="text-slate-500 font-normal">· PO {p.po}</span></div>
               <div className="text-xs text-slate-400 truncate">{d.label} · {p.consultant}{p.team ? ` · ${p.team}` : ""}{p.installDate ? ` · ${fmtShort(p.installDate)} ${p.installTime || ""}` : p.materialEta ? ` · ETA ${fmtShort(p.materialEta)}` : ""}</div>
-              {(p.productType || totalArea(p) > 0) && <div className="text-[11px] text-slate-500 truncate">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1} more` : ""}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
+              {(p.productType || jobMeasureText(p)) && <div className="text-[11px] text-slate-500 truncate">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1} more` : ""}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {p.isTest && <span className="text-[10px] text-orange-300 font-semibold">TEST</span>}
@@ -1608,6 +1699,50 @@ function matchLegacyLine(line, dept) {
   return { ...next, productCategory: h.cat, supplier: h.sup, productRange: h.rng, colour, area, productType: composeProduct(h.sup, h.rng, colour), _legacy: raw, _matched: true };
 }
 
+// Phase 10.3 — the measurement boxes under each product line, per department
+function LineMeasureFields({ dept, l, onColour, onChange }) {
+  const m = measureOf(dept);
+  const colour = <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => onColour(e.target.value)} placeholder="e.g. Sandelwood" /></Field>;
+  if (m === "qty") return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {colour}
+      <Field label="Quantity"><input className={inputCls} value={l.qty || ""} onChange={(e) => onChange({ qty: e.target.value })} placeholder="e.g. 3 blinds" /></Field>
+    </div>
+  );
+  if (m === "panels") return (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      {colour}
+      <Field label="References"><input type="number" min="0" step="1" inputMode="numeric" className={inputCls} value={l.refs ?? ""} onChange={(e) => onChange({ refs: e.target.value })} placeholder="e.g. 6" /></Field>
+      <Field label="Panels"><input type="number" min="0" step="1" inputMode="numeric" className={inputCls} value={l.panels ?? ""} onChange={(e) => onChange({ panels: e.target.value })} placeholder="e.g. 14" /></Field>
+    </div>
+  );
+  if (m === "roll") {
+    const locked = !!l.rollWidth && l.linearM !== "" && l.linearM != null;
+    return (
+      <>
+        {colour}
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Roll width">
+            <select className={inputCls} value={l.rollWidth || ""} onChange={(e) => onChange({ rollWidth: e.target.value })}>
+              <option value="">None</option>
+              {ROLL_WIDTHS.map((w) => <option key={w} value={w}>{rollLabel(w)}</option>)}
+            </select>
+          </Field>
+          <Field label="Linear m"><input type="number" min="0" step="0.01" inputMode="decimal" className={`${inputCls} ${!l.rollWidth ? "opacity-50" : ""}`} value={l.linearM ?? ""} disabled={!l.rollWidth} onChange={(e) => onChange({ linearM: e.target.value })} placeholder={l.rollWidth ? "e.g. 12.5" : "Pick width"} /></Field>
+          <Field label="Area (m²)"><input type="number" min="0" step="0.01" inputMode="decimal" className={`${inputCls} ${locked ? "bg-[#161b22] text-emerald-200" : ""}`} value={l.area ?? ""} readOnly={locked} onChange={(e) => onChange({ area: e.target.value })} placeholder="e.g. 24.5" /></Field>
+        </div>
+        <div className="text-[11px] text-slate-500">{locked ? "m² worked out from roll width × linear metres." : "Pick a roll width and enter linear metres to work out m², or leave it on None and type the m² yourself."}</div>
+      </>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {colour}
+      <Field label="Area (m²)"><input type="number" min="0" step="0.01" inputMode="decimal" className={inputCls} value={l.area ?? ""} onChange={(e) => onChange({ area: e.target.value })} placeholder="e.g. 24.5" /></Field>
+    </div>
+  );
+}
+
 function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave }) {
   const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
   const [f, setF] = useState(() => {
@@ -1682,7 +1817,16 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if (hasCatalog(f.department)) {
       // keep only lines that actually have a product; store area as a number
       const lines = (f.productLines || []).filter((l) => l.productRange || l.productType)
-        .map(({ _legacy, _matched, ...l }) => ({ ...l, colour: (l.colour || "").trim(), area: (l.area === "" || l.area == null) ? null : Number(l.area) }));
+        .map(({ _legacy, _matched, ...l }) => {
+          const num = (v) => (v === "" || v == null || isNaN(Number(v)) ? null : Number(v));
+          const rolled = l.rollWidth && num(l.linearM) != null;
+          return {
+            ...l, colour: (l.colour || "").trim(),
+            rollWidth: l.rollWidth || "", linearM: num(l.linearM),
+            area: rolled ? rollArea(l.rollWidth, l.linearM) || null : num(l.area),
+            qty: (l.qty || "").toString().trim(), refs: num(l.refs), panels: num(l.panels),
+          };
+        });
       base.productLines = lines;
       const first = lines[0];
       base.productType = first ? first.productType : "";
@@ -1769,10 +1913,14 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                       </select>
                     </Field>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => setLineColour(l.id, e.target.value)} placeholder="e.g. Sandelwood" /></Field>
-                    <Field label="Area (m²)"><input type="number" min="0" step="0.01" className={inputCls} value={l.area ?? ""} onChange={(e) => updProdLine(l.id, { area: e.target.value })} placeholder="e.g. 24.5" /></Field>
-                  </div>
+                  <LineMeasureFields dept={f.department} l={l}
+                    onColour={(v) => setLineColour(l.id, v)}
+                    onChange={(patch) => {
+                      const next = { ...l, ...patch };
+                      // Carpets: roll width × linear metres fills in m² (and the m² box locks while both are set)
+                      if (measureOf(f.department) === "roll" && ("rollWidth" in patch || "linearM" in patch) && next.rollWidth && next.linearM !== "" && next.linearM != null) patch = { ...patch, area: rollArea(next.rollWidth, next.linearM) };
+                      updProdLine(l.id, patch);
+                    }} />
                   {l._legacy && l.productRange && (
                     <div className="text-xs text-sky-300/90 bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2">
                       Matched from the typed entry <span className="text-sky-100">{l._legacy}</span>. Check supplier, range, colour and m², then save.
@@ -1977,12 +2125,25 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         )}
       </div>
 
+      {/* Phase 10.3 — Shutters: schedule of works submitted. Anyone signed in can tick it; the history records who. */}
+      {p.department === "shutters" && (
+        <label className={`mt-4 flex items-center gap-3 border rounded-xl px-3 py-2.5 ${p.sowSubmitted ? "border-emerald-500/40 bg-emerald-500/5" : "border-[#30363d]"} ${(user.level ?? 0) >= 1 ? "cursor-pointer" : "opacity-70"}`}>
+          <input type="checkbox" className="w-4 h-4" checked={!!p.sowSubmitted} disabled={(user.level ?? 0) < 1}
+            onChange={(e) => {
+              const on = e.target.checked;
+              save({ ...p, sowSubmitted: on, sowBy: on ? user.name : null, sowAt: on ? now() : null, log: log(on ? "SOW submitted" : "SOW submitted unticked") }, on ? "SOW marked as submitted" : "SOW unticked");
+            }} />
+          <span className="text-sm text-slate-100 font-medium">SOW Submitted</span>
+          <span className="text-xs text-slate-400 ml-auto text-right">{p.sowSubmitted ? `${p.sowBy || ""}${p.sowAt ? ` · ${fmtShort(p.sowAt.slice(0, 10))}` : ""}` : "Schedule of works not yet submitted"}</span>
+        </label>
+      )}
+
       {/* Line items */}
       <div className="mt-4 border border-[#30363d] rounded-xl p-3">
         <div className="text-xs text-slate-500 mb-2 flex items-center gap-1"><Layers size={14} /> Line items</div>
         {productLinesOf(p).length > 0 ? productLinesOf(p).map((l, i) => (
           <div key={l.id || i} className={`flex items-center justify-between py-1.5 text-sm ${i > 0 ? "border-t border-[#30363d]" : ""}`}>
-            <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{areaFmt(l.area) && <span className="text-slate-400 text-xs"> · {areaFmt(l.area)}</span>}</span>
+            <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{measureText(l, p.department) && <span className="text-slate-400 text-xs"> · {measureText(l, p.department)}</span>}</span>
             {i === 0 && (p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>)}
           </div>
         )) : (
@@ -2180,8 +2341,10 @@ const stickerCls = (p, variant) => {
   if (variant === "return") return "bg-red-500/20 border-red-500/60 text-red-50";
   // White sticker while planned/reserved; red outline until the material has actually arrived
   if (variant === "reserved") return p.received ? "bg-white border-slate-300 text-slate-900" : "bg-white border-red-500 border-2 text-slate-900";
-  if (variant === "booked" || variant === "installed") {
-    const done = variant === "installed";
+  // Phase 10.3 — completed (installed, not yet invoiced) turns light grey on the calendar for every department
+  if (variant === "installed") return "bg-slate-300 border-slate-400 text-slate-800";
+  if (variant === "booked") {
+    const done = false;
     if (p.department === "shutters") return done ? "bg-orange-700/70 border-orange-500/60 text-white" : "bg-orange-400/25 border-orange-400/60 text-orange-50";
     if (p.department === "calore") return done ? "bg-blue-700/70 border-blue-500/60 text-white" : "bg-blue-400/25 border-blue-400/60 text-blue-50";
     return done ? "bg-emerald-700/70 border-emerald-500/60 text-white" : "bg-emerald-400/25 border-emerald-400/50 text-emerald-50";
@@ -2253,7 +2416,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           </div>
           {expandable && expanded && (
             <>
-              {p.productType && <div className="opacity-70 truncate mt-0.5">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1}` : ""}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
+              {p.productType && <div className="opacity-70 truncate mt-0.5">{p.productType}{productLinesOf(p).length > 1 ? ` +${productLinesOf(p).length - 1}` : ""}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
               <button onClick={(e) => { e.stopPropagation(); onClick && onClick(); }} className="mt-1 text-[10px] underline opacity-80 hover:opacity-100">Open full details ›</button>
             </>
           )}
@@ -2344,10 +2507,10 @@ function HolidaysModal({ custom, closeDate: initialClose, onSave, onClose }) {
 }
 
 function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, customHolidays = [], user, save, onOpen, initialMonth }) {
-  const [month, setMonth] = useState(() => {
-    const d = initialMonth ? fromIso(initialMonth) : new Date();
-    return new Date(d.getFullYear(), d.getMonth(), 1);
-  });
+  // Phase 10.3 — desktop shows a rolling 4-week window: last week + this week + the next two
+  // (i.e. the previous week and three weeks forward). Arrows move one week at a time, no limits.
+  const defaultWin = (d) => addDays(weekStart(d || todayIso()), -7);
+  const [winStart, setWinStart] = useState(() => defaultWin(initialMonth));
   const [booking, setBooking] = useState(null); // { project, date, mode: "book" | "moveDay" | "return" | "moveReturn", dayIndex | visitId }
   const [dragOver, setDragOver] = useState(null);
   const [expandedKey, setExpandedKey] = useState(null); // which calendar sticker is expanded to full detail
@@ -2357,7 +2520,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
   const [weekOf, setWeekOf] = useState(() => weekStart(initialMonth || todayIso()));
   const [showTrays, setShowTrays] = useState(false);
   const [pickDay, setPickDay] = useState(null); // Phase 10.1 — mobile: date whose job picker is open
-  useEffect(() => { setExpandedKey(null); }, [month, weekOf]);
+  useEffect(() => { setExpandedKey(null); }, [winStart, weekOf]);
 
   const ordered = projects.filter((p) => p.status === "ordered").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
   const received = projects.filter((p) => p.status === "received").sort((a, b) => (a.materialEta || "9").localeCompare(b.materialEta || "9"));
@@ -2376,15 +2539,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
     return m;
   }, [onCal, projects]);
 
-  const cells = useMemo(() => {
-    const first = new Date(month.getFullYear(), month.getMonth(), 1);
-    const lead = (first.getDay() + 6) % 7;
-    const start = new Date(first); start.setDate(1 - lead);
-    const out = [];
-    for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); out.push(d); }
-    if (out[35].getMonth() !== month.getMonth()) out.length = 35;
-    return out;
-  }, [month]);
+  const cells = useMemo(() => Array.from({ length: 28 }, (_, i) => fromIso(addDays(winStart, i))), [winStart]);
 
   const startDrag = (info) => (e) => { dragRef.current = info; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", info.p.id); };
   const dropOn = (dateIso) => (e) => {
@@ -2430,7 +2585,8 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
     setBooking(null);
   };
 
-  const monthLabel = month.toLocaleDateString("en-ZA", { month: "long", year: "numeric" });
+  const monthLabel = `${fmt(winStart, { day: "numeric", month: "short" })} – ${fmt(addDays(winStart, 27), { day: "numeric", month: "short", year: "numeric" })}`;
+  const isDefaultWin = winStart === defaultWin();
   const today = todayIso();
   const isShutters = cal.id === "shutters";
   // Stickers for one day — shared by the desktop month grid and the mobile week list.
@@ -2468,7 +2624,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
             ) : (
               <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-400/25 border border-emerald-400/50" /> Booked</span>
             )}
-            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-emerald-700/70 border border-emerald-500/60" /> Completed (darker)</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-slate-300 border border-slate-400" /> Completed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border border-slate-300" /> Planned / reserved</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-amber-500/15 border border-amber-500/30" /> Public holiday</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-white border-2 border-red-500" /> Reserved, no stock yet</span>
@@ -2501,7 +2657,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}</div>
             <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${p.team}` : ""}</div>
-            {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{totalArea(p) > 0 ? ` · ${totalArea(p)} m²` : ""}</div>}
+            {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
           </div>
           <div className="shrink-0 text-right">
             {awaiting ? <div className="text-[11px] text-amber-300">ETA {fmtShort(p.materialEta)}</div>
@@ -2638,10 +2794,10 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
             <h1 className="text-xl md:text-2xl font-bold text-white">{cal.label}</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronLeft size={18} /></button>
-            <span className="text-sm font-medium w-40 text-center">{monthLabel}</span>
-            <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="p-2 rounded-lg hover:bg-[#161b22]"><ChevronRight size={18} /></button>
-            <button onClick={() => { const d = new Date(); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); }} className={`${btnGhost} py-1.5`}>Today</button>
+            <button onClick={() => setWinStart(addDays(winStart, -7))} className="p-2 rounded-lg hover:bg-[#161b22]" title="Back one week"><ChevronLeft size={18} /></button>
+            <span className="text-sm font-medium w-48 text-center">{monthLabel}</span>
+            <button onClick={() => setWinStart(addDays(winStart, 7))} className="p-2 rounded-lg hover:bg-[#161b22]" title="Forward one week"><ChevronRight size={18} /></button>
+            <button onClick={() => setWinStart(defaultWin())} disabled={isDefaultWin} className={`${btnGhost} py-1.5 ${isDefaultWin ? "opacity-50" : ""}`}>Today</button>
           </div>
         </div>
 
@@ -2668,7 +2824,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           </div>
         </div>
 
-        {/* Month grid */}
+        {/* 4-week grid */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-3 flex-1 flex flex-col min-h-0">
           <div className="grid grid-cols-7 text-[11px] text-slate-500 mb-1">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="px-2 py-1">{d}</div>)}
@@ -2676,7 +2832,8 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
           <div className="grid grid-cols-7 gap-1 flex-1 auto-rows-[minmax(110px,auto)]">
             {cells.map((d) => {
               const key = iso(d);
-              const inMonth = d.getMonth() === month.getMonth();
+              const inMonth = true;
+              const past = key < today;
               const wk = isWeekend(key);
               const hol = holidayName(key, customHolidays);
               const items = byDay[key] || [];
@@ -2686,10 +2843,11 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
                   onDragOver={(e) => { if (isCoord) { e.preventDefault(); setDragOver(key); } }}
                   onDragLeave={() => setDragOver((k) => (k === key ? null : k))}
                   onDrop={dropOn(key)}
-                  className={`rounded-lg border p-1.5 flex flex-col gap-1 ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${inMonth ? (hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"}`}
+                  className={`rounded-lg border p-1.5 flex flex-col gap-1 ${dragOver === key ? "border-[#1f6feb] bg-[#1f6feb]/10" : hol ? "border-amber-500/40" : "border-[#30363d]"} ${inMonth ? (hol ? "bg-amber-500/5" : wk ? "bg-[#0d1117]/60" : "bg-[#0d1117]") : "bg-transparent opacity-40"} ${past ? "opacity-75" : ""}`}
                 >
                   <div className={`text-xs ${key === today ? "text-white font-bold" : "text-slate-500"}`}>
                     <span className={key === today ? "inline-flex w-5 h-5 rounded-full bg-[#1f6feb] items-center justify-center" : ""}>{d.getDate()}</span>
+                    {(d.getDate() === 1 || key === winStart) && <span className="ml-1 text-slate-400">{fmt(key, { month: "short" })}</span>}
                   </div>
                   {hol && (
                     <div className="text-[10px] leading-tight px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-200 truncate" title={hol}>
@@ -3093,7 +3251,7 @@ function ReportsView({ projects }) {
                 {day.dayIndex === 1 && !isReturn && productLinesOf(p).length > 0 && (
                   <div className="text-sm text-gray-800 mt-1">
                     {productLinesOf(p).map((l, i) => (
-                      <div key={l.id || i}>• {l.productType || l.productRange}{areaFmt(l.area) ? ` — ${areaFmt(l.area)}` : ""}</div>
+                      <div key={l.id || i}>• {l.productType || l.productRange}{measureText(l, p.department) ? ` — ${measureText(l, p.department)}` : ""}</div>
                     ))}
                     {totalArea(p) > 0 && productLinesOf(p).length > 1 && <div className="font-semibold">Total: {totalArea(p)} m²</div>}
                   </div>
@@ -3379,8 +3537,8 @@ function computePerformance(projects, { from, to }, deptFilter) {
       productLinesOf(p).forEach((l) => {
         const a = Number(l.area) || 0;
         const k = rangeLabel(l);
-        const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0 });
-        r.m2 += a; r.lines++;
+        const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0, panels: 0 });
+        r.m2 += a; r.lines++; r.panels += Number(l.panels) || 0;
       });
     }
     // Booked = first install day falls in the period (still booked or already done)
@@ -3536,14 +3694,14 @@ function PerformanceView({ projects, user }) {
                     </div>
                   )}
                   {sortedRanges(r.ranges).length === 0 ? (
-                    <div className="text-xs text-slate-500">No catalogued ranges in this period (range detail covers Carpets and Vinyl).</div>
+                    <div className="text-xs text-slate-500">No catalogued ranges in this period (range detail covers catalogued products).</div>
                   ) : (
                     <div className="space-y-1">
                       {sortedRanges(r.ranges).map(([k, v]) => {
                         const pct = r.m2 ? Math.max(3, (v.m2 / r.m2) * 100) : 0;
                         return (
                           <div key={k}>
-                            <div className="flex justify-between text-sm"><span className="text-slate-200">{k}</span><span className="text-slate-400 tabular-nums">{v.m2 ? m2(v.m2) : `${v.lines} line${v.lines === 1 ? "" : "s"}, no m²`}</span></div>
+                            <div className="flex justify-between text-sm"><span className="text-slate-200">{k}</span><span className="text-slate-400 tabular-nums">{v.m2 ? m2(v.m2) : v.panels ? `${v.panels} panel${v.panels === 1 ? "" : "s"}` : `${v.lines} line${v.lines === 1 ? "" : "s"}`}</span></div>
                             {v.m2 > 0 && <div className="h-1 bg-[#0d1117] rounded-full mt-1 mb-1.5"><div className="h-1 bg-[#1f6feb] rounded-full" style={{ width: `${pct}%` }} /></div>}
                           </div>
                         );
