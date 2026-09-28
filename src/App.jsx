@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck, Boxes, Tag, Pencil
 } from "lucide-react";
 
 /* =========================================================
@@ -488,10 +488,10 @@ async function dbLoad() {
   // Personal notes live in the same table under ids starting "note:" — they are never loaded as projects
   // Notifications live there too under "notif:" — also never loaded as projects
   // Phase 12C — installation reviews live there too under "review:" — never loaded as projects
-  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*&id=not.like.${encodeURIComponent(NOTIF_PREFIX)}*&id=not.like.${encodeURIComponent(REVIEW_PREFIX)}*`, { headers });
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=not.like.${encodeURIComponent(NOTE_PREFIX)}*&id=not.like.${encodeURIComponent(NOTIF_PREFIX)}*&id=not.like.${encodeURIComponent(REVIEW_PREFIX)}*&id=not.like.${encodeURIComponent(INV_PREFIX)}*`, { headers });
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
-  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX) && !String(row.id).startsWith(REVIEW_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+  return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX) && !String(row.id).startsWith(REVIEW_PREFIX) && !String(row.id).startsWith(INV_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
 }
 
 /* Phase 10.2 — notifications. One row per event (id "notif:<id>") so people acting at the same time
@@ -567,6 +567,26 @@ async function dbSaveReview(review) {
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`Review save failed (${r.status})`);
+}
+/* Phase 12B — inventory. Each stock item is its own row (id "inv:<uuid>").
+   status: "available" → "reserved" (marked sold) → "removed" (the job it went to was invoiced). */
+const INV_PREFIX = "inv:";
+async function dbLoadInventory() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(INV_PREFIX)}*`, { headers });
+  if (!r.ok) throw new Error(`Inventory load failed (${r.status})`);
+  const rows = await r.json();
+  return rows.map((row) => ({ ...row.data, id: row.id })).filter((v) => !v.deleted && v.status !== "removed");
+}
+async function dbSaveInventory(items) {
+  const list = Array.isArray(items) ? items : [items];
+  if (!list.length) return;
+  const at = new Date().toISOString();
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?on_conflict=id`, {
+    method: "POST",
+    headers: { ...headers, Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(list.map((it) => ({ id: it.id, data: it, updated_at: at }))),
+  });
+  if (!r.ok) throw new Error(`Inventory save failed (${r.status})`);
 }
 async function dbLoadSettings() {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?id=eq.${SETTINGS_ID}&select=data`, { headers });
@@ -848,6 +868,8 @@ export default function App() {
   // Phase 10.2 — notifications
   const [notifs, setNotifs] = useState([]);
   const [reviews, setReviews] = useState([]); // Phase 12C — only ever filled for Franco and the Developer
+  const [inventory, setInventory] = useState([]); // Phase 12B — available + reserved stock items
+  const [invPrompt, setInvPrompt] = useState(null); // Phase 12B — { project, source: "snag" | "completion", note }
   const [bellOpen, setBellOpen] = useState(false);
   // Phase 10.3 — "My jobs" / "All jobs" on list tabs; always starts on My jobs when a tab is opened
   const [scope, setScope] = useState("mine");
@@ -900,6 +922,7 @@ export default function App() {
         }
         setNotifs(ns);
       } catch { /* notifications are optional */ }
+      try { setInventory(await dbLoadInventory()); } catch { /* inventory is optional */ }
       // Phase 12C — confidential reviews: fetched only for users allowed to see them
       if (canSeeReviews(user)) { try { setReviews(await dbLoadReviews(user)); } catch { /* optional */ } }
     }
@@ -925,6 +948,35 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  // Phase 12B — inventory
+  const saveInventory = async (items, msg) => {
+    const list = Array.isArray(items) ? items : [items];
+    setInventory((prev) => {
+      let next = [...prev];
+      list.forEach((it) => {
+        const i = next.findIndex((x) => x.id === it.id);
+        if (it.deleted || it.status === "removed") { if (i !== -1) next.splice(i, 1); return; }
+        if (i === -1) next.push(it); else next[i] = it;
+      });
+      return next;
+    });
+    try { await dbSaveInventory(list); if (msg) setToast(msg); }
+    catch (e) { setError(e.message); }
+  };
+  const addInventoryItems = (rows) => {
+    const at = new Date().toISOString();
+    const items = rows.map((r) => ({ id: INV_PREFIX + uid(), status: "available", createdAt: at, addedBy: user.name, ...r }));
+    return saveInventory(items, items.length === 1 ? "Added to inventory" : `${items.length} items added to inventory`);
+  };
+  const markInventorySold = (item, note) => saveInventory({ ...item, status: "reserved", soldNote: (note || "").trim(), reservedBy: user.name, reservedAt: new Date().toISOString() }, "Moved to reserved");
+  const unreserveInventory = (item) => saveInventory({ ...item, status: "available", soldNote: "", reservedBy: null, reservedAt: null, linkedProjectId: null, linkedClient: null, linkedPo: null, linkedAt: null }, "Moved back to available");
+  const linkInventory = (itemId, p) => {
+    const item = inventory.find((x) => x.id === itemId);
+    if (!item) return;
+    saveInventory({ ...item, status: "reserved", linkedProjectId: p.id, linkedClient: p.clientName || "", linkedPo: p.po || "", linkedAt: new Date().toISOString(),
+      reservedBy: item.reservedBy || user.name, reservedAt: item.reservedAt || new Date().toISOString() });
+  };
+
   // Phase 12C — submit a confidential installation review (never touches the job itself)
   const submitReview = async (p, { rating, concerns, comment }) => {
     const review = {
@@ -941,6 +993,11 @@ export default function App() {
 
   const save = async (p, msg) => {
     const before = projectsRef.current.find((x) => x.id === p.id);
+    // Phase 12B — a reserved stock item is permanently removed once the job it went to is invoiced
+    if (p.inventoryItemId && p.invoiced && !(before && before.invoiced)) {
+      const item = inventory.find((x) => x.id === p.inventoryItemId);
+      if (item) saveInventory({ ...item, status: "removed", removedAt: new Date().toISOString(), removedBy: user.name });
+    }
     const events = user && user.pin ? diffEvents(before, p) : [];
     setProjects((prev) => {
       const i = prev.findIndex((x) => x.id === p.id);
@@ -963,6 +1020,7 @@ export default function App() {
     const at = new Date().toISOString();
     const snags = (p.snags || []).map((s) => (s.id === snag.id ? { ...s, materialOrdered: true, materialOrderedBy: user.name, materialOrderedAt: at } : s));
     save({ ...p, snags, log: [...(p.log || []), { id: uid(), text: `Snag material ordered${snag.materialNote ? `: ${snag.materialNote}` : ""}`, author: user.name, createdAt: at }] }, "Snag material marked as ordered");
+    if (!p.isTest) setInvPrompt({ project: p, source: "snag", note: snag.materialNote || "" }); // Phase 12B
   };
   // Who sees a notification: the job's consultant, co-ordinators for that department, and the Developer
   const notifVisible = (n) => {
@@ -1053,6 +1111,7 @@ export default function App() {
     ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
+    { id: "inventory", label: "Inventory", icon: Boxes, count: inventory.filter((x) => x.status === "available").length },
     ...(level >= 1 ? [{ id: "review", label: "Snag review", icon: ClipboardCheck, count: isCoord ? reviewCount : null }] : []),
     { id: "performance", label: "Performance Report", icon: TrendingUp, beta: !canSeePerf },
     ...(isCoord ? [
@@ -1247,6 +1306,12 @@ export default function App() {
             <EtaAlertsView alerts={scope === "all" ? etaAll : etaAlerts} onOpen={setSelected} level={scope === "all" ? 2 : level} />
           ) : view === "updates" ? (
             <ChangelogView />
+          ) : view === "inventory" ? (
+            <InventoryView items={inventory} user={user} level={level} isDev={isDev}
+              onSold={markInventorySold} onUnreserve={unreserveInventory}
+              onEdit={(it) => saveInventory(it, "Inventory item updated")}
+              onDelete={(it) => saveInventory({ ...it, deleted: true, deletedBy: user.name, deletedAt: new Date().toISOString() }, "Inventory item deleted")}
+              onOpenProject={(id) => { const p = projects.find((x) => x.id === id); if (p) setSelected(p); }} />
           ) : view === "performance" ? (
             canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} reviews={canSeeReviews(user) ? reviews.filter((v) => !v.isTest) : null} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest)} user={user} /></>
           ) : view === "reports" ? (
@@ -1279,8 +1344,9 @@ export default function App() {
       {(showCreate || showTest || editing) && (
         <ProjectForm
           initial={editing} user={user} isCoord={isCoord} isTest={showTest && !editing} allowedDepts={allowedDepts}
+          reservedStock={inventory.filter((x) => x.status === "reserved" && !x.linkedProjectId)}
           onClose={() => { setShowCreate(false); setShowTest(false); setEditing(null); }}
-          onSave={async (p) => { await save(p, editing ? "Project updated" : (p.isTest ? "Test project created" : "Project created")); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
+          onSave={async (p) => { await save(p, editing ? "Project updated" : (p.isTest ? "Test project created" : "Project created")); if (!editing && p.inventoryItemId) linkInventory(p.inventoryItemId, p); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
         />
       )}
       {selected && (
@@ -1288,8 +1354,14 @@ export default function App() {
           project={projects.find((p) => p.id === selected.id) || selected}
           user={user} level={level} isCoord={isCoord} canEdit={canEdit(projects.find((p) => p.id === selected.id) || selected)} isDev={isDev} save={save}
           reviews={canSeeReviews(user) ? reviews.filter((v) => v.projectId === selected.id) : null} onSubmitReview={submitReview}
+          onInventoryPrompt={setInvPrompt}
           onClose={() => setSelected(null)} onEdit={() => { setEditing(projects.find((p) => p.id === selected.id)); setSelected(null); }}
         />
+      )}
+      {invPrompt && (
+        <InventoryAddModal project={invPrompt.project} source={invPrompt.source} note={invPrompt.note}
+          onClose={() => setInvPrompt(null)}
+          onSave={async (rows) => { await addInventoryItems(rows); setInvPrompt(null); }} />
       )}
       {showHolidays && (
         <HolidaysModal custom={customHolidays} closeDate={closeDateOf(settings)}
@@ -1678,6 +1750,12 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "12B", date: "2026-09-27", items: [
+    "Inventory: a new Inventory page lists stock on hand and reserved stock, with cost and the reason each item is there.",
+    "When snag material is ordered, or a co-ordinator marks a job as completed, the app asks whether anything is going to stock and lets you add the items.",
+    "Anyone can mark an item as sold, which moves it to Reserved. When creating a new project, tick \"From inventory\" to pick a reserved item.",
+    "Once that job is invoiced, the item is removed from inventory.",
+  ] },
   { phase: "12C", date: "2026-09-27", items: [
     "Installation reviews: any job now has a \"Leave installation review\" button. Give an overall star rating, tick any areas of concern and add a comment. Reviews are confidential.",
     "Once a job is completed, the consultant gets a prompt to leave a considered review.",
@@ -2068,7 +2146,7 @@ function DatePicker({ value, onChange, placeholder = "Pick a date" }) {
   );
 }
 
-function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave }) {
+function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, onSave, reservedStock = [] }) {
   const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
   const [f, setF] = useState(() => {
     const defaultDept = (allowedDepts && allowedDepts.length) ? allowedDepts[0] : "blinds";
@@ -2078,6 +2156,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
       productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
       isRepair: false, repairNeedsMaterial: true,
       overlock: false, overlockSizes: [""],
+      fromInventory: false, inventoryItemId: "",
     };
     // Seed the product-line list for catalogued departments (carries old single-product jobs across)
     if (hasCatalog(base.department)) {
@@ -2138,7 +2217,8 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
   const poOk = initial ? !!(f.po || "").trim() : poNum.length === 6;
   // A repair with no material skips the ETA and goes straight to Ready to book
   const noMaterial = !initial && f.isRepair && !f.repairNeedsMaterial;
-  const valid = f.clientName.trim() && poOk && (noMaterial || f.materialEta || (initial && initial.received));
+  const invOk = initial || !f.fromInventory || reservedStock.some((x) => x.id === f.inventoryItemId); // Phase 12B
+  const valid = f.clientName.trim() && poOk && (noMaterial || f.materialEta || (initial && initial.received)) && invOk;
   const submit = async () => {
     if (!valid) return;
     setBusy(true);
@@ -2182,6 +2262,15 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if (!olOn) { base.overlockStage = null; base.overlockOrderedAt = null; base.overlockOrderedBy = null; base.overlockReceivedAt = null; base.overlockReceivedBy = null; }
     else if (!olWas) { base.overlockStage = null; }
     const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}${olOn ? " · overlocking required" : ""}`;
+    // Phase 12B — new jobs only: link a reserved stock item
+    if (!initial) {
+      const item = f.fromInventory ? reservedStock.find((x) => x.id === f.inventoryItemId) : null;
+      delete base.fromInventory;
+      if (item) {
+        base.inventoryItemId = item.id;
+        base.inventoryItemLabel = [item.description, item.size].filter(Boolean).join(" · ");
+      } else { delete base.inventoryItemId; }
+    }
     if (initial && olOn !== olWas) {
       base.log = [...(initial.log || []), { id: uid(), text: olOn ? "Overlocking required" : "Overlocking no longer required", author: user.name, createdAt: now }];
     }
@@ -2190,7 +2279,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
       : { ...base, id: uid(), createdAt: now, createdBy: user.name, installed: false,
           ...(noMaterial ? { status: "received", received: true, receivedAt: now } : { status: "ordered", received: false }),
           ...(isTest ? { isTest: true } : {}),
-          log: [{ id: uid(), text: createdText, author: user.name, createdAt: now }] };
+          log: [{ id: uid(), text: base.inventoryItemId ? `${createdText} · from inventory: ${base.inventoryItemLabel}` : createdText, author: user.name, createdAt: now }] };
     await onSave(p);
     setBusy(false);
   };
@@ -2343,6 +2432,25 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
           <button onClick={addLine} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add item</button>
         </div>
 
+        {/* Phase 12B — new jobs only: supplied from a reserved stock item */}
+        {!initial && (
+          <div className={`md:col-span-2 border rounded-xl p-4 ${f.fromInventory ? "border-teal-500/50 bg-teal-500/5" : "border-[#30363d]"}`}>
+            <label className={`flex items-center gap-3 select-none ${reservedStock.length ? "cursor-pointer" : "opacity-60"}`}>
+              <input type="checkbox" className="w-4 h-4" disabled={!reservedStock.length} checked={!!f.fromInventory} onChange={(e) => set("fromInventory", e.target.checked)} />
+              <span className="text-sm text-slate-100 font-medium flex items-center gap-1.5"><Boxes size={15} className="text-teal-300" /> From inventory</span>
+              <span className="text-xs text-slate-500 ml-auto text-right">{reservedStock.length ? `${reservedStock.length} reserved item${reservedStock.length === 1 ? "" : "s"}` : "No reserved stock at the moment"}</span>
+            </label>
+            {f.fromInventory && (
+              <select className={`${inputCls} mt-3`} value={f.inventoryItemId} onChange={(e) => set("inventoryItemId", e.target.value)}>
+                <option value="">Choose a reserved item…</option>
+                {reservedStock.map((x) => (
+                  <option key={x.id} value={x.id}>{[x.description, x.size, x.soldNote ? `for ${x.soldNote}` : "", x.reservedBy ? `(${x.reservedBy})` : ""].filter(Boolean).join(" · ")}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
         {/* Phase 12A — overlocking (Carpets only) */}
         {f.department === "carpets" && (
           <div className={`md:col-span-2 border rounded-xl p-4 ${f.overlock ? "border-amber-500/50 bg-amber-500/5" : "border-[#30363d]"}`}>
@@ -2405,7 +2513,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
 /* =========================================================
    PROJECT DETAIL
    ========================================================= */
-function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit, reviews, onSubmitReview }) {
+function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit, reviews, onSubmitReview, onInventoryPrompt }) {
   const d = deptOf(p.department);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [reason, setReason] = useState("");
@@ -2439,7 +2547,10 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
 
   const markReceived = () => save({ ...p, status: "received", received: true, receivedAt: now(), log: log("Main item received") }, "Marked as received");
   const undoReceived = () => save({ ...p, status: "ordered", received: false, receivedAt: null, log: log("Received undone") }, "Moved back to placed");
-  const markInstalled = () => save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
+  const markInstalled = () => {
+    save({ ...p, status: "installed", installed: true, installedAt: now(), log: log("Installation completed") }, "Marked as completed");
+    if ((isCoord || isDev) && onInventoryPrompt && !p.isTest) onInventoryPrompt({ project: p, source: "completion" }); // Phase 12B — anything going to stock?
+  };
   const undoInstalled = () => save({ ...p, status: "booked", installed: false, installedAt: null, log: log("Completion undone") }, "Moved back to booked");
   const unbook = () => save({ ...p, status: "received", reserveStage: null, installDate: null, installEndDate: null, installTime: null, installEndTime: null, installSchedule: [], log: log("Booking removed") }, "Booking removed");
   // Two-step booking controls
@@ -2480,6 +2591,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   const snagMaterialOrdered = (snag) => {
     const next = snags.map((s) => (s.id === snag.id ? { ...s, materialOrdered: true, materialOrderedBy: user.name, materialOrderedAt: now() } : s));
     save({ ...p, snags: next, log: log(`Snag material ordered${snag.materialNote ? `: ${snag.materialNote}` : ""}`) }, "Snag material marked as ordered");
+    if (onInventoryPrompt && !p.isTest) onInventoryPrompt({ project: p, source: "snag", note: snag.materialNote || "" }); // Phase 12B
   };
   // A small "partially received" control for one line
   const partialCtl = (target, on, note, allowed) => (
@@ -2616,6 +2728,16 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
               {p.overlockReceivedBy && <span> · Received by {p.overlockReceivedBy}{p.overlockReceivedAt ? ` on ${fmtShort(p.overlockReceivedAt.slice(0, 10))}` : ""}</span>}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Phase 12B — supplied from inventory */}
+      {p.inventoryItemId && (
+        <div className="mt-4 border border-teal-500/40 bg-teal-500/5 rounded-xl p-3 flex items-center gap-2 text-sm">
+          <Boxes size={16} className="text-teal-300 shrink-0" />
+          <span className="text-slate-300">From inventory:</span>
+          <span className="text-slate-100">{p.inventoryItemLabel || "stock item"}</span>
+          <span className="text-xs text-slate-500 ml-auto">{p.invoiced ? "removed from stock" : "removed from stock once invoiced"}</span>
         </div>
       )}
 
@@ -2804,6 +2926,195 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
       )}
       {partialEdit && <PartialModal target={partialEdit} onClose={() => setPartialEdit(null)} onSave={(note) => savePartial(partialEdit, true, note)} onClear={() => savePartial(partialEdit, false)} />}
     </Modal>
+  );
+}
+
+/* =========================================================
+   PHASE 12B — INVENTORY
+   ========================================================= */
+const blankStockRow = (dept, reason) => ({ key: uid(), description: "", size: "", cost: "", reason, department: dept || "" });
+const stockRowOk = (r) => r.description.trim() && r.reason.trim() && r.cost !== "" && !isNaN(Number(r.cost)) && Number(r.cost) >= 0;
+
+function StockRowFields({ row, onChange, onRemove, showDept = true }) {
+  const set = (k, v) => onChange({ ...row, [k]: v });
+  return (
+    <div className="bg-[#0d1117] border border-[#30363d] rounded-xl p-3 space-y-2">
+      <div className="flex items-start gap-2">
+        <input className={`${inputCls} flex-1`} value={row.description} onChange={(e) => set("description", e.target.value)} placeholder="Product, e.g. Belgotex Merino, Oatmeal" />
+        {onRemove && <button onClick={onRemove} className="p-2 rounded-md hover:bg-[#21262d] text-slate-400 shrink-0" title="Remove this item"><X size={14} /></button>}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input className={inputCls} value={row.size} onChange={(e) => set("size", e.target.value)} placeholder="Size / quantity, e.g. 4 x 2.6 m" />
+        <input className={inputCls} type="number" inputMode="decimal" min="0" step="0.01" value={row.cost} onChange={(e) => set("cost", e.target.value)} placeholder="Cost (R)" />
+      </div>
+      <input className={inputCls} value={row.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Why is this in stock?" />
+      {showDept && (
+        <select className={inputCls} value={row.department} onChange={(e) => set("department", e.target.value)}>
+          <option value="">No department</option>
+          {DEPARTMENTS.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
+function InventoryAddModal({ project: p, source, note, onClose, onSave }) {
+  const where = `${p.clientName || "job"}${p.po ? ` (${p.po})` : ""}`;
+  const defaultReason = source === "snag" ? `Surplus from snag re-order · ${where}` : `Left over after completion · ${where}`;
+  const [step, setStep] = useState("ask");
+  const [rows, setRows] = useState(() => [blankStockRow(p.department, defaultReason)]);
+  const [busy, setBusy] = useState(false);
+  const allOk = rows.length > 0 && rows.every(stockRowOk);
+  const submit = async () => {
+    if (!allOk || busy) return;
+    setBusy(true);
+    await onSave(rows.map((r) => ({
+      description: r.description.trim(), size: r.size.trim(), cost: Number(r.cost), reason: r.reason.trim(), department: r.department || null,
+      source, sourceProjectId: p.id, sourceClient: p.clientName || "", sourcePo: p.po || "",
+    })));
+    setBusy(false);
+  };
+  return (
+    <Modal title={step === "ask" ? "Anything going to stock?" : "Add to inventory"} onClose={onClose}>
+      {step === "ask" ? (
+        <>
+          <div className="text-sm text-slate-300">
+            {source === "snag"
+              ? <>Snag material has been ordered{note ? <> (<span className="text-slate-100">{note}</span>)</> : ""}. Will any of it be left over and go into stock?</>
+              : <>{where} is complete. Is there any material left over that should go into stock?</>}
+          </div>
+          <div className="flex justify-end gap-2 mt-6">
+            <button onClick={onClose} className={btnGhost}>No</button>
+            <button onClick={() => setStep("add")} className={btnPrimary}>Yes, add to inventory</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="text-xs text-slate-400 mb-3">Everyone can see the inventory list, including the cost.</div>
+          <div className="space-y-2">
+            {rows.map((r, i) => (
+              <StockRowFields key={r.key} row={r}
+                onChange={(nr) => setRows((cur) => cur.map((x, j) => (j === i ? nr : x)))}
+                onRemove={rows.length > 1 ? () => setRows((cur) => cur.filter((_, j) => j !== i)) : null} />
+            ))}
+          </div>
+          <button onClick={() => setRows((cur) => [...cur, blankStockRow(p.department, defaultReason)])} className={`${btnGhost} mt-2 flex items-center gap-1.5 text-xs py-1.5`}><Plus size={14} /> Add another item</button>
+          <div className="text-[11px] text-slate-500 mt-3">Product, cost and reason are required.</div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button onClick={onClose} className={btnGhost}>Cancel</button>
+            <button onClick={submit} disabled={!allOk || busy} className={btnPrimary}>{busy ? "Saving…" : `Add ${rows.length === 1 ? "item" : `${rows.length} items`}`}</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function InventorySoldModal({ item, onClose, onSave }) {
+  const [note, setNote] = useState("");
+  return (
+    <Modal title="Mark as sold" onClose={onClose}>
+      <div className="text-sm text-slate-200">{[item.description, item.size].filter(Boolean).join(" · ")}</div>
+      <div className="text-xs text-slate-500 mt-1 mb-4">Moves to the reserved list. A co-ordinator can then pick it when creating the new job.</div>
+      <Field label="Sold to / note (optional)">
+        <input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Mrs Botha, Brackenridge" autoFocus />
+      </Field>
+      <div className="flex justify-end gap-2 mt-5">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={() => onSave(note)} className={btnPrimary}>Mark as sold</button>
+      </div>
+    </Modal>
+  );
+}
+
+function InventoryEditModal({ item, onClose, onSave, onDelete }) {
+  const [row, setRow] = useState({ key: item.id, description: item.description || "", size: item.size || "", cost: item.cost ?? "", reason: item.reason || "", department: item.department || "" });
+  const [confirmDel, setConfirmDel] = useState(false);
+  return (
+    <Modal title="Edit inventory item" onClose={onClose}>
+      <StockRowFields row={row} onChange={setRow} />
+      <div className="flex items-center gap-2 mt-5">
+        {!confirmDel
+          ? <button onClick={() => setConfirmDel(true)} className="px-3 py-2 rounded-lg text-red-300 hover:bg-red-500/10 text-sm flex items-center gap-1"><Trash2 size={14} /> Delete</button>
+          : <button onClick={onDelete} className="px-3 py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm">Confirm delete</button>}
+        <span className="flex-1" />
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button disabled={!stockRowOk(row)} onClick={() => onSave({ ...item, description: row.description.trim(), size: row.size.trim(), cost: Number(row.cost), reason: row.reason.trim(), department: row.department || null, editedBy: "", editedAt: new Date().toISOString() })} className={btnPrimary}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+function InventoryView({ items, user, level, isDev, onSold, onUnreserve, onEdit, onDelete, onOpenProject }) {
+  const [q, setQ] = useState("");
+  const [selling, setSelling] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const match = (x) => {
+    const t = q.trim().toLowerCase();
+    if (!t) return true;
+    return [x.description, x.size, x.reason, x.sourceClient, x.sourcePo, x.soldNote, x.linkedClient, x.reservedBy, x.department && deptOf(x.department).label]
+      .filter(Boolean).join(" ").toLowerCase().includes(t);
+  };
+  const byNewest = (a, b) => (b.createdAt || "").localeCompare(a.createdAt || "");
+  const available = items.filter((x) => x.status === "available" && match(x)).sort(byNewest);
+  const reserved = items.filter((x) => x.status === "reserved" && match(x)).sort((a, b) => (b.reservedAt || "").localeCompare(a.reservedAt || ""));
+  const totalCost = (list) => list.reduce((n, x) => n + (Number(x.cost) || 0), 0);
+
+  const Card = ({ x }) => (
+    <div className="bg-[#161b22] border border-[#30363d] rounded-xl p-3">
+      <div className="flex items-start gap-2 flex-wrap">
+        <div className="flex-1 min-w-[180px]">
+          <div className="text-sm text-slate-100 font-medium">{x.description}{x.size && <span className="text-slate-400 font-normal"> · {x.size}</span>}</div>
+          <div className="text-xs text-slate-400 mt-0.5">{x.reason}</div>
+        </div>
+        <div className="text-sm text-slate-100 tabular-nums">{zar(x.cost)}</div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap mt-2 text-[11px] text-slate-500">
+        {x.department && <span className="px-1.5 py-0.5 rounded border border-[#30363d] text-slate-400">{deptOf(x.department).label}</span>}
+        <span>Added by {x.addedBy || "—"} · {fmtShort((x.createdAt || "").slice(0, 10))}</span>
+        {x.sourceProjectId && <button onClick={() => onOpenProject(x.sourceProjectId)} className="underline hover:text-slate-300">from {x.sourceClient || "job"}{x.sourcePo ? ` (${x.sourcePo})` : ""}</button>}
+      </div>
+      {x.status === "reserved" && (
+        <div className="mt-2 text-xs text-teal-200/90 flex items-center gap-2 flex-wrap">
+          <Tag size={12} /> Sold by {x.reservedBy || "—"} · {fmtShort((x.reservedAt || "").slice(0, 10))}{x.soldNote ? ` · ${x.soldNote}` : ""}
+          {x.linkedProjectId
+            ? <button onClick={() => onOpenProject(x.linkedProjectId)} className="underline">→ {x.linkedClient || "job"}{x.linkedPo ? ` (${x.linkedPo})` : ""}</button>
+            : <span className="text-slate-500">· not yet linked to a job</span>}
+        </div>
+      )}
+      <div className="flex gap-2 mt-3 flex-wrap">
+        {x.status === "available" && level >= 1 && <button onClick={() => setSelling(x)} className="text-xs px-2.5 py-1 rounded-lg border border-teal-500/50 text-teal-200 hover:bg-teal-500/10 flex items-center gap-1"><Tag size={12} /> Mark as sold</button>}
+        {x.status === "reserved" && !x.linkedProjectId && isDev && <button onClick={() => onUnreserve(x)} className="text-xs px-2.5 py-1 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d] flex items-center gap-1"><RotateCcw size={12} /> Back to available</button>}
+        {isDev && <button onClick={() => setEditing(x)} className="text-xs px-2.5 py-1 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d] flex items-center gap-1"><Pencil size={12} /> Edit</button>}
+      </div>
+    </div>
+  );
+
+  const Section = ({ title, list, empty }) => (
+    <div className="mt-5">
+      <div className="flex items-baseline gap-2 mb-2">
+        <h2 className="text-sm font-semibold text-white">{title}</h2>
+        <span className="text-xs text-slate-500">{list.length} item{list.length === 1 ? "" : "s"} · {zar(totalCost(list))}</span>
+      </div>
+      {list.length === 0 ? <div className="text-sm text-slate-500 bg-[#161b22] border border-[#30363d] rounded-xl p-4">{empty}</div>
+        : <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">{list.map((x) => <Card key={x.id} x={x} />)}</div>}
+    </div>
+  );
+
+  return (
+    <div className="max-w-5xl">
+      <div className="flex items-center gap-3 flex-wrap">
+        <h1 className="text-xl font-semibold text-white flex items-center gap-2"><Boxes size={20} className="text-teal-300" /> Inventory</h1>
+        <input className={`${inputCls} max-w-xs ml-auto`} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stock" />
+      </div>
+      <div className="text-xs text-slate-500 mt-1">Stock is added when snag material is ordered or when a job is completed. Items marked as sold move to Reserved, and drop off once the job they went to is invoiced.</div>
+      <Section title="Available" list={available} empty={q ? "Nothing matches." : "No stock on hand."} />
+      <Section title="Reserved" list={reserved} empty={q ? "Nothing matches." : "Nothing reserved."} />
+      {selling && <InventorySoldModal item={selling} onClose={() => setSelling(null)} onSave={(note) => { onSold(selling, note); setSelling(null); }} />}
+      {editing && <InventoryEditModal item={editing} onClose={() => setEditing(null)}
+        onSave={(it) => { onEdit({ ...it, editedBy: user.name }); setEditing(null); }}
+        onDelete={() => { onDelete(editing); setEditing(null); }} />}
+    </div>
   );
 }
 
