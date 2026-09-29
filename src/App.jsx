@@ -1201,8 +1201,8 @@ export default function App() {
     { id: "home", label: "Home", icon: Home },
     { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
-    { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
     { id: "eta", label: "ETA alerts", icon: AlertTriangle, count: etaCount, alert: etaAlerts.overdue.length, alertLabel: "overdue" },
+    { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
     ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
@@ -1212,9 +1212,9 @@ export default function App() {
     ...(isCoord ? [
       { id: "availability", label: "Availability", icon: CalendarCheck },
       { id: "reports", label: "Reports", icon: FileText },
+      // Phase 16 — changelog now Co-ordinator+ only (was visible to everyone); desktop only (hidden in the phone menu)
+      { id: "updates", label: "App updates", icon: Sparkles, desktopOnly: true },
     ] : []),
-    // Phase 11 — changelog, desktop only (hidden in the phone menu)
-    { id: "updates", label: "App updates", icon: Sparkles, desktopOnly: true },
   ];
 
   const logout = () => { sessionStorage.removeItem("nolans_user"); setUser(null); setView("home"); };
@@ -1845,6 +1845,10 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "16", date: "2026-09-29", items: [
+    "App updates page moved to Co-ordinator and up (was visible to everyone).",
+    "Home menu order: ETA alerts now sits above Booked orders.",
+  ] },
   { phase: "15", date: "2026-09-29", items: [
     "Shutters: Blockhouse and Plantation ranges updated to their real codes (Blockhouse: B1, B2, FL · Plantation: A1, A2, A3, T1, T2).",
     "Calore: new product catalogue — Supplier, Type (Wood/Pellet/Gas) and Unit type (Free-Standing/Built-In), plus a free-text model name.",
