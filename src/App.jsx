@@ -134,6 +134,64 @@ const PRODUCT_CATALOG = {
   },
 };
 
+// Phase 14 — Wood catalogue. Structure differs from the Category->Supplier->Range pattern above:
+// here it's Supplier -> Finish type (Pre-finished/Unfinished/Patterns) -> Range, because a range's
+// finish type varies by supplier and Jaco wants supplier picked first. Each range lists its available
+// plank sizes (shown as a size sub-dropdown when there's more than one) and flags whether colour applies
+// (an Unfinished board, or an unfinished pattern shape) — though the colour box itself is already shown
+// for every product line app-wide, so needsColour is kept for future use rather than gating the field.
+const WOOD_CATALOG = {
+  "Oggie": {
+    "Pre-finished": [
+      { name: "Livello Extra Rustic Brushed Whitemist", sizes: ["14/3x148x1860mm", "14/3x190x1900mm", "15/4x260x2200mm"] },
+      { name: "Ona Rustic, Natural", sizes: ["14/3x190x1900mm"] },
+      { name: "Ona Rustic, Greymist", sizes: ["14/3x190x1900mm"] },
+      { name: "Ona Rustic, Greymist XL", sizes: ["15/4x260x2200mm"] },
+      { name: "Ona Living, Wirebrushed Danish White", sizes: ["14/3x190x1900mm"] },
+      { name: "Ona Living, Wirebrushed Greymist", sizes: ["14/3x190x1900mm"] },
+      { name: "Oliato Living, Wirebrushed Greymist", sizes: ["15/4x260x2200mm"] },
+      { name: "Oliato Living, Wirebrushed Danish White", sizes: ["15/4x260x2200mm"] },
+      { name: "Lusso Weathered Natural", sizes: ["2200x260x15/4mm"] },
+      { name: "Lusso Weathered Brazil Brown", sizes: ["2200x260x15/4mm"] },
+      { name: "Lusso Weathered Puro Grey", sizes: ["2200x260x15/4mm"] },
+      { name: "Lusso Weathered White", sizes: ["2200x260x15/4mm"] },
+      { name: "Lusso Weathered Walnut", sizes: ["2200x260x15/4mm"] },
+      { name: "Cerato Hand Chiselled, Greymist", sizes: ["15/4x260x2200mm", "20/6x260x2200mm"] },
+      { name: "Cerato Hand Chiselled, Danish White", sizes: ["20/6x260x2200mm"] },
+      { name: "Cerato Hand Chiselled, Mink Grey", sizes: ["20/6x260x2200mm"] },
+      { name: "Cerato Hand Chiselled, Dove Grey", sizes: ["20/6x260x2200mm"] },
+      { name: "American Walnut Rustic", sizes: ["15/4x220x2200mm", "20/6x220x2200mm"] },
+      { name: "Herringbone Rustic Greymist", sizes: ["14/3x122x610mm", "15/4x122x610mm"] },
+      { name: "Herringbone American Walnut Rustic", sizes: ["15/4x125x600mm"] },
+    ],
+    "Unfinished": [
+      { name: "Crudo Living", sizes: ["15/3x190x1900mm", "15/4x190x1900mm", "15/4x260x2200mm"], needsColour: true },
+      { name: "Crudo Rustic", sizes: ["15/3x190x1900mm", "15/4x190x1900mm", "15/4x260x2200mm"], needsColour: true },
+      { name: "Grande Rustic", sizes: ["15/4x305x2550mm", "20/6x400x2550mm", "20/6x400x5000mm"], needsColour: true },
+      { name: "Ande Irregular Aged Handscraped", sizes: ["20/6x220x2200mm"], needsColour: true },
+    ],
+    "Patterns": [
+      { name: "Herringbone Rustic Greymist", sizes: ["14/3x122x610mm", "15/4x122x610mm"] },
+      { name: "Herringbone American Walnut Rustic", sizes: ["15/4x125x600mm"] },
+      { name: "Herringbone Living", sizes: ["15/3x122x610mm", "15/4x122x610mm"], needsColour: true },
+      { name: "Chevron Living", sizes: ["15/4x90x510mm"], needsColour: true },
+      { name: "Versailles Living", sizes: ["15/4x900x900mm"], needsColour: true },
+      { name: "Braid Living", sizes: ["15/4x190x285mm"], needsColour: true },
+      { name: "Biscuit Living", sizes: ["15/4x90x600mm"], needsColour: true },
+      { name: "Palm Living", sizes: ["15/4x135x600mm"], needsColour: true },
+      { name: "Modello Wave Living", sizes: ["15/4x90x600mm"], needsColour: true },
+      { name: "Modello Pearl Living", sizes: ["15/4x90x600mm"], needsColour: true },
+      { name: "Modello Scallop Living", sizes: ["15/4x90x600mm"], needsColour: true },
+      { name: "Casa Living", sizes: ["15/4x180x243mm"], needsColour: true },
+      { name: "Fiore Living", sizes: ["15/4x189x328mm"], needsColour: true },
+    ],
+  },
+};
+const woodSuppliers = () => Object.keys(WOOD_CATALOG);
+const woodFinishes = (sup) => Object.keys(WOOD_CATALOG[sup] || {});
+const woodRanges = (sup, finish) => ((WOOD_CATALOG[sup] || {})[finish] || []);
+const woodRangeObj = (sup, finish, name) => woodRanges(sup, finish).find((r) => r.name === name);
+
 // Which catalogue categories each department may pick from. Departments not listed
 // keep the old free-text product field until their product lists are loaded.
 const DEPT_CATEGORIES = {
@@ -162,16 +220,16 @@ const measureText = (l, dept) => {
   return area;
 };
 const categoriesOf = (dept) => DEPT_CATEGORIES[dept] || [];
-const hasCatalog = (dept) => categoriesOf(dept).length > 0;
+const hasCatalog = (dept) => categoriesOf(dept).length > 0 || dept === "wood"; // Phase 14 — Wood has its own catalogue shape (see WOOD_CATALOG)
 const suppliersOf = (cat) => Object.keys(PRODUCT_CATALOG[cat] || {});
 const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
 // The label written into productType so stickers, reports and search keep working unchanged
 // Phase 9.2 — optional free-text colour is appended so stickers/search show it; reports group by supplier + range only
-const composeProduct = (sup, rng, colour) => [sup, rng, (colour || "").trim()].filter(Boolean).join(" ");
+const composeProduct = (sup, rng, colour, size) => [sup, rng, size, (colour || "").trim()].filter(Boolean).join(" ");
 
 // Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
 // A fresh, empty product line for a department (auto-picks the only category where there is just one).
-const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", productRange: "", productType: "", colour: "", area: "", rollWidth: "", linearM: "", qty: "", refs: "", panels: "" }; };
+const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", finish: "", boardSize: "", productRange: "", productType: "", colour: "", area: "", rollWidth: "", linearM: "", qty: "", refs: "", panels: "" }; };
 // All product lines for a job. Falls back to a single synthesised line for older records that only
 // stored the top-level product fields, so nothing built before Phase 6 breaks.
 const productLinesOf = (p) => {
@@ -197,7 +255,7 @@ const jobMeasureText = (p) => {
 // One string holding everything searchable on a job, including every product line and item.
 const searchText = (p) => [
   p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact, teamLabel(p.department, p.team),
-  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty]),
+  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty, l.boardSize]),
   ...(p.lineItems || []).map((li) => li.description),
 ].filter(Boolean).join(" ").toLowerCase();
 
@@ -2015,6 +2073,15 @@ function ListView({ title, status, items, onOpen, level }) {
 //     quantity in m² (m2, m², sqm) is copied into Area if Area is empty. Linear metres (lm) are not converted.
 const QTY_TAIL = /\s*[,;-]?\s*(\d+(?:[.,]\d+)?)\s*(lm|m2|m²|sqm|sq\s?m|m)\s*$/i;
 function matchLegacyLine(line, dept) {
+  // Phase 14 — Wood's catalogue can't be reverse-matched from one free-text string (supplier, finish
+  // type and board size are three separate pickers now), so a hand-typed entry is just flagged as
+  // legacy for reference; the consultant re-picks it from the dropdowns.
+  if (dept === "wood") {
+    const next = { ...line, colour: line.colour || "" };
+    if (line.productRange && line.supplier) return next;
+    const raw = (line.productType || "").trim();
+    return raw ? { ...next, _legacy: raw, _matched: false } : next;
+  }
   const cats = categoriesOf(dept);
   if (!cats.length) return line;
   const next = { ...line, colour: line.colour || "" };
@@ -2200,7 +2267,17 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
   const setLineCategory = (id, cat) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productCategory: cat, supplier: "", productRange: "", productType: l._legacy || "" } : l)) }));
   const setLineSupplier = (id, sup) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, supplier: sup, productRange: "", productType: l._legacy || "" } : l)) }));
   const setLineRange = (id, rng) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, productRange: rng, productType: rng ? composeProduct(l.supplier, rng, l.colour) : (l._legacy || "") } : l)) }));
-  const setLineColour = (id, colour) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, colour, productType: l.productRange ? composeProduct(l.supplier, l.productRange, colour) : l.productType } : l)) }));
+  const setLineColour = (id, colour) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, colour, productType: l.productRange ? composeProduct(l.supplier, l.productRange, colour, l.boardSize) : l.productType } : l)) }));
+  // Phase 14 — Wood's own cascade: supplier -> finish type -> range -> (size, when the range has more than one)
+  const setLineWoodSupplier = (id, sup) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, supplier: sup, finish: "", productRange: "", boardSize: "", productType: l._legacy || "" } : l)) }));
+  const setLineWoodFinish = (id, finish) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, finish, productRange: "", boardSize: "", productType: l._legacy || "" } : l)) }));
+  const setLineWoodRange = (id, name) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => {
+    if (l.id !== id) return l;
+    const obj = woodRangeObj(l.supplier, l.finish, name);
+    const boardSize = obj && obj.sizes.length === 1 ? obj.sizes[0] : "";
+    return { ...l, productRange: name, boardSize, productType: name ? composeProduct(l.supplier, name, l.colour, boardSize) : (l._legacy || "") };
+  }) }));
+  const setLineWoodSize = (id, size) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, boardSize: size, productType: composeProduct(l.supplier, l.productRange, l.colour, size) } : l)) }));
   const addProdLine = () => setF((s) => ({ ...s, productLines: [...s.productLines, newLine(s.department)] }));
   const delProdLine = (id) => setF((s) => ({ ...s, productLines: s.productLines.length > 1 ? s.productLines.filter((l) => l.id !== id) : s.productLines }));
 
@@ -2381,20 +2458,59 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                       </select>
                     </Field>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Field label="Supplier">
-                      <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineSupplier(l.id, e.target.value)} disabled={!l.productCategory}>
-                        <option value="">{l.productCategory ? "Select a supplier…" : "Pick a category first"}</option>
-                        {suppliersOf(l.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </Field>
-                    <Field label="Range">
-                      <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineRange(l.id, e.target.value)} disabled={!l.supplier}>
-                        <option value="">{l.supplier ? "Select a range…" : "Pick a supplier first"}</option>
-                        {rangesOf(l.productCategory, l.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </Field>
-                  </div>
+                  {f.department === "wood" ? (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <Field label="Supplier">
+                          <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineWoodSupplier(l.id, e.target.value)}>
+                            <option value="">Select a supplier…</option>
+                            {woodSuppliers().map((s) => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        </Field>
+                        <Field label="Finish type">
+                          <select className={inputCls} value={l.finish || ""} onChange={(e) => setLineWoodFinish(l.id, e.target.value)} disabled={!l.supplier}>
+                            <option value="">{l.supplier ? "Select a finish type…" : "Pick a supplier first"}</option>
+                            {woodFinishes(l.supplier).map((fn) => <option key={fn} value={fn}>{fn}</option>)}
+                          </select>
+                        </Field>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <Field label="Range">
+                          <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineWoodRange(l.id, e.target.value)} disabled={!l.finish}>
+                            <option value="">{l.finish ? "Select a range…" : "Pick a finish type first"}</option>
+                            {woodRanges(l.supplier, l.finish).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+                          </select>
+                        </Field>
+                        {(() => {
+                          const obj = woodRangeObj(l.supplier, l.finish, l.productRange);
+                          if (!obj || obj.sizes.length < 2) return null;
+                          return (
+                            <Field label="Size">
+                              <select className={inputCls} value={l.boardSize || ""} onChange={(e) => setLineWoodSize(l.id, e.target.value)}>
+                                <option value="">Select a size…</option>
+                                {obj.sizes.map((sz) => <option key={sz} value={sz}>{sz}</option>)}
+                              </select>
+                            </Field>
+                          );
+                        })()}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <Field label="Supplier">
+                        <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineSupplier(l.id, e.target.value)} disabled={!l.productCategory}>
+                          <option value="">{l.productCategory ? "Select a supplier…" : "Pick a category first"}</option>
+                          {suppliersOf(l.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </Field>
+                      <Field label="Range">
+                        <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineRange(l.id, e.target.value)} disabled={!l.supplier}>
+                          <option value="">{l.supplier ? "Select a range…" : "Pick a supplier first"}</option>
+                          {rangesOf(l.productCategory, l.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                  )}
                   <LineMeasureFields dept={f.department} l={l}
                     onColour={(v) => setLineColour(l.id, v)}
                     onChange={(patch) => {
