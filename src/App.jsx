@@ -245,6 +245,12 @@ const suppliersOf = (cat) => Object.keys(PRODUCT_CATALOG[cat] || {});
 const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
 // The label written into productType so stickers, reports and search keep working unchanged
 // Phase 9.2 — optional free-text colour is appended so stickers/search show it; reports group by supplier + range only
+// Phase 17 — "Other" is a sentinel supplier value available in every catalogued department, for the
+// occasional out-of-the-norm order. Picking it replaces the whole cascade below it (range/finish/type/
+// model, and colour) with one free-text description; quantities/measurements still apply as normal.
+// Reporting groups every Other line under one collective "Other" bucket (see rangeLabel) rather than by
+// the typed text, so one-off suppliers don't fragment the stats.
+const OTHER_SUPPLIER = "Other";
 const composeProduct = (sup, rng, colour, size) => [sup, rng, size, (colour || "").trim()].filter(Boolean).join(" ");
 
 // Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
@@ -375,7 +381,7 @@ const spanDays = (start, end) => {
   return out;
 };
 const fmt = (s, opts = { weekday: "short", day: "numeric", month: "short", year: "numeric" }) =>
-  s ? fromIso(s).toLocaleDateString("en-ZA", opts) : "";
+  s ? (s === ETA_TBC ? ETA_TBC : fromIso(s).toLocaleDateString("en-ZA", opts)) : "";
 const fmtShort = (s) => fmt(s, { day: "numeric", month: "short" });
 const weekStart = (s) => { const d = fromIso(s); const w = (d.getDay() + 6) % 7; d.setDate(d.getDate() - w); return iso(d); };
 const timeLt = (a, b) => !!a && !!b && a < b; // "HH:MM" strings compare correctly as text
@@ -438,8 +444,12 @@ const overlockStatusText = (p) => (p.overlockStage === "received" ? "received" :
    Overdue  = ETA date has passed and the order is still not received
    Due soon = ETA is today or within the next ETA_WARN_DAYS days, still not received */
 const ETA_WARN_DAYS = 3;
+// Phase 17 — a Material ETA can be "TBC" instead of a date, for orders where no date is known yet.
+// Stored as this exact string in materialEta; fmt()/fmtShort() pass it straight through everywhere.
+const ETA_TBC = "TBC";
 const etaStateOf = (p) => {
   if (!p || p.status !== "ordered" || p.received || !p.materialEta || p.deleted || p.invoiced) return null;
+  if (p.materialEta === ETA_TBC) return "tbc";
   const today = todayIso();
   if (p.materialEta < today) return "overdue";
   if (p.materialEta <= addDays(today, ETA_WARN_DAYS)) return "soon";
@@ -448,15 +458,17 @@ const etaStateOf = (p) => {
 const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
 const etaLabel = (p) => {
   const st = etaStateOf(p); if (!st) return "";
+  if (st === "tbc") return "ETA to be confirmed";
   const d = daysBetween(todayIso(), p.materialEta);
   if (st === "overdue") return `${-d} day${d === -1 ? "" : "s"} overdue`;
   return d === 0 ? "ETA today" : `ETA in ${d} day${d === 1 ? "" : "s"}`;
 };
 const EtaBadge = ({ p, small }) => {
   const st = etaStateOf(p); if (!st) return null;
+  const cls = st === "overdue" ? "bg-red-600 text-white" : st === "tbc" ? "bg-slate-500 text-white" : "bg-amber-400 text-slate-900";
   return (
-    <span title={etaLabel(p)} className={`shrink-0 font-bold rounded-full ${small ? "text-[9px] px-1 py-px" : "text-[10px] px-1.5 py-0.5"} ${st === "overdue" ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>
-      {st === "overdue" ? "OVERDUE" : "ETA SOON"}
+    <span title={etaLabel(p)} className={`shrink-0 font-bold rounded-full ${small ? "text-[9px] px-1 py-px" : "text-[10px] px-1.5 py-0.5"} ${cls}`}>
+      {st === "overdue" ? "OVERDUE" : st === "tbc" ? "TBC" : "ETA SOON"}
     </span>
   );
 };
@@ -481,6 +493,7 @@ const NOTIF_META = {
   snagResolved: { label: "Snag resolved", cls: "bg-emerald-400" },
   overlockOrdered: { label: "Overlocking ordered", cls: "bg-amber-400" },
   overlockReceived: { label: "Overlocking received", cls: "bg-emerald-400" },
+  other: { label: "Non-catalogue product", cls: "bg-orange-400" },
 };
 const schedKey = (p) => scheduleOf(p).map((d) => d.date).sort().join(",");
 function diffEvents(prev, next) {
@@ -520,6 +533,11 @@ function diffEvents(prev, next) {
   // Phase 12A — overlocking
   if (hasOverlock(next) && prev.overlockStage !== "ordered" && next.overlockStage === "ordered") add("overlockOrdered", `Overlocking ordered${overlockSizesOf(next).length ? `: ${overlockSizesOf(next).join(", ")}` : ""}`);
   if (hasOverlock(next) && prev.overlockStage !== "received" && next.overlockStage === "received") add("overlockReceived", "Overlocking received");
+  // Phase 17 — "Other" (non-catalogue) product used: notify so it can be checked whether that supplier's
+  // range should be added to the catalogue. Fires once per line the first time it becomes an Other line.
+  const otherBefore = new Set((prev.productLines || []).filter((l) => l.supplier === OTHER_SUPPLIER && l.productType).map((l) => l.id));
+  (next.productLines || []).filter((l) => l.supplier === OTHER_SUPPLIER && l.productType && !otherBefore.has(l.id))
+    .forEach((l) => add("other", `Non-catalogue product used: "${l.productType}"`));
   const prevSnags = Object.fromEntries((prev.snags || []).map((x) => [x.id, x]));
   (next.snags || []).forEach((sn) => {
     const old = prevSnags[sn.id];
@@ -1167,11 +1185,11 @@ export default function App() {
   // Phase 9.1 — orders overdue or due within 3 days, still not received. Consultants see only their own (same rule as Placed orders).
   const etaOf = (src) => {
     const withState = src.filter((p) => etaStateOf(p)).sort((a, b) => a.materialEta.localeCompare(b.materialEta));
-    return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon") };
+    return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon"), tbc: withState.filter((p) => etaStateOf(p) === "tbc") };
   };
   const etaAlerts = useMemo(() => etaOf(mine(active)), [active, level, user]);
   const etaAll = useMemo(() => etaOf(active), [active]);
-  const etaCount = etaAlerts.overdue.length + etaAlerts.soon.length;
+  const etaCount = etaAlerts.overdue.length + etaAlerts.soon.length + etaAlerts.tbc.length;
   const myNotifs = useMemo(() => {
     const cutoff = notifCutoff();
     return notifs.filter((n) => n.createdAt >= cutoff && notifVisible(n)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1201,7 +1219,7 @@ export default function App() {
     { id: "home", label: "Home", icon: Home },
     { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
-    { id: "eta", label: "ETA alerts", icon: AlertTriangle, count: etaCount, alert: etaAlerts.overdue.length, alertLabel: "overdue" },
+    { id: "eta", label: "ETA alerts", icon: AlertTriangle, count: etaCount, alert: etaAlerts.overdue.length + etaAlerts.tbc.length, alertLabel: "overdue" },
     { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
     ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
@@ -1386,8 +1404,8 @@ export default function App() {
           )}
           {!loading && SCOPED_VIEWS.includes(view) && (
             <ScopeToggle scope={scope} setScope={setScope}
-              mineCount={view === "eta" ? etaAlerts.overdue.length + etaAlerts.soon.length : (lists[view] || []).length}
-              allCount={view === "eta" ? etaAll.overdue.length + etaAll.soon.length : (allLists[view] || []).length}
+              mineCount={view === "eta" ? etaAlerts.overdue.length + etaAlerts.soon.length + etaAlerts.tbc.length : (lists[view] || []).length}
+              allCount={view === "eta" ? etaAll.overdue.length + etaAll.soon.length + etaAll.tbc.length : (allLists[view] || []).length}
               mineLabel={level === 1 || isDev ? "My jobs" : user.depts ? `My departments` : "My jobs"} />
           )}
           {loading ? (
@@ -1660,7 +1678,7 @@ function CapacityPanel({ capacity, openDept, isDev, onSetClose }) {
    ========================================================= */
 function BellPanel({ notifs, isUnread, canSeeNotifs, etaAlerts, onClose, onOpenNotif, onMarkAll, onOpenJob, onViewAllEta }) {
   const unread = notifs.filter(isUnread).length;
-  const etaList = [...etaAlerts.overdue, ...etaAlerts.soon];
+  const etaList = [...etaAlerts.overdue, ...etaAlerts.tbc, ...etaAlerts.soon];
   const [tab, setTab] = useState(() => (canSeeNotifs && (unread > 0 || etaList.length === 0) ? "notifs" : "eta"));
   return (
     <>
@@ -1673,7 +1691,7 @@ function BellPanel({ notifs, isUnread, canSeeNotifs, etaAlerts, onClose, onOpenN
             </button>
           )}
           <button onClick={() => setTab("eta")} className={`flex-1 px-4 py-3 text-sm font-medium border-b-2 ${tab === "eta" ? "border-[#1f6feb] text-white" : "border-transparent text-slate-400"}`}>
-            ETA alerts {etaList.length > 0 && <span className={`ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${etaAlerts.overdue.length ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaList.length}</span>}
+            ETA alerts {etaList.length > 0 && <span className={`ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${(etaAlerts.overdue.length || etaAlerts.tbc.length) ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{etaList.length}</span>}
           </button>
         </div>
         {tab === "notifs" ? (
@@ -1763,16 +1781,18 @@ function SnagMaterialBanner({ items, onOpen, onOrdered }) {
 }
 
 function EtaBanner({ alerts, onOpen, onViewAll }) {
-  const { overdue, soon } = alerts;
-  if (!overdue.length && !soon.length) return null;
-  const top = [...overdue, ...soon].slice(0, 4);
+  const { overdue, soon, tbc } = alerts;
+  if (!overdue.length && !soon.length && !tbc.length) return null;
+  const top = [...overdue, ...tbc, ...soon].slice(0, 4);
   return (
-    <div className={`mb-5 rounded-xl border px-4 py-3 ${overdue.length ? "border-red-500/50 bg-red-500/10" : "border-amber-400/50 bg-amber-400/10"}`}>
+    <div className={`mb-5 rounded-xl border px-4 py-3 ${(overdue.length || tbc.length) ? "border-red-500/50 bg-red-500/10" : "border-amber-400/50 bg-amber-400/10"}`}>
       <div className="flex items-center gap-3 flex-wrap">
-        <AlertTriangle size={18} className={overdue.length ? "text-red-400" : "text-amber-300"} />
+        <AlertTriangle size={18} className={(overdue.length || tbc.length) ? "text-red-400" : "text-amber-300"} />
         <span className="text-sm text-white font-medium">
           {overdue.length > 0 && <>{overdue.length} order{overdue.length === 1 ? "" : "s"} past ETA</>}
-          {overdue.length > 0 && soon.length > 0 && " · "}
+          {overdue.length > 0 && tbc.length > 0 && " · "}
+          {tbc.length > 0 && <>{tbc.length} ETA{tbc.length === 1 ? "" : "s"} to be confirmed</>}
+          {(overdue.length > 0 || tbc.length > 0) && soon.length > 0 && " · "}
           {soon.length > 0 && <>{soon.length} due within {ETA_WARN_DAYS} days</>}
           <span className="text-slate-400 font-normal"> · not yet received</span>
         </span>
@@ -1786,7 +1806,7 @@ function EtaBanner({ alerts, onOpen, onViewAll }) {
             <span className="text-slate-400">{deptOf(p.department).label} · {etaLabel(p)}</span>
           </button>
         ))}
-        {overdue.length + soon.length > top.length && <button onClick={onViewAll} className="text-xs text-slate-400 hover:text-white px-2">+{overdue.length + soon.length - top.length} more</button>}
+        {overdue.length + tbc.length + soon.length > top.length && <button onClick={onViewAll} className="text-xs text-slate-400 hover:text-white px-2">+{overdue.length + tbc.length + soon.length - top.length} more</button>}
       </div>
     </div>
   );
@@ -1804,7 +1824,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
             const lines = productLinesOf(p);
             const supplier = p.supplier || lines[0]?.supplier || "";
             return (
-              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${etaStateOf(p) === "overdue" ? "border-red-500/60" : "border-amber-400/50"} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
+              <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${etaStateOf(p) === "overdue" ? "border-red-500/60" : etaStateOf(p) === "tbc" ? "border-slate-500/60" : "border-amber-400/50"} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
                   <div className="font-medium text-white truncate">{p.clientName}</div>
                   <div className="text-xs text-slate-400 truncate">PO {p.po} · {p.consultant}</div>
@@ -1824,10 +1844,11 @@ function EtaAlertsView({ alerts, onOpen, level }) {
     <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-4 md:p-6">
       <div className="flex items-baseline justify-between mb-1">
         <h1 className="text-xl md:text-2xl font-bold text-white">ETA alerts</h1>
-        <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
+        <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.tbc.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
       </div>
-      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA or due within {ETA_WARN_DAYS} days. Tap an order to open it.</p>
+      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA, still to be confirmed, or due within {ETA_WARN_DAYS} days. Tap an order to open it.</p>
       <Section title="OVERDUE — PAST ETA" items={alerts.overdue} tone="text-red-300" />
+      <Section title="ETA TO BE CONFIRMED" items={alerts.tbc} tone="text-slate-300" />
       <Section title={`DUE WITHIN ${ETA_WARN_DAYS} DAYS`} items={alerts.soon} tone="text-amber-300" />
     </div>
   );
@@ -1845,6 +1866,11 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "17", date: "2026-09-29", items: [
+    "Every department: pick \"Other (not listed)\" as the supplier to type a free-text product description for out-of-the-norm orders — Developer and Franco get notified so the catalogue can be extended if needed.",
+    "Material ETA can now be set to TBC instead of a date — TBC orders show alongside overdue ones in ETA alerts until a real date is entered.",
+    "Notes on a job: anyone can add one, shown below client details with author and timestamp.",
+  ] },
   { phase: "16", date: "2026-09-29", items: [
     "App updates page moved to Co-ordinator and up (was visible to everyone).",
     "Home menu order: ETA alerts now sits above Booked orders.",
@@ -2183,7 +2209,7 @@ const isLineCatalogued = (l, dept) => (dept === "calore" ? (!!l.ownFireplace || 
 function LineMeasureFields({ dept, l, onColour, onChange }) {
   const m = measureOf(dept);
   if (m === "none") return null;
-  const colour = <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => onColour(e.target.value)} placeholder="e.g. Sandelwood" /></Field>;
+  const colour = l.supplier === OTHER_SUPPLIER ? null : <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => onColour(e.target.value)} placeholder="e.g. Sandelwood" /></Field>;
   if (m === "qty") return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
       {colour}
@@ -2341,7 +2367,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if ("ownFireplace" in patch) merged = { ...merged, supplier: "", calType: "", calUnitType: "", model: "" };
     else if ("supplier" in patch) merged = { ...merged, calType: "", calUnitType: "" };
     else if ("calType" in patch) merged = { ...merged, calUnitType: "" };
-    merged.productType = merged.ownFireplace ? "Client's own fireplace" : ([merged.supplier, merged.calType, merged.calUnitType, merged.model].filter(Boolean).join(" ") || (l._legacy || ""));
+    merged.productType = merged.ownFireplace ? "Client's own fireplace" : merged.supplier === OTHER_SUPPLIER ? (merged.model || "") : ([merged.supplier, merged.calType, merged.calUnitType, merged.model].filter(Boolean).join(" ") || (l._legacy || ""));
     return merged;
   }) }));
   const addProdLine = () => setF((s) => ({ ...s, productLines: [...s.productLines, newLine(s.department)] }));
@@ -2498,7 +2524,19 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
         {noMaterial ? (
           <Field label="Material ETA"><div className="text-sm text-slate-500 py-2">Not needed — no material on this repair</div></Field>
         ) : (
-          <Field label="Material ETA"><DatePicker value={f.materialEta || ""} onChange={(v) => set("materialEta", v)} /></Field>
+          <Field label="Material ETA">
+            {f.materialEta === ETA_TBC ? (
+              <div className="flex items-center gap-2">
+                <div className={`${inputCls} flex-1 text-slate-400`}>To be confirmed</div>
+                <button type="button" onClick={() => set("materialEta", todayIso())} className="text-xs px-3 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d] shrink-0">Set a date</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="flex-1"><DatePicker value={f.materialEta || ""} onChange={(v) => set("materialEta", v)} /></div>
+                <button type="button" onClick={() => set("materialEta", ETA_TBC)} className="text-xs px-3 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#21262d] shrink-0">TBC</button>
+              </div>
+            )}
+          </Field>
         )}
         <Field label="Estimated install duration (working days)"><input type="number" min="1" max="30" className={inputCls} value={f.installDays} onChange={(e) => set("installDays", e.target.value)} /></Field>
         <div className="md:col-span-2">
@@ -2531,35 +2569,42 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                           <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineWoodSupplier(l.id, e.target.value)}>
                             <option value="">Select a supplier…</option>
                             {woodSuppliers().map((s) => <option key={s} value={s}>{s}</option>)}
+                            <option value={OTHER_SUPPLIER}>Other (not listed)</option>
                           </select>
                         </Field>
-                        <Field label="Finish type">
-                          <select className={inputCls} value={l.finish || ""} onChange={(e) => setLineWoodFinish(l.id, e.target.value)} disabled={!l.supplier}>
-                            <option value="">{l.supplier ? "Select a finish type…" : "Pick a supplier first"}</option>
-                            {woodFinishes(l.supplier).map((fn) => <option key={fn} value={fn}>{fn}</option>)}
-                          </select>
-                        </Field>
+                        {l.supplier !== OTHER_SUPPLIER && (
+                          <Field label="Finish type">
+                            <select className={inputCls} value={l.finish || ""} onChange={(e) => setLineWoodFinish(l.id, e.target.value)} disabled={!l.supplier}>
+                              <option value="">{l.supplier ? "Select a finish type…" : "Pick a supplier first"}</option>
+                              {woodFinishes(l.supplier).map((fn) => <option key={fn} value={fn}>{fn}</option>)}
+                            </select>
+                          </Field>
+                        )}
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <Field label="Range">
-                          <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineWoodRange(l.id, e.target.value)} disabled={!l.finish}>
-                            <option value="">{l.finish ? "Select a range…" : "Pick a finish type first"}</option>
-                            {woodRanges(l.supplier, l.finish).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
-                          </select>
-                        </Field>
-                        {(() => {
-                          const obj = woodRangeObj(l.supplier, l.finish, l.productRange);
-                          if (!obj || obj.sizes.length < 2) return null;
-                          return (
-                            <Field label="Size">
-                              <select className={inputCls} value={l.boardSize || ""} onChange={(e) => setLineWoodSize(l.id, e.target.value)}>
-                                <option value="">Select a size…</option>
-                                {obj.sizes.map((sz) => <option key={sz} value={sz}>{sz}</option>)}
-                              </select>
-                            </Field>
-                          );
-                        })()}
-                      </div>
+                      {l.supplier === OTHER_SUPPLIER ? (
+                        <Field label="Product description"><input className={inputCls} value={l.productRange || ""} onChange={(e) => updProdLine(l.id, { productRange: e.target.value, productType: e.target.value })} placeholder="e.g. Joma Herringbone Oak, Natural" /></Field>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <Field label="Range">
+                            <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineWoodRange(l.id, e.target.value)} disabled={!l.finish}>
+                              <option value="">{l.finish ? "Select a range…" : "Pick a finish type first"}</option>
+                              {woodRanges(l.supplier, l.finish).map((r) => <option key={r.name} value={r.name}>{r.name}</option>)}
+                            </select>
+                          </Field>
+                          {(() => {
+                            const obj = woodRangeObj(l.supplier, l.finish, l.productRange);
+                            if (!obj || obj.sizes.length < 2) return null;
+                            return (
+                              <Field label="Size">
+                                <select className={inputCls} value={l.boardSize || ""} onChange={(e) => setLineWoodSize(l.id, e.target.value)}>
+                                  <option value="">Select a size…</option>
+                                  {obj.sizes.map((sz) => <option key={sz} value={sz}>{sz}</option>)}
+                                </select>
+                              </Field>
+                            );
+                          })()}
+                        </div>
+                      )}
                     </>
                   ) : f.department === "calore" ? (
                     <>
@@ -2574,24 +2619,31 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                               <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineCalore(l.id, { supplier: e.target.value })}>
                                 <option value="">Select a supplier…</option>
                                 {caloreSuppliers().map((s) => <option key={s} value={s}>{s}</option>)}
+                                <option value={OTHER_SUPPLIER}>Other (not listed)</option>
                               </select>
                             </Field>
-                            <Field label="Type">
-                              <select className={inputCls} value={l.calType || ""} onChange={(e) => setLineCalore(l.id, { calType: e.target.value })} disabled={!l.supplier}>
-                                <option value="">{l.supplier ? "Select a type…" : "Pick a supplier first"}</option>
-                                {caloreTypes(l.supplier).map((t) => <option key={t} value={t}>{t}</option>)}
-                              </select>
-                            </Field>
+                            {l.supplier !== OTHER_SUPPLIER && (
+                              <Field label="Type">
+                                <select className={inputCls} value={l.calType || ""} onChange={(e) => setLineCalore(l.id, { calType: e.target.value })} disabled={!l.supplier}>
+                                  <option value="">{l.supplier ? "Select a type…" : "Pick a supplier first"}</option>
+                                  {caloreTypes(l.supplier).map((t) => <option key={t} value={t}>{t}</option>)}
+                                </select>
+                              </Field>
+                            )}
                           </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <Field label="Unit type">
-                              <select className={inputCls} value={l.calUnitType || ""} onChange={(e) => setLineCalore(l.id, { calUnitType: e.target.value })} disabled={!l.calType}>
-                                <option value="">{l.calType ? "Select a unit type…" : "Pick a type first"}</option>
-                                {caloreUnitTypes(l.supplier, l.calType).map((u) => <option key={u} value={u}>{u}</option>)}
-                              </select>
-                            </Field>
-                            <Field label="Model name"><input className={inputCls} value={l.model || ""} onChange={(e) => setLineCalore(l.id, { model: e.target.value })} placeholder="e.g. Calore Vesta 700" /></Field>
-                          </div>
+                          {l.supplier === OTHER_SUPPLIER ? (
+                            <Field label="Product description"><input className={inputCls} value={l.model || ""} onChange={(e) => setLineCalore(l.id, { model: e.target.value })} placeholder="e.g. Jydepejsen Norca 8kW wood-burning insert" /></Field>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <Field label="Unit type">
+                                <select className={inputCls} value={l.calUnitType || ""} onChange={(e) => setLineCalore(l.id, { calUnitType: e.target.value })} disabled={!l.calType}>
+                                  <option value="">{l.calType ? "Select a unit type…" : "Pick a type first"}</option>
+                                  {caloreUnitTypes(l.supplier, l.calType).map((u) => <option key={u} value={u}>{u}</option>)}
+                                </select>
+                              </Field>
+                              <Field label="Model name"><input className={inputCls} value={l.model || ""} onChange={(e) => setLineCalore(l.id, { model: e.target.value })} placeholder="e.g. Calore Vesta 700" /></Field>
+                            </div>
+                          )}
                         </>
                       )}
                       <Field label="Serial number (internal, optional)"><input className={inputCls} value={l.serial || ""} onChange={(e) => updProdLine(l.id, { serial: e.target.value })} placeholder="e.g. SN-004821" /></Field>
@@ -2602,14 +2654,19 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                         <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineSupplier(l.id, e.target.value)} disabled={!l.productCategory}>
                           <option value="">{l.productCategory ? "Select a supplier…" : "Pick a category first"}</option>
                           {suppliersOf(l.productCategory).map((s) => <option key={s} value={s}>{s}</option>)}
+                          <option value={OTHER_SUPPLIER}>Other (not listed)</option>
                         </select>
                       </Field>
-                      <Field label="Range">
-                        <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineRange(l.id, e.target.value)} disabled={!l.supplier}>
-                          <option value="">{l.supplier ? "Select a range…" : "Pick a supplier first"}</option>
-                          {rangesOf(l.productCategory, l.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
-                        </select>
-                      </Field>
+                      {l.supplier === OTHER_SUPPLIER ? (
+                        <Field label="Product description"><input className={inputCls} value={l.productRange || ""} onChange={(e) => updProdLine(l.id, { productRange: e.target.value, productType: e.target.value })} placeholder="e.g. Vescom Odetta, White" /></Field>
+                      ) : (
+                        <Field label="Range">
+                          <select className={inputCls} value={l.productRange || ""} onChange={(e) => setLineRange(l.id, e.target.value)} disabled={!l.supplier}>
+                            <option value="">{l.supplier ? "Select a range…" : "Pick a supplier first"}</option>
+                            {rangesOf(l.productCategory, l.supplier).map((r) => <option key={r} value={r}>{r}</option>)}
+                          </select>
+                        </Field>
+                      )}
                     </div>
                   )}
                   {f.department !== "calore" && (
@@ -2762,6 +2819,15 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   const snags = p.snags || [];
   const open = openSnags(p);
   const canSnag = level >= 1;
+  // Phase 17 — notes on a job: open to everyone, shown just below client details, newest first
+  const [noteText, setNoteText] = useState("");
+  const notes = [...(p.notes || [])].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const addNote = () => {
+    const t = noteText.trim(); if (!t) return;
+    const note = { id: uid(), author: user.name, text: t, createdAt: now() };
+    save({ ...p, notes: [...(p.notes || []), note], log: log(`Note added: "${t}"`) }, "Note added");
+    setNoteText("");
+  };
 
   // A co-ordinator for this job's department acknowledges its new snags (clears the "new" badge)
   useEffect(() => {
@@ -2916,6 +2982,25 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
                 ))}
               </div>
             } />
+          </div>
+        )}
+      </div>
+
+      {/* Phase 17 — notes on a job: open to everyone, newest first, author + timestamp shown */}
+      <div className="mt-4 border border-[#30363d] rounded-xl p-3">
+        <div className="text-xs text-slate-400 mb-2 flex items-center gap-1.5"><MessageSquarePlus size={14} /> Notes {notes.length > 0 && <span>· {notes.length}</span>}</div>
+        <div className="flex items-center gap-2 mb-2">
+          <input className={inputCls} value={noteText} onChange={(e) => setNoteText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addNote()} placeholder="Add a note…" />
+          <button onClick={addNote} disabled={!noteText.trim()} className={`${btnGhost} py-2 text-xs shrink-0 disabled:opacity-50`}>Add</button>
+        </div>
+        {notes.length > 0 && (
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {notes.map((n) => (
+              <div key={n.id} className="text-sm bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2">
+                <div className="text-slate-100">{n.text}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">{n.author} · {ago(n.createdAt)}</div>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -4771,7 +4856,7 @@ const inPeriod = (d, from, to) => !!d && (!from || d >= from) && (!to || d <= to
 // Reviewed cause wins; otherwise fall back to the category it was logged under
 const snagCauseOf = (s) => (s.review && s.review.cause) || s.category || "";
 const snagCostOf = (s) => ((s.review && s.review.costs) || []).reduce((n, c) => n + (Number(c.amount) || 0), 0);
-const rangeLabel = (l) => (l.productRange ? composeProduct(l.supplier, l.productRange) : (l.productType || "Range not specified"));
+const rangeLabel = (l) => (l.supplier === OTHER_SUPPLIER ? "Other" : (l.productRange ? composeProduct(l.supplier, l.productRange) : (l.productType || "Range not specified")));
 const m2 = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-ZA")} m²`;
 const quarterOptions = () => {
   const now = new Date(); let y = now.getFullYear(); let q = Math.floor(now.getMonth() / 3) + 1;
