@@ -13,18 +13,23 @@ const SUPABASE_URL = "https://fyuwslsfbdwtgnmgvbmm.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ5dXdzbHNmYmR3dGdubWd2Ym1tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0Mzg5NDgsImV4cCI6MjEwNDAxNDk0OH0._ilgWkOoEz3F1OE4JTHzk7mHH6z7QEgfBbzYJOg_W2M";
 const TABLE = "projects_v2"; // new table so old tracker data stays untouched
 
+// Phase 13 — live PINs. Keys MUST stay quoted strings: "0005" as a number would become 5 and never match.
+// `was` lists retired PINs. They can NOT sign in; they only keep a person's existing notes, read-notification
+// marks and review flags linked to them after the PIN change.
 const USERS = {
-  "0001": { name: "Jaco", level: 1 },
-  "0002": { name: "James", level: 1 },
-  "0003": { name: "Trent", level: 1 },
-  "0004": { name: "Theo", level: 1 },
+  "3847": { name: "Jaco", level: 1, was: ["0001"] },
+  "2961": { name: "James", level: 1, was: ["0002"] },
+  "7234": { name: "Trent", level: 1, was: ["0003"] },
+  "4518": { name: "Theo", level: 1, was: ["0004"] },
   "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true, canSeeReviews: true }, // app partner — full access, all departments, sees everyone's feedback notes
-  "0006": { name: "Marco", level: 2, depts: null },   // owner — all departments (Performance Report locked: Beta card)
-  "0007": { name: "Luciano", level: 2, depts: null }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
-  "0008": { name: "Alton", level: 2, depts: ["vinyl"] },
-  "0009": { name: "Chanel", level: 2, depts: ["blinds"] },
-  "2222": { name: "Developer", level: 3 },
+  "8073": { name: "Marco", level: 2, depts: null, was: ["0006"] },   // owner — all departments (Performance Report locked: Beta card)
+  "6325": { name: "Luciano", level: 2, depts: null, was: ["0007"] }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
+  "1492": { name: "Alton", level: 2, depts: ["vinyl"], was: ["0008"] },
+  "9057": { name: "Chanel", level: 2, depts: ["blinds"], was: ["0009"] },
+  "2233": { name: "Developer", level: 3, was: ["2222"] },
 };
+// Every PIN a signed-in user's existing data may be stored under (current first, then retired ones)
+const pinsOf = (user) => (user && user.pin ? [String(user.pin), ...((USERS[String(user.pin)] || {}).was || [])] : []);
 // Phase 10.2 — Marco, Luciano and Office can also be picked as the consultant on a job (all departments)
 const CONSULTANTS = ["Jaco", "James", "Trent", "Theo", "Marco", "Luciano", "Office"];
 
@@ -530,7 +535,7 @@ const seesAllNotes = (user) => (user?.level ?? 0) >= 3 || !!user?.canSeeNotes;
 const noteReaders = () => ["the developer", ...Object.values(USERS).filter((u) => u.canSeeNotes).map((u) => u.name)];
 async function dbLoadNotes(user) {
   const isDevUser = seesAllNotes(user);
-  const mineOnly = isDevUser ? "" : `&data->>pin=eq.${encodeURIComponent(user.pin)}`;
+  const mineOnly = isDevUser ? "" : `&data->>pin=in.(${pinsOf(user).map((x) => encodeURIComponent(`"${x}"`)).join(",")})`;
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data&id=like.${encodeURIComponent(NOTE_PREFIX)}*${mineOnly}`, { headers });
   if (!r.ok) throw new Error(`Notes load failed (${r.status})`);
   const rows = await r.json();
@@ -775,9 +780,10 @@ function Login({ onLogin }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const submit = () => {
-    const u = USERS[pin];
-    if (!u) { setErr("That PIN isn't recognised."); return; }
-    onLogin({ ...u, pin });
+    const entered = String(pin);
+    const u = entered.length === 4 && Object.prototype.hasOwnProperty.call(USERS, entered) ? USERS[entered] : null;
+    if (!u) { setErr("That PIN isn't recognised."); setPin(""); return; }
+    onLogin({ ...u, pin: entered });
   };
   return (
     <div className="min-h-screen bg-[#0d1117] flex items-center justify-center p-6">
@@ -793,9 +799,6 @@ function Login({ onLogin }) {
         />
         {err && <p className="text-red-400 text-sm mt-2">{err}</p>}
         <button onClick={submit} className={`${btnPrimary} w-full mt-4`}>Sign in</button>
-        <button onClick={() => onLogin({ name: "Viewer", level: 0 })} className="w-full mt-2 text-sm text-slate-400 hover:text-slate-200 py-2">
-          Continue as view only
-        </button>
       </div>
     </div>
   );
@@ -845,9 +848,12 @@ export default function App() {
     try {
       const saved = JSON.parse(sessionStorage.getItem("nolans_user"));
       if (!saved) return null;
-      // Re-resolve against the current user table so name/level/department permissions stay fresh
-      const current = saved.pin && USERS[saved.pin];
-      return current ? { ...current, pin: saved.pin } : saved;
+      // Re-resolve against the current user table so name/level/department permissions stay fresh.
+      // Phase 13 — no valid live PIN (old view-only session, retired PIN) means back to the login screen.
+      const savedPin = saved.pin ? String(saved.pin) : "";
+      const current = savedPin && Object.prototype.hasOwnProperty.call(USERS, savedPin) ? USERS[savedPin] : null;
+      if (!current) { try { sessionStorage.removeItem("nolans_user"); } catch { /* ignore */ } return null; }
+      return { ...current, pin: savedPin };
     } catch { return null; }
   });
   const [projects, setProjects] = useState([]);
@@ -1030,7 +1036,8 @@ export default function App() {
     if (n.consultant && n.consultant === user.name) return true;
     return isCoord && canEditDept(n.department);
   };
-  const isUnread = (n) => !(n.readBy || []).includes(user?.pin);
+  const myPins = pinsOf(user);
+  const isUnread = (n) => !(n.readBy || []).some((x) => myPins.includes(String(x)));
   const markRead = (list) => {
     const rows = list.filter(isUnread).map((n) => ({ ...n, readBy: [...(n.readBy || []), user.pin] }));
     if (!rows.length) return;
@@ -1042,7 +1049,7 @@ export default function App() {
   const active = useMemo(() => projects.filter((p) => !p.deleted && (isDev || !p.isTest)), [projects, isDev]);
   const deletedList = useMemo(() => projects.filter((p) => p.deleted).sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || "")), [projects]);
   // Phase 10.3 — "my" jobs: consultants = jobs with their name as consultant; co-ordinators = their departments
-  // (owners and Franco cover every department); Developer and view-only see everything
+  // (owners and Franco cover every department); Developer sees everything
   const isMine = (p) => {
     if (!user || isDev || level < 1) return true;
     if (level === 1) return p.consultant === user.name;
@@ -1937,7 +1944,7 @@ function NotesWidget({ user, view }) {
                   {n.done && <span className="text-emerald-400">· done</span>}
                   <span className="ml-auto flex items-center gap-1">
                     {isDevUser && <button onClick={() => put({ ...n, done: !n.done, doneAt: n.done ? null : new Date().toISOString() })} className="p-1 rounded hover:bg-[#21262d] text-emerald-300" title={n.done ? "Mark as open" : "Mark as done"}><Check size={12} /></button>}
-                    {(isDevUser || n.pin === user.pin) && <button onClick={() => { if (confirm("Delete this note?")) put({ ...n, deleted: true }); }} className="p-1 rounded hover:bg-[#21262d] text-slate-400" title="Delete note"><Trash2 size={12} /></button>}
+                    {(isDevUser || pinsOf(user).includes(String(n.pin))) && <button onClick={() => { if (confirm("Delete this note?")) put({ ...n, deleted: true }); }} className="p-1 rounded hover:bg-[#21262d] text-slate-400" title="Delete note"><Trash2 size={12} /></button>}
                   </span>
                 </div>
               </div>
@@ -2525,7 +2532,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
   // Phase 12C — confidential installation reviews
   const [reviewOpen, setReviewOpen] = useState(false);
   const reviewKey = `nolans_reviewed_${p.id}_${user.pin || user.name}`;
-  const [reviewedHere, setReviewedHere] = useState(() => { try { return !!localStorage.getItem(reviewKey); } catch { return false; } });
+  const [reviewedHere, setReviewedHere] = useState(() => { try { return [...pinsOf(user), user.name].some((x) => x && localStorage.getItem(`nolans_reviewed_${p.id}_${x}`)); } catch { return false; } });
   const canReview = (level ?? 0) >= 1 && !!onSubmitReview;
   const showReviewPrompt = canReview && p.status === "installed" && p.consultant === user.name && !reviewedHere;
   const noMaterialRepair = isRepair(p) && p.repairNeedsMaterial === false;
