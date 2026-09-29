@@ -117,10 +117,12 @@ const PRODUCT_CATALOG = {
     "Wonderblinds": ["Drop Blind", "Pergola Awning", "Fold Arm Awning"],
     "AC Screens": ["Drop Blind", "Fold-Arm Awning", "Roller Shutter"],
   },
-  // Phase 10.3 — Shutters department
+  // Phase 10.3 — Shutters department; range codes updated Phase 15 (Shutter Boards): Blockhouse does
+  // aluminium and fixed louvre only (B1 security, B2 non-security, FL fixed louvre); Plantation does
+  // aluminium and timber (A1/A2/A3 aluminium tiers, T1/T2 timber tiers)
   "Shutters & Screens": {
-    "Blockhouse Shutters": ["Aluminium Shutters", "Fixed Louvre Shutters"],
-    "Plantation Shutters": ["Aluminium Shutters", "Timber Shutters"],
+    "Blockhouse": ["B1", "B2", "FL"],
+    "Plantation": ["A1", "A2", "A3", "T1", "T2"],
     "Mediterranean": ["Shoji Screens"],
     "Corner Star": ["Flyscreens", "Secure Screens"],
   },
@@ -192,6 +194,21 @@ const woodFinishes = (sup) => Object.keys(WOOD_CATALOG[sup] || {});
 const woodRanges = (sup, finish) => ((WOOD_CATALOG[sup] || {})[finish] || []);
 const woodRangeObj = (sup, finish, name) => woodRanges(sup, finish).find((r) => r.name === name);
 
+// Phase 15 — Calore catalogue. Supplier -> Type -> Unit type, then a free-text model name (models change
+// too often to keep as a fixed list) and a free-text serial number for internal records only (never part
+// of the composed product label, so it never shows on stickers, search or reports). A "client's own
+// fireplace" toggle skips the whole cascade for jobs installing a unit the client already owns.
+const CALORE_CATALOG = {
+  "Calore": {
+    "Wood": ["Free-Standing", "Built-In"],
+    "Pellet": ["Free-Standing", "Built-In"],
+    "Gas": ["Free-Standing", "Built-In"],
+  },
+};
+const caloreSuppliers = () => Object.keys(CALORE_CATALOG);
+const caloreTypes = (sup) => Object.keys(CALORE_CATALOG[sup] || {});
+const caloreUnitTypes = (sup, type) => ((CALORE_CATALOG[sup] || {})[type] || []);
+
 // Which catalogue categories each department may pick from. Departments not listed
 // keep the old free-text product field until their product lists are loaded.
 const DEPT_CATEGORIES = {
@@ -205,7 +222,9 @@ const DEPT_CATEGORIES = {
 //   roll    : roll width × linear metres = m², or m² typed in when no roll width is picked (Carpets)
 //   qty     : free-text quantity, e.g. "3 blinds" (Blinds)
 //   panels  : number of references and number of panels (Shutters)
-const MEASURE_OF = { carpets: "roll", vinyl: "area", blinds: "qty", shutters: "panels" };
+// Phase 15 — Calore takes no area/colour/qty measurement at all ("none"); its own line fields
+// (type, unit type, model, serial) are handled separately in the form and aren't part of this map.
+const MEASURE_OF = { carpets: "roll", vinyl: "area", blinds: "qty", shutters: "panels", calore: "none" };
 const measureOf = (dept) => MEASURE_OF[dept] || "area";
 const ROLL_WIDTHS = ["2", "3.66", "4"];
 const rollLabel = (w) => `${Number(w).toFixed(w === "3.66" ? 2 : 1)} m`;
@@ -213,6 +232,7 @@ const rollArea = (w, lm) => { const a = Number(w) * Number(lm); return a > 0 ? M
 // Short text for a line's measurement, used on job details, stickers and search
 const measureText = (l, dept) => {
   const m = measureOf(dept);
+  if (m === "none") return "";
   if (m === "qty") return (l.qty || "").toString().trim();
   if (m === "panels") return [l.refs ? `${l.refs} ref${Number(l.refs) === 1 ? "" : "s"}` : "", l.panels ? `${l.panels} panel${Number(l.panels) === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
   const area = areaFmt(l.area);
@@ -220,7 +240,7 @@ const measureText = (l, dept) => {
   return area;
 };
 const categoriesOf = (dept) => DEPT_CATEGORIES[dept] || [];
-const hasCatalog = (dept) => categoriesOf(dept).length > 0 || dept === "wood"; // Phase 14 — Wood has its own catalogue shape (see WOOD_CATALOG)
+const hasCatalog = (dept) => categoriesOf(dept).length > 0 || dept === "wood" || dept === "calore"; // Phase 14/15 — Wood and Calore have their own catalogue shapes
 const suppliersOf = (cat) => Object.keys(PRODUCT_CATALOG[cat] || {});
 const rangesOf = (cat, sup) => ((PRODUCT_CATALOG[cat] || {})[sup] || []);
 // The label written into productType so stickers, reports and search keep working unchanged
@@ -229,7 +249,7 @@ const composeProduct = (sup, rng, colour, size) => [sup, rng, size, (colour || "
 
 // Phase 6 — multiple product lines per job (one per range/colour/room) for catalogued departments.
 // A fresh, empty product line for a department (auto-picks the only category where there is just one).
-const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", finish: "", boardSize: "", productRange: "", productType: "", colour: "", area: "", rollWidth: "", linearM: "", qty: "", refs: "", panels: "" }; };
+const newLine = (dept) => { const cats = categoriesOf(dept); return { id: uid(), productCategory: cats.length === 1 ? cats[0] : "", supplier: "", finish: "", boardSize: "", productRange: "", productType: "", colour: "", area: "", rollWidth: "", linearM: "", qty: "", refs: "", panels: "", ownFireplace: false, calType: "", calUnitType: "", model: "", serial: "" }; };
 // All product lines for a job. Falls back to a single synthesised line for older records that only
 // stored the top-level product fields, so nothing built before Phase 6 breaks.
 const productLinesOf = (p) => {
@@ -245,6 +265,7 @@ const totalArea = (p) => productLinesOf(p).reduce((sum, l) => sum + (Number(l.ar
 const jobMeasureText = (p) => {
   const m = measureOf(p.department);
   const lines = productLinesOf(p);
+  if (m === "none") return "";
   if (m === "panels") {
     const r = lines.reduce((n, l) => n + (Number(l.refs) || 0), 0), pn = lines.reduce((n, l) => n + (Number(l.panels) || 0), 0);
     return [r ? `${r} ref${r === 1 ? "" : "s"}` : "", pn ? `${pn} panel${pn === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
@@ -255,7 +276,7 @@ const jobMeasureText = (p) => {
 // One string holding everything searchable on a job, including every product line and item.
 const searchText = (p) => [
   p.clientName, p.po, p.address, p.productType, p.supplier, p.productRange, p.consultant, p.contact, teamLabel(p.department, p.team),
-  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty, l.boardSize]),
+  ...productLinesOf(p).flatMap((l) => [l.supplier, l.productRange, l.productType, l.colour, l.qty, l.boardSize, l.calType, l.calUnitType, l.model, l.serial]),
   ...(p.lineItems || []).map((li) => li.description),
 ].filter(Boolean).join(" ").toLowerCase();
 
@@ -727,6 +748,15 @@ const OverlockBadge = ({ p, small }) => {
     <span title={ordered ? "Overlocking ordered, not yet received" : "Overlocking required, not yet ordered"}
       className={`inline-flex items-center justify-center rounded-full font-bold leading-none shrink-0 ${small ? "h-4 px-1 text-[9px]" : "h-5 px-1.5 text-[10px]"} ${ordered ? "bg-amber-100 text-amber-800 border border-amber-500" : "bg-amber-400 text-black"}`}>OL</span>
   );
+};
+// Phase 15 — Calore smart prompts: plain amber flags, no ordered/received stage (unlike overlocking)
+const CoreDrillingBadge = ({ p, small }) => {
+  if (p.department !== "calore" || !p.coreDrilling) return null;
+  return <span title="Core drilling required" className={`inline-flex items-center justify-center rounded-full font-bold leading-none shrink-0 bg-amber-400 text-black ${small ? "h-4 px-1 text-[9px]" : "h-5 px-1.5 text-[10px]"}`}>CD</span>;
+};
+const EscutcheonBadge = ({ p, small }) => {
+  if (p.department !== "calore" || !p.escutcheonPlate) return null;
+  return <span title="Custom escutcheon plate required" className={`inline-flex items-center justify-center rounded-full font-bold leading-none shrink-0 bg-amber-400 text-black ${small ? "h-4 px-1 text-[9px]" : "h-5 px-1.5 text-[10px]"}`}>EP</span>;
 };
 const SnagFlag = ({ small }) => (
   <span title="Open snag" className={`inline-flex items-center justify-center rounded-full bg-red-600 text-white ${small ? "w-4 h-4" : "w-5 h-5"}`}><Flag size={small ? 9 : 11} strokeWidth={3} /></span>
@@ -1815,6 +1845,12 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "15", date: "2026-09-29", items: [
+    "Shutters: Blockhouse and Plantation ranges updated to their real codes (Blockhouse: B1, B2, FL · Plantation: A1, A2, A3, T1, T2).",
+    "Calore: new product catalogue — Supplier, Type (Wood/Pellet/Gas) and Unit type (Free-Standing/Built-In), plus a free-text model name.",
+    "Calore: tick \"Installing the client's own fireplace\" to skip the catalogue for jobs on a unit the client already owns.",
+    "Calore: internal serial number field, and two new flags — Core drilling required and Custom escutcheon plate — shown as amber badges until unticked.",
+  ] },
   { phase: "12B", date: "2026-09-27", items: [
     "Inventory: a new Inventory page lists stock on hand and reserved stock, with cost and the reason each item is there.",
     "When snag material is ordered, or a co-ordinator marks a job as completed, the app asks whether anything is going to stock and lets you add the items.",
@@ -2082,6 +2118,15 @@ function matchLegacyLine(line, dept) {
     const raw = (line.productType || "").trim();
     return raw ? { ...next, _legacy: raw, _matched: false } : next;
   }
+  // Phase 15 — Calore's cascade (type/unit type/free-text model) can't be reverse-matched from one
+  // free-text string either, and it's a clean slate (no auto-match wanted) — same flag-and-re-pick
+  // treatment as Wood.
+  if (dept === "calore") {
+    const next = { ...line, colour: line.colour || "" };
+    if (next.ownFireplace || (next.calType && next.calUnitType)) return next;
+    const raw = (line.productType || "").trim();
+    return raw ? { ...next, _legacy: raw, _matched: false } : next;
+  }
   const cats = categoriesOf(dept);
   if (!cats.length) return line;
   const next = { ...line, colour: line.colour || "" };
@@ -2126,9 +2171,14 @@ function matchLegacyLine(line, dept) {
   return { ...next, productCategory: h.cat, supplier: h.sup, productRange: h.rng, colour, area, productType: composeProduct(h.sup, h.rng, colour), _legacy: raw, _matched: true };
 }
 
+// Whether a product line already has a real product picked (vs. still being a hand-typed legacy
+// string) — Calore uses its own cascade fields instead of productRange, so it needs its own check.
+const isLineCatalogued = (l, dept) => (dept === "calore" ? (!!l.ownFireplace || !!(l.calType && l.calUnitType)) : !!l.productRange);
+
 // Phase 10.3 — the measurement boxes under each product line, per department
 function LineMeasureFields({ dept, l, onColour, onChange }) {
   const m = measureOf(dept);
+  if (m === "none") return null;
   const colour = <Field label="Colour (optional)"><input className={inputCls} value={l.colour || ""} onChange={(e) => onColour(e.target.value)} placeholder="e.g. Sandelwood" /></Field>;
   if (m === "qty") return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -2278,6 +2328,18 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     return { ...l, productRange: name, boardSize, productType: name ? composeProduct(l.supplier, name, l.colour, boardSize) : (l._legacy || "") };
   }) }));
   const setLineWoodSize = (id, size) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => (l.id === id ? { ...l, boardSize: size, productType: composeProduct(l.supplier, l.productRange, l.colour, size) } : l)) }));
+  // Phase 15 — Calore's own cascade: supplier -> type -> unit type -> free-text model; a single patch
+  // object keeps this to one setter. Changing an earlier level clears the ones below it, and ticking
+  // "client's own fireplace" clears and skips the whole cascade.
+  const setLineCalore = (id, patch) => setF((s) => ({ ...s, productLines: s.productLines.map((l) => {
+    if (l.id !== id) return l;
+    let merged = { ...l, ...patch };
+    if ("ownFireplace" in patch) merged = { ...merged, supplier: "", calType: "", calUnitType: "", model: "" };
+    else if ("supplier" in patch) merged = { ...merged, calType: "", calUnitType: "" };
+    else if ("calType" in patch) merged = { ...merged, calUnitType: "" };
+    merged.productType = merged.ownFireplace ? "Client's own fireplace" : ([merged.supplier, merged.calType, merged.calUnitType, merged.model].filter(Boolean).join(" ") || (l._legacy || ""));
+    return merged;
+  }) }));
   const addProdLine = () => setF((s) => ({ ...s, productLines: [...s.productLines, newLine(s.department)] }));
   const delProdLine = (id) => setF((s) => ({ ...s, productLines: s.productLines.length > 1 ? s.productLines.filter((l) => l.id !== id) : s.productLines }));
 
@@ -2495,6 +2557,41 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                         })()}
                       </div>
                     </>
+                  ) : f.department === "calore" ? (
+                    <>
+                      <label className="flex items-center gap-2 text-sm text-slate-200 select-none cursor-pointer">
+                        <input type="checkbox" className="w-4 h-4" checked={!!l.ownFireplace} onChange={(e) => setLineCalore(l.id, { ownFireplace: e.target.checked })} />
+                        Installing the client's own fireplace
+                      </label>
+                      {!l.ownFireplace && (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <Field label="Supplier">
+                              <select className={inputCls} value={l.supplier || ""} onChange={(e) => setLineCalore(l.id, { supplier: e.target.value })}>
+                                <option value="">Select a supplier…</option>
+                                {caloreSuppliers().map((s) => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </Field>
+                            <Field label="Type">
+                              <select className={inputCls} value={l.calType || ""} onChange={(e) => setLineCalore(l.id, { calType: e.target.value })} disabled={!l.supplier}>
+                                <option value="">{l.supplier ? "Select a type…" : "Pick a supplier first"}</option>
+                                {caloreTypes(l.supplier).map((t) => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                            </Field>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <Field label="Unit type">
+                              <select className={inputCls} value={l.calUnitType || ""} onChange={(e) => setLineCalore(l.id, { calUnitType: e.target.value })} disabled={!l.calType}>
+                                <option value="">{l.calType ? "Select a unit type…" : "Pick a type first"}</option>
+                                {caloreUnitTypes(l.supplier, l.calType).map((u) => <option key={u} value={u}>{u}</option>)}
+                              </select>
+                            </Field>
+                            <Field label="Model name"><input className={inputCls} value={l.model || ""} onChange={(e) => setLineCalore(l.id, { model: e.target.value })} placeholder="e.g. Calore Vesta 700" /></Field>
+                          </div>
+                        </>
+                      )}
+                      <Field label="Serial number (internal, optional)"><input className={inputCls} value={l.serial || ""} onChange={(e) => updProdLine(l.id, { serial: e.target.value })} placeholder="e.g. SN-004821" /></Field>
+                    </>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <Field label="Supplier">
@@ -2511,22 +2608,24 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                       </Field>
                     </div>
                   )}
-                  <LineMeasureFields dept={f.department} l={l}
-                    onColour={(v) => setLineColour(l.id, v)}
-                    onChange={(patch) => {
-                      const next = { ...l, ...patch };
-                      // Carpets: roll width × linear metres fills in m² (and the m² box locks while both are set)
-                      if (measureOf(f.department) === "roll" && ("rollWidth" in patch || "linearM" in patch) && next.rollWidth && next.linearM !== "" && next.linearM != null) patch = { ...patch, area: rollArea(next.rollWidth, next.linearM) };
-                      updProdLine(l.id, patch);
-                    }} />
-                  {l._legacy && l.productRange && (
+                  {f.department !== "calore" && (
+                    <LineMeasureFields dept={f.department} l={l}
+                      onColour={(v) => setLineColour(l.id, v)}
+                      onChange={(patch) => {
+                        const next = { ...l, ...patch };
+                        // Carpets: roll width × linear metres fills in m² (and the m² box locks while both are set)
+                        if (measureOf(f.department) === "roll" && ("rollWidth" in patch || "linearM" in patch) && next.rollWidth && next.linearM !== "" && next.linearM != null) patch = { ...patch, area: rollArea(next.rollWidth, next.linearM) };
+                        updProdLine(l.id, patch);
+                      }} />
+                  )}
+                  {l._legacy && isLineCatalogued(l, f.department) && (
                     <div className="text-xs text-sky-300/90 bg-sky-500/10 border border-sky-500/30 rounded-lg px-3 py-2">
-                      Matched from the typed entry <span className="text-sky-100">{l._legacy}</span>. Check supplier, range, colour and m², then save.
+                      Matched from the typed entry <span className="text-sky-100">{l._legacy}</span>. Check the details above, then save.
                     </div>
                   )}
-                  {l._legacy && !l.productRange && (
+                  {l._legacy && !isLineCatalogued(l, f.department) && (
                     <div className="text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-                      Existing entry: <span className="text-amber-100">{l._legacy}</span> (typed in by hand). Pick a supplier and range above to replace it, or leave it as it is.
+                      Existing entry: <span className="text-amber-100">{l._legacy}</span> (typed in by hand). Pick from the options above to replace it, or leave it as it is.
                     </div>
                   )}
                 </div>
@@ -2770,6 +2869,8 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         {p.received && p.status === "received" && <RBadge />}
         {partiallyReceived(p) && <span className="flex items-center gap-1 text-xs text-yellow-300"><PartialBadge /> not received in full</span>}
         {needsOverlock(p) && <span className="flex items-center gap-1 text-xs text-amber-300"><OverlockBadge p={p} /> overlocking {overlockStatusText(p)}</span>}
+        {p.department === "calore" && p.coreDrilling && <span className="flex items-center gap-1 text-xs text-amber-300"><CoreDrillingBadge p={p} /> core drilling required</span>}
+        {p.department === "calore" && p.escutcheonPlate && <span className="flex items-center gap-1 text-xs text-amber-300"><EscutcheonBadge p={p} /> custom escutcheon plate</span>}
         {isReserved(p) && (
           <span className={`text-xs px-2 py-0.5 rounded-full border ${p.received ? "border-slate-400/60 text-slate-200" : "border-red-500 text-red-300"}`}>
             {p.reserveStage === "reserved" ? "Reserved" : "Planned"} · {fmt(p.installDate)}{p.received ? "" : " · no stock yet"}
@@ -2828,6 +2929,22 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         </label>
       )}
 
+      {/* Phase 15 — Calore smart prompts: plain flags, ticked at creation or any time after; anyone signed in can toggle */}
+      {p.department === "calore" && (
+        <div className="mt-4 flex flex-col sm:flex-row gap-2">
+          <label className={`flex-1 flex items-center gap-3 border rounded-xl px-3 py-2.5 ${p.coreDrilling ? "border-amber-500/50 bg-amber-500/5" : "border-[#30363d]"} ${(user.level ?? 0) >= 1 ? "cursor-pointer" : "opacity-70"}`}>
+            <input type="checkbox" className="w-4 h-4" checked={!!p.coreDrilling} disabled={(user.level ?? 0) < 1}
+              onChange={(e) => { const on = e.target.checked; save({ ...p, coreDrilling: on, log: log(on ? "Core drilling flagged as required" : "Core drilling no longer required") }, on ? "Core drilling marked as required" : "Core drilling unticked"); }} />
+            <span className="text-sm text-slate-100 font-medium">Core drilling required</span>
+          </label>
+          <label className={`flex-1 flex items-center gap-3 border rounded-xl px-3 py-2.5 ${p.escutcheonPlate ? "border-amber-500/50 bg-amber-500/5" : "border-[#30363d]"} ${(user.level ?? 0) >= 1 ? "cursor-pointer" : "opacity-70"}`}>
+            <input type="checkbox" className="w-4 h-4" checked={!!p.escutcheonPlate} disabled={(user.level ?? 0) < 1}
+              onChange={(e) => { const on = e.target.checked; save({ ...p, escutcheonPlate: on, log: log(on ? "Custom escutcheon plate flagged as required" : "Custom escutcheon plate no longer required") }, on ? "Escutcheon plate marked as required" : "Escutcheon plate unticked"); }} />
+            <span className="text-sm text-slate-100 font-medium">Custom escutcheon plate</span>
+          </label>
+        </div>
+      )}
+
       {/* Phase 12A — overlocking */}
       {hasOverlock(p) && (
         <div className={`mt-4 border rounded-xl p-3 ${needsOverlock(p) ? "border-amber-500/50 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5"}`}>
@@ -2870,7 +2987,7 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         {productLinesOf(p).length > 0 ? productLinesOf(p).map((l, i) => (
           <div key={l.id || i} className={i > 0 ? "border-t border-[#30363d]" : ""}>
             <div className="flex items-center justify-between gap-2 py-1.5 text-sm">
-              <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{measureText(l, p.department) && <span className="text-slate-400 text-xs"> · {measureText(l, p.department)}</span>}</span>
+              <span className="text-slate-100">{l.productType || l.productRange || "—"} {i === 0 && <span className="text-slate-500 text-xs">(main)</span>}{measureText(l, p.department) && <span className="text-slate-400 text-xs"> · {measureText(l, p.department)}</span>}{p.department === "calore" && l.serial && <span className="text-slate-500 text-xs"> · SN {l.serial}</span>}</span>
               <span className="flex items-center gap-2 shrink-0">
                 {partialCtl({ kind: "pl", id: l.id, label: l.productType || l.productRange || "Product" }, !!l.partial, l.partialNote, p.received)}
                 {i === 0 && (p.received ? <span className="text-xs text-emerald-300">Received</span> : <span className="text-xs text-slate-500">Not received</span>)}
@@ -3488,6 +3605,8 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
           {variant !== "return" && <OverlockBadge p={p} small />}
+          {variant !== "return" && <CoreDrillingBadge p={p} small />}
+          {variant !== "return" && <EscutcheonBadge p={p} small />}
           <EtaBadge p={p} small />
           {showBars && <StageBars p={p} />}
         </div>
@@ -3499,6 +3618,8 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
             {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
             {(flagged || variant === "return") && <SnagFlag small />}
             {variant !== "return" && <OverlockBadge p={p} small />}
+            {variant !== "return" && <CoreDrillingBadge p={p} small />}
+            {variant !== "return" && <EscutcheonBadge p={p} small />}
             {variant !== "return" && <EtaBadge p={p} small />}
             {showPartial(p) && <PartialBadge />}
             {p.status === "received" && variant !== "return" && <RBadge />}
