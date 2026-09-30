@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck, Boxes, Tag, Pencil
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck, Boxes, Tag, Pencil, Hourglass
 } from "lucide-react";
 
 /* =========================================================
@@ -449,6 +449,9 @@ const ETA_WARN_DAYS = 3;
 const ETA_TBC = "TBC";
 const etaStateOf = (p) => {
   if (!p || p.deleted || p.invoiced) return null;
+  // Phase 19 — a temporary placeholder approaching/past its booked date, still not converted
+  const tempSt = tempJobStateOf(p);
+  if (tempSt) return tempSt;
   // Phase 18 — a repair past its client-expected lead time is overdue regardless of material status
   if (repairLeadOverdue(p)) return "overdue";
   if (p.status !== "ordered" || p.received || !p.materialEta) return null;
@@ -461,6 +464,10 @@ const etaStateOf = (p) => {
 const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
 const etaLabel = (p) => {
   const st = etaStateOf(p); if (!st) return "";
+  if (tempJobStateOf(p)) {
+    const d = daysBetween(todayIso(), p.installDate);
+    return `Still temporary · booked in ${d} day${d === 1 ? "" : "s"}`;
+  }
   if (repairLeadOverdue(p)) return "Repair lead time overdue";
   if (st === "tbc") return "ETA to be confirmed";
   const d = daysBetween(todayIso(), p.materialEta);
@@ -482,12 +489,31 @@ const repairLeadOverdue = (p) => {
   if (!opt || opt.ms == null) return false;
   return Date.now() > new Date(p.createdAt).getTime() + opt.ms;
 };
+
+/* Phase 19 — temporary placeholders. Quick-add jobs with just client name, consultant and department,
+   saved straight to ready-to-book. Converted into a real job by editing it in place and adding a PO
+   (the existing edit-save rule already requires one). While still unconverted, a placeholder that's
+   booked onto a date starts alerting as its date approaches — 3 weeks out = soon, 2 weeks out = overdue. */
+const isTemp = (p) => !!(p && p.isTemp);
+const TempIcon = ({ small }) => (
+  <span title="Temporary placeholder" className={`inline-flex items-center justify-center rounded-full bg-slate-500 text-white shrink-0 ${small ? "w-4 h-4" : "w-5 h-5"}`}><Hourglass size={small ? 9 : 11} strokeWidth={2.5} /></span>
+);
+const TEMP_WARN_SOON_DAYS = 21;
+const TEMP_WARN_OVERDUE_DAYS = 14;
+const tempJobStateOf = (p) => {
+  if (!p || !isTemp(p) || p.deleted || p.invoiced || !p.installDate) return null;
+  const d = daysBetween(todayIso(), p.installDate);
+  if (d <= TEMP_WARN_OVERDUE_DAYS) return "overdue";
+  if (d <= TEMP_WARN_SOON_DAYS) return "soon";
+  return null;
+};
 const EtaBadge = ({ p, small }) => {
   const st = etaStateOf(p); if (!st) return null;
   const cls = st === "overdue" ? "bg-red-600 text-white" : st === "tbc" ? "bg-slate-500 text-white" : "bg-amber-400 text-slate-900";
+  const label = tempJobStateOf(p) ? (st === "overdue" ? "STILL TEMP" : "TEMP SOON") : st === "overdue" ? "OVERDUE" : st === "tbc" ? "TBC" : "ETA SOON";
   return (
     <span title={etaLabel(p)} className={`shrink-0 font-bold rounded-full ${small ? "text-[9px] px-1 py-px" : "text-[10px] px-1.5 py-0.5"} ${cls}`}>
-      {st === "overdue" ? "OVERDUE" : st === "tbc" ? "TBC" : "ETA SOON"}
+      {label}
     </span>
   );
 };
@@ -990,6 +1016,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showTest, setShowTest] = useState(false);
+  const [showTemp, setShowTemp] = useState(false);
   const [showHolidays, setShowHolidays] = useState(false);
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -1262,6 +1289,7 @@ export default function App() {
   const pick = (fn) => () => { fn(); setNavOpen(false); };
   const actions = [
     ...(isCoord ? [{ key: "new", label: "New project", icon: Plus, run: () => setShowCreate(true), cls: "text-white" }] : []),
+    ...(isCoord ? [{ key: "temp", label: "New temporary placeholder", icon: Hourglass, run: () => setShowTemp(true), cls: "text-slate-300" }] : []),
     ...(isDev ? [{ key: "test", label: "New test project", icon: Plus, run: () => setShowTest(true), cls: "text-orange-300" }] : []),
     ...(isDev ? [{ key: "hol", label: "Public holidays", icon: Calendar, run: () => setShowHolidays(true), cls: "text-slate-200" }] : []),
   ];
@@ -1331,6 +1359,11 @@ export default function App() {
             {isCoord && (
               <button onClick={() => setShowCreate(true)} className={`${btnPrimary} hidden md:flex items-center gap-1.5`}>
                 <Plus size={16} /> New project
+              </button>
+            )}
+            {isCoord && (
+              <button onClick={() => setShowTemp(true)} className="hidden md:flex px-4 py-2 rounded-lg border border-[#30363d] text-slate-300 hover:bg-[#161b22] text-sm font-medium items-center gap-1.5" title="Quick-add a placeholder booking — just client name, consultant and department, no PO yet">
+                <Hourglass size={16} /> New temporary placeholder
               </button>
             )}
             {isDev && (
@@ -1446,7 +1479,7 @@ export default function App() {
               onDelete={(it) => saveInventory({ ...it, deleted: true, deletedBy: user.name, deletedAt: new Date().toISOString() }, "Inventory item deleted")}
               onOpenProject={(id) => { const p = projects.find((x) => x.id === id); if (p) setSelected(p); }} />
           ) : view === "performance" ? (
-            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest)} user={user} reviews={canSeeReviews(user) ? reviews.filter((v) => !v.isTest) : null} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest)} user={user} /></>
+            canSeePerf ? <PerformanceView projects={active.filter((p) => !p.isTest && !p.isTemp)} user={user} reviews={canSeeReviews(user) ? reviews.filter((v) => !v.isTest) : null} /> : <><PerformanceBeta /><MyStanding projects={active.filter((p) => !p.isTest && !p.isTemp)} user={user} /></>
           ) : view === "reports" ? (
             <ReportsView projects={active} />
           ) : view === "availability" ? (
@@ -1479,7 +1512,14 @@ export default function App() {
           initial={editing} user={user} isCoord={isCoord} isTest={showTest && !editing} allowedDepts={allowedDepts}
           reservedStock={inventory.filter((x) => x.status === "reserved" && !x.linkedProjectId)}
           onClose={() => { setShowCreate(false); setShowTest(false); setEditing(null); }}
-          onSave={async (p) => { await save(p, editing ? "Project updated" : (p.isTest ? "Test project created" : "Project created")); if (!editing && p.inventoryItemId) linkInventory(p.inventoryItemId, p); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
+          onSave={async (p) => { await save(p, editing ? (editing.isTemp && !p.isTemp ? "Placeholder converted to a real order" : "Project updated") : (p.isTest ? "Test project created" : "Project created")); if (!editing && p.inventoryItemId) linkInventory(p.inventoryItemId, p); setShowCreate(false); setShowTest(false); setEditing(null); if (editing) setSelected(p); }}
+        />
+      )}
+      {showTemp && (
+        <TempJobForm
+          user={user} allowedDepts={allowedDepts}
+          onClose={() => setShowTemp(false)}
+          onSave={async (p) => { await save(p, "Temporary placeholder created"); setShowTemp(false); }}
         />
       )}
       {selected && (
@@ -1535,6 +1575,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
             <div className="flex items-center gap-1.5 shrink-0">
               {p.isTest && <span className="text-[10px] text-orange-300 font-semibold">TEST</span>}
               {isRepair(p) && <RepairIcon />}
+              {isTemp(p) && <TempIcon />}
               {hasOpenSnags(p) && <SnagFlag />}
               {isReserved(p) && <span className={`text-[10px] ${p.received ? "text-slate-300" : "text-red-300"}`}>{p.reserveStage === "reserved" ? "Reserved" : "Planned"}</span>}
               {showPartial(p) && <PartialBadge />}
@@ -1851,7 +1892,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
                 </div>
                 <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
                 <div className="col-span-6 md:col-span-3 text-sm text-slate-300 truncate">{p.productType}{supplier && !String(p.productType || "").includes(supplier) ? ` · ${supplier}` : ""}</div>
-                <div className="col-span-6 md:col-span-2 text-xs text-slate-300">{p.materialEta ? <>ETA {fmtShort(p.materialEta)}</> : (isRepair(p) ? "Repair lead time" : "")}<div className="text-slate-400">{etaLabel(p)}</div></div>
+                <div className="col-span-6 md:col-span-2 text-xs text-slate-300">{p.materialEta ? <>ETA {fmtShort(p.materialEta)}</> : isTemp(p) ? `Booked ${fmtShort(p.installDate)}` : (isRepair(p) ? "Repair lead time" : "")}<div className="text-slate-400">{etaLabel(p)}</div></div>
                 <div className="col-span-6 md:col-span-1 flex justify-end"><EtaBadge p={p} /></div>
               </button>
             );
@@ -1866,7 +1907,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
         <h1 className="text-xl md:text-2xl font-bold text-white">ETA alerts</h1>
         <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.tbc.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
       </div>
-      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA, still to be confirmed, or due within {ETA_WARN_DAYS} days — plus repairs past their client-expected lead time. Tap an order to open it.</p>
+      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA, still to be confirmed, or due within {ETA_WARN_DAYS} days — plus repairs past their client-expected lead time, and temporary placeholders nearing their booked date unconverted. Tap an order to open it.</p>
       <Section title="OVERDUE — PAST ETA" items={alerts.overdue} tone="text-red-300" />
       <Section title="ETA TO BE CONFIRMED" items={alerts.tbc} tone="text-slate-300" />
       <Section title={`DUE WITHIN ${ETA_WARN_DAYS} DAYS`} items={alerts.soon} tone="text-amber-300" />
@@ -1886,6 +1927,13 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "19", date: "2026-09-30", items: [
+    "New \"temporary placeholder\" quick-add (Co-ordinator+): client name, consultant and department only — no PO, no product details — lands straight in Ready to book.",
+    "Temporary placeholders show semi-transparent with a dashed border and an hourglass badge everywhere stickers appear, so they read as unofficial at a glance.",
+    "Convert a placeholder into a real order by editing it and adding a PO — same booked date and team carry over.",
+    "A booked-but-unconverted placeholder now alerts in the same ETA system as material ETAs and repair lead times: amber at 3 weeks before its date, red/overdue at 2 weeks.",
+    "Placeholders count toward team capacity but are excluded from the Performance Report and from the daily/weekly PDF job report until converted.",
+  ] },
   { phase: "18", date: "2026-09-30", items: [
     "Repairs: new required \"Client expected lead time\" field at creation (24 hours, 3 days, a week, or Maintenance).",
     "A repair past its lead time now shows as overdue in ETA alerts (home banner, bell panel, alerts page, nav badge) alongside material ETAs; Maintenance carries no deadline.",
@@ -2123,7 +2171,7 @@ function ListView({ title, status, items, onOpen, level }) {
             return (
               <button key={p.id} onClick={() => onOpen(p)} className={`w-full text-left bg-[#0d1117] hover:bg-[#12181f] border ${snagCardCls(p)} rounded-xl p-3 md:p-4 grid grid-cols-12 gap-x-3 gap-y-1.5 md:gap-3 items-center`}>
                 <div className="col-span-12 md:col-span-4 min-w-0">
-                  <div className="font-medium text-white truncate flex items-center gap-1.5"><span className="truncate">{p.clientName}</span>{isRepair(p) && <RepairIcon small />}</div>
+                  <div className="font-medium text-white truncate flex items-center gap-1.5"><span className="truncate">{p.clientName}</span>{isRepair(p) && <RepairIcon small />}{isTemp(p) && <TempIcon small />}</div>
                   <div className="text-xs text-slate-400 truncate">{p.address}</div>
                 </div>
                 <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
@@ -2430,6 +2478,8 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     if (!initial) base.po = formatPo(poNum);
     base.isRepair = !!f.isRepair;
     if (!base.isRepair) { delete base.repairNeedsMaterial; delete base.repairLeadTime; }
+    // Phase 19 — editing a temp placeholder always requires a PO to save (poOk below), so reaching here means it's converting
+    if (initial && initial.isTemp) base.isTemp = false;
     if (noMaterial) base.materialEta = null;
     if (hasCatalog(f.department)) {
       // keep only lines that actually have a product; store area as a number
@@ -2475,6 +2525,10 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     }
     if (initial && olOn !== olWas) {
       base.log = [...(initial.log || []), { id: uid(), text: olOn ? "Overlocking required" : "Overlocking no longer required", author: user.name, createdAt: now }];
+    }
+    // Phase 19 — converting a temp placeholder into a real order
+    if (initial && initial.isTemp) {
+      base.log = [...(base.log || initial.log || []), { id: uid(), text: `Converted from temporary placeholder to a real order (PO ${base.po})`, author: user.name, createdAt: now }];
     }
     const p = initial
       ? base
@@ -2834,6 +2888,61 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
 }
 
 /* =========================================================
+   PHASE 19 — TEMPORARY PLACEHOLDER (quick-add)
+   Client name, consultant, department only — saved straight to ready-to-book.
+   ========================================================= */
+function TempJobForm({ user, allowedDepts, onClose, onSave }) {
+  const deptOptions = allowedDepts ? DEPARTMENTS.filter((d) => allowedDepts.includes(d.id)) : DEPARTMENTS;
+  const [clientName, setClientName] = useState("");
+  const [consultant, setConsultant] = useState(CONSULTANTS[0]);
+  const [department, setDepartment] = useState((allowedDepts && allowedDepts.length) ? allowedDepts[0] : deptOptions[0]?.id || "blinds");
+  const [busy, setBusy] = useState(false);
+  const valid = clientName.trim().length > 0;
+  const submit = async () => {
+    if (!valid) return;
+    setBusy(true);
+    const now = new Date().toISOString();
+    const p = {
+      id: uid(), clientName: clientName.trim(), contact: "", address: "", po: "",
+      consultant, department, team: teamsOf(department)[0],
+      productType: "", productCategory: "", supplier: "", productRange: "",
+      productLines: [], lineItems: [], materialEta: null, installDays: 1, estHours: "", jobCards: [],
+      isRepair: false, isTemp: true,
+      overlock: false, overlockSizes: [],
+      status: "received", received: true, receivedAt: now,
+      installed: false, createdAt: now, createdBy: user.name,
+      log: [{ id: uid(), text: "Temporary placeholder created", author: user.name, createdAt: now }],
+    };
+    await onSave(p);
+    setBusy(false);
+  };
+  return (
+    <Modal title="New temporary placeholder" onClose={onClose}>
+      <div className="text-xs text-slate-400 bg-[#0d1117] border border-[#30363d] rounded-lg px-3 py-2 mb-4 flex items-center gap-2">
+        <TempIcon /> No PO or product details yet — this just holds a spot on the calendar. Add the PO later to turn it into a real order.
+      </div>
+      <div className="space-y-4">
+        <Field label="Client name"><input className={inputCls} value={clientName} onChange={(e) => setClientName(e.target.value)} autoFocus /></Field>
+        <Field label="Consultant">
+          <select className={inputCls} value={consultant} onChange={(e) => setConsultant(e.target.value)}>
+            {CONSULTANTS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Department">
+          <select className={inputCls} value={department} onChange={(e) => setDepartment(e.target.value)}>
+            {deptOptions.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 mt-6">
+        <button onClick={onClose} className={btnGhost}>Cancel</button>
+        <button onClick={submit} disabled={!valid || busy} className={btnPrimary}>{busy ? "Saving…" : "Create placeholder"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* =========================================================
    PROJECT DETAIL
    ========================================================= */
 function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save, onClose, onEdit, reviews, onSubmitReview, onInventoryPrompt }) {
@@ -2974,6 +3083,11 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
         {isRepair(p) && p.repairLeadTime && (
           <span className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${repairLeadOverdue(p) ? "border-red-500/60 text-red-300" : "border-slate-500/40 text-slate-300"}`}>
             <Clock size={12} /> Lead time: {repairLeadOf(p.repairLeadTime)?.label}{repairLeadOverdue(p) ? " · overdue" : ""}
+          </span>
+        )}
+        {isTemp(p) && (
+          <span className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${tempJobStateOf(p) === "overdue" ? "border-red-500/60 text-red-300" : tempJobStateOf(p) === "soon" ? "border-amber-400/60 text-amber-300" : "border-slate-500/40 text-slate-300"}`}>
+            <TempIcon small /> Temporary placeholder{p.installDate ? ` · ${etaLabel(p) || `booked ${fmtShort(p.installDate)}`}` : " · not yet booked"}
           </span>
         )}
         {p.isTest && <span className="text-xs px-2 py-0.5 rounded-full border-2 border-orange-500 text-orange-300 font-semibold">TEST</span>}
@@ -3719,6 +3833,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   const cls = stickerCls(p, variant);
   const flagged = hasOpenSnags(p);
   const test = !!p.isTest;
+  const temp = isTemp(p);
   const compact = expandable && !expanded;
   const eta = variant !== "return" ? etaStateOf(p) : null;
   const ringCls = test ? "ring-2 ring-orange-500 border-orange-500"
@@ -3729,13 +3844,14 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
   return (
     <div
       draggable={draggable} onDragStart={onDragStart} onClick={expandable ? onToggle : onClick}
-      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${ringCls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""}`}
-      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}${isRepair(p) ? " · Repair" : ""}${variant === "return" ? " · Snag return visit" : ""}`}
+      className={`border rounded-lg px-2 py-1.5 text-xs leading-tight select-none ${cls} ${ringCls} ${draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} ${!draggable && variant === "ordered" ? "opacity-80" : ""} ${temp ? "opacity-55 border-dashed" : ""}`}
+      title={`${p.clientName} · PO ${p.po} · ${p.productType || ""}${p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}${isRepair(p) ? " · Repair" : ""}${temp ? " · Temporary placeholder" : ""}${variant === "return" ? " · Snag return visit" : ""}`}
     >
       {compact ? (
         <div className="flex items-center gap-1.5">
           <span className="font-semibold truncate flex-1">{p.clientName}</span>
           {isRepair(p) && variant !== "return" && <RepairIcon small />}
+          {temp && variant !== "return" && <TempIcon small />}
           {dayTag && <span className="font-bold opacity-90 text-[10px]">{dayTag}</span>}
           {time && <span className="opacity-80">{time}</span>}
           {variant !== "return" && <OverlockBadge p={p} small />}
@@ -3749,6 +3865,7 @@ function Sticker({ p, draggable, onDragStart, onClick, variant, dayTag, time, en
           <div className="flex items-center gap-1.5">
             <span className="font-semibold truncate flex-1">{p.clientName}</span>
             {isRepair(p) && variant !== "return" && <RepairIcon small />}
+            {temp && variant !== "return" && <TempIcon small />}
             {dayTag && <span className="font-bold opacity-90">{dayTag}</span>}
             {(flagged || variant === "return") && <SnagFlag small />}
             {variant !== "return" && <OverlockBadge p={p} small />}
@@ -4002,6 +4119,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
             <span className="flex items-center gap-1.5"><span className="flex flex-col gap-[2px]"><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /><span className="block w-4 h-[2px] bg-slate-300" /></span> Confirmed</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded bg-red-500/20 border border-red-500/60" /> Snag return</span>
             <span className="flex items-center gap-1.5"><RepairIcon small /> Repair</span>
+            <span className="flex items-center gap-1.5"><TempIcon small /> Temporary placeholder</span>
             <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded ring-2 ring-orange-500 border border-orange-500" /> Test (dev only)</span>
     </>
   );
@@ -4025,7 +4143,7 @@ function CalendarView({ cal, projects, isCoord, canEdit, canBook = canEdit, cust
       return (
         <button onClick={() => choose(item)} className={`w-full text-left rounded-xl border px-3 py-2.5 flex items-center gap-3 ${awaiting ? "border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15" : kind === "return" ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/15" : "border-[#30363d] bg-[#0d1117] hover:bg-[#12181f]"}`}>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}{kind !== "return" && isRepair(p) && <RepairIcon small />}</div>
+            <div className="text-sm font-medium text-white truncate flex items-center gap-1.5">{p.clientName} {kind === "return" && <SnagFlag small />}{kind !== "return" && isRepair(p) && <RepairIcon small />}{kind !== "return" && isTemp(p) && <TempIcon small />}</div>
             <div className="text-[11px] text-slate-400 truncate">{d.label} · PO {p.po} · {p.consultant}{p.team ? ` · ${teamLabel(p.department, p.team)}` : ""}</div>
             {p.productType && <div className="text-[11px] text-slate-500 truncate">{p.productType}{jobMeasureText(p) ? ` · ${jobMeasureText(p)}` : ""}</div>}
           </div>
@@ -4566,7 +4684,7 @@ function ReportsView({ projects }) {
 
   const range = mode === "daily" ? [date, date] : [weekStart(date), addDays(weekStart(date), 6)];
   // one row per install day that falls in the range
-  const inScope = projects.filter((p) => calendarOf(p.department) === dept);
+  const inScope = projects.filter((p) => calendarOf(p.department) === dept && !p.isTemp); // Phase 19 — temp placeholders excluded until converted
   const rows = [
     ...inScope.filter((p) => p.status === "booked" || p.status === "installed")
       .flatMap((p) => scheduleOf(p).filter((s) => s.date >= range[0] && s.date <= range[1]).map((s) => ({ p, day: s, total: scheduleOf(p).length }))),
