@@ -448,7 +448,10 @@ const ETA_WARN_DAYS = 3;
 // Stored as this exact string in materialEta; fmt()/fmtShort() pass it straight through everywhere.
 const ETA_TBC = "TBC";
 const etaStateOf = (p) => {
-  if (!p || p.status !== "ordered" || p.received || !p.materialEta || p.deleted || p.invoiced) return null;
+  if (!p || p.deleted || p.invoiced) return null;
+  // Phase 18 — a repair past its client-expected lead time is overdue regardless of material status
+  if (repairLeadOverdue(p)) return "overdue";
+  if (p.status !== "ordered" || p.received || !p.materialEta) return null;
   if (p.materialEta === ETA_TBC) return "tbc";
   const today = todayIso();
   if (p.materialEta < today) return "overdue";
@@ -458,10 +461,26 @@ const etaStateOf = (p) => {
 const daysBetween = (a, b) => Math.round((fromIso(b) - fromIso(a)) / 86400000);
 const etaLabel = (p) => {
   const st = etaStateOf(p); if (!st) return "";
+  if (repairLeadOverdue(p)) return "Repair lead time overdue";
   if (st === "tbc") return "ETA to be confirmed";
   const d = daysBetween(todayIso(), p.materialEta);
   if (st === "overdue") return `${-d} day${d === -1 ? "" : "s"} overdue`;
   return d === 0 ? "ETA today" : `ETA in ${d} day${d === 1 ? "" : "s"}`;
+};
+// Phase 18 — client-expected lead time on repairs only. Set once at creation, deadline counts from
+// the repair being logged; "Maintenance" carries no deadline and is excluded from overdue logic.
+const REPAIR_LEAD_OPTIONS = [
+  { id: "24h", label: "24 hours", ms: 24 * 60 * 60 * 1000 },
+  { id: "3days", label: "3 days", ms: 3 * 24 * 60 * 60 * 1000 },
+  { id: "week", label: "A week", ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: "maintenance", label: "Maintenance", ms: null },
+];
+const repairLeadOf = (id) => REPAIR_LEAD_OPTIONS.find((o) => o.id === id);
+const repairLeadOverdue = (p) => {
+  if (!p || !isRepair(p) || p.deleted || p.invoiced || p.status === "installed" || !p.createdAt) return false;
+  const opt = repairLeadOf(p.repairLeadTime);
+  if (!opt || opt.ms == null) return false;
+  return Date.now() > new Date(p.createdAt).getTime() + opt.ms;
 };
 const EtaBadge = ({ p, small }) => {
   const st = etaStateOf(p); if (!st) return null;
@@ -1184,7 +1203,8 @@ export default function App() {
   const reviewCount = useMemo(() => active.reduce((n, p) => n + (p.snags || []).filter((s) => s.resolved && !(s.review && s.review.cause)).length, 0), [active]);
   // Phase 9.1 — orders overdue or due within 3 days, still not received. Consultants see only their own (same rule as Placed orders).
   const etaOf = (src) => {
-    const withState = src.filter((p) => etaStateOf(p)).sort((a, b) => a.materialEta.localeCompare(b.materialEta));
+    // Phase 18 — repair-lead-overdue jobs may have no materialEta at all (no-material repairs); guard the sort
+    const withState = src.filter((p) => etaStateOf(p)).sort((a, b) => (a.materialEta || "").localeCompare(b.materialEta || ""));
     return { overdue: withState.filter((p) => etaStateOf(p) === "overdue"), soon: withState.filter((p) => etaStateOf(p) === "soon"), tbc: withState.filter((p) => etaStateOf(p) === "tbc") };
   };
   const etaAlerts = useMemo(() => etaOf(mine(active)), [active, level, user]);
@@ -1794,7 +1814,7 @@ function EtaBanner({ alerts, onOpen, onViewAll }) {
           {tbc.length > 0 && <>{tbc.length} ETA{tbc.length === 1 ? "" : "s"} to be confirmed</>}
           {(overdue.length > 0 || tbc.length > 0) && soon.length > 0 && " · "}
           {soon.length > 0 && <>{soon.length} due within {ETA_WARN_DAYS} days</>}
-          <span className="text-slate-400 font-normal"> · not yet received</span>
+          <span className="text-slate-400 font-normal"> · needs action</span>
         </span>
         <button onClick={onViewAll} className="ml-auto text-xs underline text-slate-300 hover:text-white">View all</button>
       </div>
@@ -1831,7 +1851,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
                 </div>
                 <div className="col-span-6 md:col-span-2 text-sm text-slate-300 flex items-center gap-1.5"><d.icon size={14} className="text-slate-500" />{d.label}</div>
                 <div className="col-span-6 md:col-span-3 text-sm text-slate-300 truncate">{p.productType}{supplier && !String(p.productType || "").includes(supplier) ? ` · ${supplier}` : ""}</div>
-                <div className="col-span-6 md:col-span-2 text-xs text-slate-300">ETA {fmtShort(p.materialEta)}<div className="text-slate-400">{etaLabel(p)}</div></div>
+                <div className="col-span-6 md:col-span-2 text-xs text-slate-300">{p.materialEta ? <>ETA {fmtShort(p.materialEta)}</> : (isRepair(p) ? "Repair lead time" : "")}<div className="text-slate-400">{etaLabel(p)}</div></div>
                 <div className="col-span-6 md:col-span-1 flex justify-end"><EtaBadge p={p} /></div>
               </button>
             );
@@ -1846,7 +1866,7 @@ function EtaAlertsView({ alerts, onOpen, level }) {
         <h1 className="text-xl md:text-2xl font-bold text-white">ETA alerts</h1>
         <span className="text-sm text-slate-400">{alerts.overdue.length + alerts.tbc.length + alerts.soon.length} to follow up{level === 1 ? " (yours)" : ""}</span>
       </div>
-      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA, still to be confirmed, or due within {ETA_WARN_DAYS} days. Tap an order to open it.</p>
+      <p className="text-sm text-slate-400 mb-5">Orders not yet received that are past their ETA, still to be confirmed, or due within {ETA_WARN_DAYS} days — plus repairs past their client-expected lead time. Tap an order to open it.</p>
       <Section title="OVERDUE — PAST ETA" items={alerts.overdue} tone="text-red-300" />
       <Section title="ETA TO BE CONFIRMED" items={alerts.tbc} tone="text-slate-300" />
       <Section title={`DUE WITHIN ${ETA_WARN_DAYS} DAYS`} items={alerts.soon} tone="text-amber-300" />
@@ -1866,6 +1886,10 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "18", date: "2026-09-30", items: [
+    "Repairs: new required \"Client expected lead time\" field at creation (24 hours, 3 days, a week, or Maintenance).",
+    "A repair past its lead time now shows as overdue in ETA alerts (home banner, bell panel, alerts page, nav badge) alongside material ETAs; Maintenance carries no deadline.",
+  ] },
   { phase: "17", date: "2026-09-29", items: [
     "Every department: pick \"Other (not listed)\" as the supplier to type a free-text product description for out-of-the-norm orders — Developer and Franco get notified so the catalogue can be extended if needed.",
     "Material ETA can now be set to TBC instead of a date — TBC orders show alongside overdue ones in ETA alerts until a real date is entered.",
@@ -2308,7 +2332,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
       clientName: "", contact: "", address: "", po: "", consultant: CONSULTANTS[0], department: defaultDept, team: teamsOf(defaultDept)[0],
       productType: "", productCategory: "", supplier: "", productRange: "",
       productLines: [], lineItems: [], materialEta: todayIso(), installDays: 1, estHours: "", jobCards: [],
-      isRepair: false, repairNeedsMaterial: true,
+      isRepair: false, repairNeedsMaterial: true, repairLeadTime: "",
       overlock: false, overlockSizes: [""],
       fromInventory: false, inventoryItemId: "",
     };
@@ -2394,7 +2418,8 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
   // A repair with no material skips the ETA and goes straight to Ready to book
   const noMaterial = !initial && f.isRepair && !f.repairNeedsMaterial;
   const invOk = initial || !f.fromInventory || reservedStock.some((x) => x.id === f.inventoryItemId); // Phase 12B
-  const valid = f.clientName.trim() && poOk && (noMaterial || f.materialEta || (initial && initial.received)) && invOk;
+  const leadOk = initial || !f.isRepair || !!f.repairLeadTime; // Phase 18 — required on new repairs only
+  const valid = f.clientName.trim() && poOk && (noMaterial || f.materialEta || (initial && initial.received)) && invOk && leadOk;
   const submit = async () => {
     if (!valid) return;
     setBusy(true);
@@ -2404,7 +2429,7 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     const base = { ...f, lineItems, installDays: Number(f.installDays) || 1, estHours: f.estHours === "" ? null : Number(f.estHours) };
     if (!initial) base.po = formatPo(poNum);
     base.isRepair = !!f.isRepair;
-    if (!base.isRepair) delete base.repairNeedsMaterial;
+    if (!base.isRepair) { delete base.repairNeedsMaterial; delete base.repairLeadTime; }
     if (noMaterial) base.materialEta = null;
     if (hasCatalog(f.department)) {
       // keep only lines that actually have a product; store area as a number
@@ -2437,7 +2462,8 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
     base.overlockSizes = olOn ? (f.overlockSizes || []).map((x) => (x || "").trim()).filter(Boolean) : [];
     if (!olOn) { base.overlockStage = null; base.overlockOrderedAt = null; base.overlockOrderedBy = null; base.overlockReceivedAt = null; base.overlockReceivedBy = null; }
     else if (!olWas) { base.overlockStage = null; }
-    const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}${olOn ? " · overlocking required" : ""}`;
+    const leadLabel = base.isRepair && !initial ? repairLeadOf(base.repairLeadTime)?.label : null;
+    const createdText = `${isTest ? "Test project" : base.isRepair ? "Repair" : "Project"} created${noMaterial ? " — no material required, ready to book" : ""}${olOn ? " · overlocking required" : ""}${leadLabel ? ` · lead time: ${leadLabel}` : ""}`;
     // Phase 12B — new jobs only: link a reserved stock item
     if (!initial) {
       const item = f.fromInventory ? reservedStock.find((x) => x.id === f.inventoryItemId) : null;
@@ -2489,6 +2515,20 @@ function ProjectForm({ initial, user, isCoord, isTest, allowedDepts, onClose, on
                 ))}
               </div>
               <span className="text-xs text-slate-500">{f.repairNeedsMaterial ? "Follows the normal ordered → received flow." : "Goes straight to Ready to book."}</span>
+            </div>
+          )}
+          {f.isRepair && !initial && (
+            <div className="mt-3">
+              <div className="text-sm text-slate-200 mb-1.5">Client expected lead time</div>
+              <div className="flex gap-1 bg-[#0d1117] border border-[#30363d] rounded-xl p-1 w-fit flex-wrap">
+                {REPAIR_LEAD_OPTIONS.map((o) => (
+                  <button key={o.id} type="button" onClick={() => set("repairLeadTime", o.id)}
+                    className={`px-3 py-1 rounded-lg text-sm ${f.repairLeadTime === o.id ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#21262d]"}`}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+              {!f.repairLeadTime && <div className="text-xs text-amber-300 mt-1">Required.</div>}
             </div>
           )}
         </div>
@@ -2931,6 +2971,11 @@ function ProjectDetail({ project: p, user, level, isCoord, canEdit, isDev, save,
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Badge status={p.status} />
         {isRepair(p) && <span className="text-xs px-2 py-0.5 rounded-full border border-sky-500/50 text-sky-200 flex items-center gap-1"><RepairIcon small /> Repair{noMaterialRepair ? " · no material" : ""}</span>}
+        {isRepair(p) && p.repairLeadTime && (
+          <span className={`text-xs px-2 py-0.5 rounded-full border flex items-center gap-1 ${repairLeadOverdue(p) ? "border-red-500/60 text-red-300" : "border-slate-500/40 text-slate-300"}`}>
+            <Clock size={12} /> Lead time: {repairLeadOf(p.repairLeadTime)?.label}{repairLeadOverdue(p) ? " · overdue" : ""}
+          </span>
+        )}
         {p.isTest && <span className="text-xs px-2 py-0.5 rounded-full border-2 border-orange-500 text-orange-300 font-semibold">TEST</span>}
         {p.invoiced && <span className="text-xs px-2 py-0.5 rounded-full border border-slate-500/30 text-slate-400">Invoiced</span>}
         <span className="text-xs text-slate-400 flex items-center gap-1"><d.icon size={14} /> {d.label}</span>
