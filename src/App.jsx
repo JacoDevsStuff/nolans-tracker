@@ -1137,7 +1137,7 @@ export default function App() {
   }, [user]);
 
   /* =========================================================
-     PHASE 22 — Idle-timeout auto-logout
+     PHASE 21 — Idle-timeout auto-logout
      5 minutes of no mouse/keyboard/touch activity shows a "Still there?" warning with a live
      30-second countdown; any further activity (or the Stay logged in button) cancels it. Logging
      out tears down the 30s refresh() poll above (its effect depends on [user]), which is the actual
@@ -1368,7 +1368,7 @@ export default function App() {
     ...(isCoord ? [{ key: "temp", label: "New temporary placeholder", icon: Hourglass, run: () => setShowTemp(true), cls: "text-slate-300" }] : []),
     ...(isDev ? [{ key: "test", label: "New test project", icon: Plus, run: () => setShowTest(true), cls: "text-orange-300" }] : []),
     ...(isDev ? [{ key: "hol", label: "Public holidays", icon: Calendar, run: () => setShowHolidays(true), cls: "text-slate-200" }] : []),
-    // Phase 22 — dev-only shortcut: drops the idle-logout threshold from 5 minutes to 10 seconds for testing
+    // Phase 21 — dev-only shortcut: drops the idle-logout threshold from 5 minutes to 10 seconds for testing
     ...(isDev ? [{ key: "idletest", label: idleTestMode ? "Idle test: ON (10s)" : "Idle test: OFF (5 min)", icon: Hourglass, run: toggleIdleTest, cls: idleTestMode ? "text-amber-300" : "text-slate-300" }] : []),
   ];
   const searchBox = (autoFocus) => (
@@ -2087,6 +2087,13 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "21", date: "2026-10-02", items: [
+    "Performance Report: Shutters now show as references and panels instead of m² — shutter jobs never carried m² to begin with, so shutter sales were effectively invisible in the per-consultant breakdown.",
+    "Applies to the department chips, the per-consultant range breakdown and the PDF export; whichever of references or panels was entered is shown.",
+    "Idle-timeout auto-logout: after 5 minutes of no mouse, keyboard or touch activity a \"Still there?\" warning appears with a 30-second countdown. Any activity, or the \"Stay logged in\" button, cancels it.",
+    "No response signs you out automatically, which also stops the app's background refresh — this is the point of the change, since idle open sessions were driving database usage up.",
+    "Developer-only \"Idle test\" toggle in the \"…\" menu drops the 5-minute threshold to 10 seconds, so the warning can be tested without waiting.",
+  ] },
   { phase: "19", date: "2026-09-30", items: [
     "New \"temporary placeholder\" quick-add (Co-ordinator+): client name, consultant and department only — no PO, no product details — lands straight in Ready to book.",
     "Temporary placeholders show semi-transparent with a dashed border and an hourglass badge everywhere stickers appear, so they read as unofficial at a glance.",
