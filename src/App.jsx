@@ -3,7 +3,7 @@ import {
   Home, ClipboardList, Truck, CalendarDays, CheckCircle2, FileText, Plus, Bell, Search,
   ChevronRight, ChevronLeft, X, LogOut, Blinds, PanelsTopLeft, Layers, Trees,
   Rows3, Upload, Trash2, Printer, Image as ImageIcon, MapPin, Phone, Hash, User, Clock, Calendar,
-  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck, Boxes, Tag, Pencil, Hourglass
+  History, CalendarCheck, RotateCcw, ChevronDown, Flame, Flag, AlertTriangle, ClipboardCheck, TrendingUp, Lock, MessageSquarePlus, Gauge, Send, Check, Menu, MoreVertical, Wrench, Sparkles, PackageOpen, Crown, Trophy, Star, ShieldCheck, Boxes, Tag, Pencil, Hourglass, Database
 } from "lucide-react";
 
 /* =========================================================
@@ -17,13 +17,13 @@ const TABLE = "projects_v2"; // new table so old tracker data stays untouched
 // `was` lists retired PINs. They can NOT sign in; they only keep a person's existing notes, read-notification
 // marks and review flags linked to them after the PIN change.
 const USERS = {
-  "1712": { name: "Jaco", level: 1, was: ["0001"] },
+  "1712": { name: "Jaco", level: 1, was: ["0001", "3847"] },
   "2961": { name: "James", level: 1, was: ["0002"] },
   "7234": { name: "Trent", level: 1, was: ["0003"] },
   "4518": { name: "Theo", level: 1, was: ["0004"] },
   "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true, canSeeReviews: true }, // app partner — full access, all departments, sees everyone's feedback notes
   "8073": { name: "Marco", level: 2, depts: null, was: ["0006"] },   // owner — all departments (Performance Report locked: Beta card)
-  "1980": { name: "Luciano", level: 2, depts: null, was: ["0007"] }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
+  "1980": { name: "Luciano", level: 2, depts: null, was: ["0007", "6325"] }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
   "1492": { name: "Alton", level: 2, depts: ["vinyl"], was: ["0008"] },
   "9057": { name: "Chanel", level: 2, depts: ["blinds"], was: ["0009"] },
   "2233": { name: "Developer", level: 3, was: ["2222"] },
@@ -639,6 +639,40 @@ async function dbLoad() {
   if (!r.ok) throw new Error(`Load failed (${r.status})`);
   const rows = await r.json();
   return rows.filter((row) => row.id !== SETTINGS_ID && !String(row.id).startsWith(NOTE_PREFIX) && !String(row.id).startsWith(NOTIF_PREFIX) && !String(row.id).startsWith(REVIEW_PREFIX) && !String(row.id).startsWith(INV_PREFIX)).map((row) => ({ ...row.data, id: row.id }));
+}
+
+/* Phase 20 — database storage usage (on demand, Co-ordinator+ only).
+   Supabase's free tier is a 500MB Postgres database, separate from the 1GB file-storage bucket
+   this app doesn't use — photos are stored as base64 inside the `data` jsonb column, so it's the
+   500MB DB cap that actually matters here. We estimate usage by fetching every row's raw `data`
+   JSON and summing its UTF-8 byte length client-side (a close proxy for jsonb storage size), then
+   breaking it down by row-type prefix so Jaco can see what to clean up first. Never runs automatically
+   — only when the panel is opened — since it pulls the entire table including all photos. */
+const DB_FREE_TIER_BYTES = 500 * 1024 * 1024; // 500MB
+async function dbUsage() {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=id,data`, { headers });
+  if (!r.ok) throw new Error(`Usage check failed (${r.status})`);
+  const rows = await r.json();
+  const enc = new TextEncoder();
+  const byteLen = (v) => enc.encode(typeof v === "string" ? v : JSON.stringify(v ?? {})).length;
+  const groupOf = (id) => {
+    const s = String(id);
+    if (s.startsWith(NOTE_PREFIX)) return "Personal notes";
+    if (s.startsWith(NOTIF_PREFIX)) return "Notifications";
+    if (s.startsWith(REVIEW_PREFIX)) return "Installation reviews";
+    if (s.startsWith(INV_PREFIX)) return "Inventory";
+    if (s === SETTINGS_ID) return "App settings";
+    return "Projects (incl. photos)";
+  };
+  const byGroup = {};
+  let total = 0;
+  for (const row of rows) {
+    const n = byteLen(row.id) + byteLen(row.data);
+    total += n;
+    const g = groupOf(row.id);
+    byGroup[g] = (byGroup[g] || 0) + n;
+  }
+  return { totalBytes: total, rowCount: rows.length, byGroup, checkedAt: new Date().toISOString() };
 }
 
 /* Phase 10.2 — notifications. One row per event (id "notif:<id>") so people acting at the same time
@@ -1467,7 +1501,7 @@ export default function App() {
             <HomeView user={user} lists={lists} setView={setView} openDept={openDept} etaAlerts={etaAlerts} onOpen={setSelected}
               snagMaterial={snagMaterialJobs} onMaterialOrdered={markSnagMaterialOrdered}
               capacity={computeCapacity(active.filter((p) => !p.isTest), customHolidays, closeDateOf(settings))}
-              isDev={isDev} onSetClose={() => setShowHolidays(true)} />
+              isDev={isDev} onSetClose={() => setShowHolidays(true)} isCoord={isCoord} />
           ) : view === "eta" ? (
             <EtaAlertsView alerts={scope === "all" ? etaAll : etaAlerts} onOpen={setSelected} level={scope === "all" ? 2 : level} />
           ) : view === "updates" ? (
@@ -1592,7 +1626,7 @@ function SearchDropdown({ results, onOpen, onClose }) {
 /* =========================================================
    HOME DASHBOARD
    ========================================================= */
-function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity, isDev, onSetClose, snagMaterial = [], onMaterialOrdered }) {
+function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity, isDev, onSetClose, snagMaterial = [], onMaterialOrdered, isCoord }) {
   const myCount = lists.placed.length + lists.received.length;
   const cards = [
     { id: "signed", label: "Signed in consultant", sub: user.name, count: myCount, icon: User, color: "bg-blue-600" },
@@ -1649,6 +1683,7 @@ function HomeView({ user, lists, setView, openDept, etaAlerts, onOpen, capacity,
         </div>
       </div>
       {capacity && <CapacityPanel capacity={capacity} openDept={openDept} isDev={isDev} onSetClose={onSetClose} />}
+      {isCoord && <DbUsagePanel />}
     </div>
   );
 }
@@ -1728,6 +1763,77 @@ function CapacityPanel({ capacity, openDept, isDev, onSetClose }) {
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   PHASE 20 — DATABASE STORAGE USAGE (home screen, Co-ordinator+ only)
+   Checked on demand only — see dbUsage() above for why.
+   ========================================================= */
+function fmtBytes(n) {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+function DbUsagePanel() {
+  const [state, setState] = useState(null); // null = not checked yet
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const check = async () => {
+    setLoading(true); setErr("");
+    try { setState(await dbUsage()); }
+    catch (e) { setErr(e.message || "Couldn't check usage"); }
+    finally { setLoading(false); }
+  };
+  const pct = state ? Math.min(1, state.totalBytes / DB_FREE_TIER_BYTES) : 0;
+  const bar = pct > 0.95 ? "bg-red-500" : pct > 0.8 ? "bg-amber-400" : "bg-emerald-500";
+  const sortedGroups = state ? Object.entries(state.byGroup).sort((a, b) => b[1] - a[1]) : [];
+  return (
+    <div className="mt-5 bg-[#0d1117] border border-[#30363d] rounded-2xl p-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-2">
+          <Database size={18} className="text-slate-300" />
+          <h2 className="text-lg font-semibold text-white">Database storage</h2>
+        </div>
+        <button onClick={check} disabled={loading} className="text-xs text-slate-400 hover:text-white underline disabled:opacity-50">
+          {loading ? "Checking…" : state ? "Recheck" : "Check now"}
+        </button>
+      </div>
+      {err && <div className="text-xs text-red-300 mb-2">{err}</div>}
+      {!state && !loading && !err && (
+        <div className="text-sm text-slate-400 border border-dashed border-[#30363d] rounded-xl px-4 py-5 text-center">
+          Pulls every row to estimate size, so it's checked on demand rather than automatically.
+        </div>
+      )}
+      {state && (
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-2.5 rounded-full bg-[#21262d] overflow-hidden"><div className={`h-full ${bar}`} style={{ width: `${Math.round(pct * 100)}%` }} /></div>
+            <span className="text-xs font-semibold text-slate-200 w-10 text-right">{Math.round(pct * 100)}%</span>
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+            <span>{fmtBytes(state.totalBytes)} of 500MB (Supabase free-tier database cap) · {state.rowCount} rows</span>
+            <button onClick={() => setOpen((o) => !o)} className="underline hover:text-white">{open ? "Hide breakdown" : "Breakdown"}</button>
+          </div>
+          {pct > 0.8 && (
+            <div className={`mt-2 text-xs ${pct > 0.95 ? "text-red-300" : "text-amber-300"}`}>
+              {pct > 0.95 ? "Close to the free-tier limit — writes may start failing soon." : "Getting close to the free-tier limit."}
+            </div>
+          )}
+          {open && (
+            <div className="mt-3 space-y-1.5">
+              {sortedGroups.map(([label, bytes]) => (
+                <div key={label} className="flex items-center justify-between text-xs">
+                  <span className="text-slate-300">{label}</span>
+                  <span className="text-slate-400">{fmtBytes(bytes)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
