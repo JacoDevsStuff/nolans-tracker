@@ -1454,6 +1454,11 @@ export default function App() {
                 <Calendar size={16} /> Public holidays
               </button>
             )}
+            {isDev && (
+              <button onClick={toggleIdleTest} className={`hidden md:flex px-4 py-2 rounded-lg border text-sm font-medium items-center gap-1.5 ${idleTestMode ? "border-amber-500/60 text-amber-300 bg-amber-500/10" : "border-[#30363d] text-slate-300 hover:bg-[#161b22]"}`} title="Developer only — toggle idle-logout threshold between 5 minutes (normal) and 10 seconds (test)">
+                <Hourglass size={16} /> {idleTestMode ? "Idle: 10s" : "Idle: 5 min"}
+              </button>
+            )}
             <div className="relative">
               <button onClick={() => setBellOpen((v) => !v)} className={`relative p-2 rounded-lg hover:bg-[#161b22] ${bellOpen ? "bg-[#161b22] text-white" : "text-slate-300"}`} title={`${unreadCount} unread · ${etaCount} ETA alert${etaCount === 1 ? "" : "s"}`} aria-label="Notifications">
                 <Bell size={18} />
