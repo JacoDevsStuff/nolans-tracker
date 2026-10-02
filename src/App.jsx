@@ -267,15 +267,17 @@ const productLinesOf = (p) => {
 };
 const areaFmt = (a) => { const n = Number(a); return (a === "" || a == null || isNaN(n)) ? "" : `${n} m²`; };
 const totalArea = (p) => productLinesOf(p).reduce((sum, l) => sum + (Number(l.area) || 0), 0);
+// Phase 21 — summed refs/panels across every product line on a job (Shutters)
+const totalRefsPanels = (p) => {
+  const lines = productLinesOf(p);
+  return { refs: lines.reduce((n, l) => n + (Number(l.refs) || 0), 0), panels: lines.reduce((n, l) => n + (Number(l.panels) || 0), 0) };
+};
 // Phase 10.3 — one-line size of the whole job in the department's own unit (m², refs/panels or quantities)
 const jobMeasureText = (p) => {
   const m = measureOf(p.department);
   const lines = productLinesOf(p);
   if (m === "none") return "";
-  if (m === "panels") {
-    const r = lines.reduce((n, l) => n + (Number(l.refs) || 0), 0), pn = lines.reduce((n, l) => n + (Number(l.panels) || 0), 0);
-    return [r ? `${r} ref${r === 1 ? "" : "s"}` : "", pn ? `${pn} panel${pn === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
-  }
+  if (m === "panels") { const { refs: r, panels: pn } = totalRefsPanels(p); return refPanelLabel(r, pn); }
   if (m === "qty") return lines.map((l) => (l.qty || "").toString().trim()).filter(Boolean).join(", ");
   const a = totalArea(p); return a > 0 ? `${Math.round(a * 100) / 100} m²` : "";
 };
@@ -1134,6 +1136,46 @@ export default function App() {
     return () => clearInterval(t);
   }, [user]);
 
+  /* =========================================================
+     PHASE 22 — Idle-timeout auto-logout
+     5 minutes of no mouse/keyboard/touch activity shows a "Still there?" warning with a live
+     30-second countdown; any further activity (or the Stay logged in button) cancels it. Logging
+     out tears down the 30s refresh() poll above (its effect depends on [user]), which is the actual
+     point — the free-tier egress cap was being hit by that poll running on idle, open sessions.
+     Developer-only "Idle test" toggle drops the 5-minute threshold to 10 seconds so this can be
+     tested without actually waiting — a permanent dev shortcut, not removed after testing.
+     ========================================================= */
+  const IDLE_MS = 5 * 60 * 1000;
+  const IDLE_MS_TEST = 10 * 1000;
+  const IDLE_WARN_MS = 30 * 1000;
+  const [idleTestMode, setIdleTestMode] = useState(() => { try { return sessionStorage.getItem("nolans_idle_test") === "1"; } catch { return false; } });
+  const lastActivityRef = useRef(Date.now());
+  const [idleSecondsLeft, setIdleSecondsLeft] = useState(null); // null = warning not showing
+  useEffect(() => {
+    if (!user) return;
+    const bump = () => { lastActivityRef.current = Date.now(); };
+    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll"];
+    events.forEach((ev) => window.addEventListener(ev, bump, { passive: true }));
+    return () => events.forEach((ev) => window.removeEventListener(ev, bump));
+  }, [user]);
+  useEffect(() => {
+    if (!user) { setIdleSecondsLeft(null); return; }
+    const idleMs = idleTestMode ? IDLE_MS_TEST : IDLE_MS;
+    const t = setInterval(() => {
+      const idleFor = Date.now() - lastActivityRef.current;
+      if (idleFor < idleMs) { setIdleSecondsLeft(null); return; }
+      const remaining = Math.ceil((idleMs + IDLE_WARN_MS - idleFor) / 1000);
+      if (remaining <= 0) { setIdleSecondsLeft(null); logout(); }
+      else setIdleSecondsLeft(remaining);
+    }, 500);
+    return () => clearInterval(t);
+  }, [user, idleTestMode]);
+  const stayLoggedIn = () => { lastActivityRef.current = Date.now(); setIdleSecondsLeft(null); };
+  const toggleIdleTest = () => {
+    lastActivityRef.current = Date.now();
+    setIdleTestMode((v) => { const nv = !v; try { sessionStorage.setItem("nolans_idle_test", nv ? "1" : "0"); } catch { /* ignore */ } return nv; });
+  };
+
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(""), 2500);
@@ -1326,6 +1368,8 @@ export default function App() {
     ...(isCoord ? [{ key: "temp", label: "New temporary placeholder", icon: Hourglass, run: () => setShowTemp(true), cls: "text-slate-300" }] : []),
     ...(isDev ? [{ key: "test", label: "New test project", icon: Plus, run: () => setShowTest(true), cls: "text-orange-300" }] : []),
     ...(isDev ? [{ key: "hol", label: "Public holidays", icon: Calendar, run: () => setShowHolidays(true), cls: "text-slate-200" }] : []),
+    // Phase 22 — dev-only shortcut: drops the idle-logout threshold from 5 minutes to 10 seconds for testing
+    ...(isDev ? [{ key: "idletest", label: idleTestMode ? "Idle test: ON (10s)" : "Idle test: OFF (5 min)", icon: Hourglass, run: toggleIdleTest, cls: idleTestMode ? "text-amber-300" : "text-slate-300" }] : []),
   ];
   const searchBox = (autoFocus) => (
     <div className="relative w-full">
@@ -1575,6 +1619,16 @@ export default function App() {
           onSave={(list, closeDate) => saveSettings({ ...settings, customHolidays: list, closeDate })} onClose={() => setShowHolidays(false)} />
       )}
       {user.pin && <NotesWidget user={user} view={view} />}
+      {idleSecondsLeft !== null && (
+        <div className="print:hidden fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-[#161b22] border border-[#30363d] rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl">
+            <div className="flex justify-center mb-3 text-amber-400"><AlertTriangle size={28} /></div>
+            <h3 className="text-lg font-semibold text-white mb-1">Still there?</h3>
+            <p className="text-sm text-slate-400 mb-5">You'll be logged out in <span className="text-white font-semibold tabular-nums">{idleSecondsLeft}s</span> due to inactivity.</p>
+            <button onClick={stayLoggedIn} className="w-full py-2.5 rounded-xl bg-[#1e3a6e] hover:bg-[#234a85] text-white font-medium">Stay logged in</button>
+          </div>
+        </div>
+      )}
       {toast && (
         <div className="print:hidden fixed bottom-5 right-5 bg-[#161b22] border border-[#30363d] text-sm px-4 py-2.5 rounded-xl shadow-xl">{toast}</div>
       )}
@@ -5127,6 +5181,8 @@ const snagCauseOf = (s) => (s.review && s.review.cause) || s.category || "";
 const snagCostOf = (s) => ((s.review && s.review.costs) || []).reduce((n, c) => n + (Number(c.amount) || 0), 0);
 const rangeLabel = (l) => (l.supplier === OTHER_SUPPLIER ? "Other" : (l.productRange ? composeProduct(l.supplier, l.productRange) : (l.productType || "Range not specified")));
 const m2 = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-ZA")} m²`;
+// Phase 21 — Shutters are measured in references/panels, not m²; show whichever of the two was entered
+const refPanelLabel = (refs, panels) => [refs ? `${refs} ref${refs === 1 ? "" : "s"}` : "", panels ? `${panels} panel${panels === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
 const quarterOptions = () => {
   const now = new Date(); let y = now.getFullYear(); let q = Math.floor(now.getMonth() / 3) + 1;
   const out = [];
@@ -5148,7 +5204,7 @@ function periodOf({ mode, month, quarter, from, to }) {
   return { from: null, to: null, label: "All time" };
 }
 
-const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
+const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, panelsByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
 
 // The single loop every number in the report comes from.
 function computePerformance(projects, { from, to }, deptFilter) {
@@ -5173,12 +5229,21 @@ function computePerformance(projects, { from, to }, deptFilter) {
       if (isRepair(p)) { c.repairs++; t.repairs++; } // Phase 11 — repairs are part of Ordered, also shown on their own
       c.m2 += area;
       if (area) c.m2ByDept[p.department] = (c.m2ByDept[p.department] || 0) + area;
+      // Phase 21 — Shutters never carry m² (area is never entered for that department), so track
+      // references/panels separately per department rather than leaving shutter sales invisible.
+      if (measureOf(p.department) === "panels") {
+        const { refs: jr, panels: jp } = totalRefsPanels(p);
+        if (jr || jp) {
+          const pd = (c.panelsByDept[p.department] = c.panelsByDept[p.department] || { refs: 0, panels: 0 });
+          pd.refs += jr; pd.panels += jp;
+        }
+      }
       const seenRanges = new Set();
       productLinesOf(p).forEach((l) => {
         const a = Number(l.area) || 0;
         const k = rangeLabel(l);
-        const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0, panels: 0 });
-        r.m2 += a; r.lines++; r.panels += Number(l.panels) || 0;
+        const r = (c.ranges[k] = c.ranges[k] || { m2: 0, lines: 0, refs: 0, panels: 0 });
+        r.m2 += a; r.lines++; r.refs += Number(l.refs) || 0; r.panels += Number(l.panels) || 0;
         const g = (allRanges[k] = allRanges[k] || { m2: 0, jobs: 0 });
         g.m2 += a; if (!seenRanges.has(k)) { seenRanges.add(k); g.jobs++; }
       });
@@ -5535,10 +5600,13 @@ function PerformanceView({ projects, user, reviews }) {
                     <h3 className="text-lg font-semibold text-white">{r.name}</h3>
                     <span className="text-sm text-slate-400">{m2(r.m2)} sold</span>
                   </div>
-                  {Object.keys(r.m2ByDept).length > 0 && (
+                  {(Object.keys(r.m2ByDept).length > 0 || Object.keys(r.panelsByDept).length > 0) && (
                     <div className="flex flex-wrap gap-2 mb-3">
                       {Object.entries(r.m2ByDept).sort((a, b) => b[1] - a[1]).map(([d, a]) => (
                         <span key={d} className="text-xs px-2 py-1 rounded-lg bg-[#0d1117] border border-[#30363d] text-slate-300">{deptOf(d).label} · {m2(a)}</span>
+                      ))}
+                      {Object.entries(r.panelsByDept).map(([d, pd]) => (
+                        <span key={d} className="text-xs px-2 py-1 rounded-lg bg-[#0d1117] border border-[#30363d] text-slate-300">{deptOf(d).label} · {refPanelLabel(pd.refs, pd.panels)}</span>
                       ))}
                     </div>
                   )}
@@ -5550,7 +5618,7 @@ function PerformanceView({ projects, user, reviews }) {
                         const pct = r.m2 ? Math.max(3, (v.m2 / r.m2) * 100) : 0;
                         return (
                           <div key={k}>
-                            <div className="flex justify-between text-sm"><span className="text-slate-200">{k}</span><span className="text-slate-400 tabular-nums">{v.m2 ? m2(v.m2) : v.panels ? `${v.panels} panel${v.panels === 1 ? "" : "s"}` : `${v.lines} line${v.lines === 1 ? "" : "s"}`}</span></div>
+                            <div className="flex justify-between text-sm"><span className="text-slate-200">{k}</span><span className="text-slate-400 tabular-nums">{v.m2 ? m2(v.m2) : (v.refs || v.panels) ? refPanelLabel(v.refs, v.panels) : `${v.lines} line${v.lines === 1 ? "" : "s"}`}</span></div>
                             {v.m2 > 0 && <div className="h-1 bg-[#0d1117] rounded-full mt-1 mb-1.5"><div className="h-1 bg-[#1f6feb] rounded-full" style={{ width: `${pct}%` }} /></div>}
                           </div>
                         );
@@ -5610,12 +5678,17 @@ function PerformanceView({ projects, user, reviews }) {
         {data.consultantRows.filter((r) => r.ordered > 0).map((r) => (
           <div key={r.name} className="perf-block mb-4">
             <div className="font-semibold">{r.name} · {m2(r.m2)} sold across {r.ordered} order{r.ordered === 1 ? "" : "s"}</div>
-            {Object.keys(r.m2ByDept).length > 0 && <div className="text-xs text-gray-700">By department: {Object.entries(r.m2ByDept).sort((a, b) => b[1] - a[1]).map(([d, a]) => `${deptOf(d).label} ${m2(a)}`).join(", ")}</div>}
+            {(Object.keys(r.m2ByDept).length > 0 || Object.keys(r.panelsByDept).length > 0) && (
+              <div className="text-xs text-gray-700">By department: {[
+                ...Object.entries(r.m2ByDept).sort((a, b) => b[1] - a[1]).map(([d, a]) => `${deptOf(d).label} ${m2(a)}`),
+                ...Object.entries(r.panelsByDept).map(([d, pd]) => `${deptOf(d).label} ${refPanelLabel(pd.refs, pd.panels)}`),
+              ].join(", ")}</div>
+            )}
             {sortedRanges(r.ranges).length === 0 ? (
-              <div className="text-xs text-gray-600">No catalogued ranges (range detail covers Carpets and Vinyl only).</div>
+              <div className="text-xs text-gray-600">No catalogued ranges (range detail covers Carpets, Vinyl and Shutters only).</div>
             ) : (
               <ul className="text-sm mt-1">
-                {sortedRanges(r.ranges).map(([k, v]) => <li key={k}>• {r.name} sold {v.m2 ? m2(v.m2) : `${v.lines} line${v.lines === 1 ? "" : "s"} (no m² entered)`} of {k}</li>)}
+                {sortedRanges(r.ranges).map(([k, v]) => <li key={k}>• {r.name} sold {v.m2 ? m2(v.m2) : (v.refs || v.panels) ? refPanelLabel(v.refs, v.panels) : `${v.lines} line${v.lines === 1 ? "" : "s"} (no m² entered)`} of {k}</li>)}
               </ul>
             )}
           </div>
@@ -5662,7 +5735,7 @@ function PerformanceView({ projects, user, reviews }) {
         <div className="perf-block text-xs text-gray-700 border-t border-gray-400 pt-3">
           <div className="font-semibold text-black mb-1">How to read this report</div>
           <div>Ordered: jobs created in the period. Repairs: the repair jobs within Ordered (already included in that count). Booked: jobs whose first install day falls in the period. Completed: jobs marked installed in the period. Invoiced: jobs moved to History in the period. A single job can appear in several columns if it moved through several stages in the same period.</div>
-          <div>m² sold (consultants) counts on the order date. m² installed (teams) counts on the completion date. Only Carpets and Vinyl record m² and ranges; other departments show job counts only.</div>
+          <div>m² sold (consultants) counts on the order date. m² installed (teams) counts on the completion date. Only Carpets and Vinyl record m²; Shutters records references and panels instead (no m² applies); other departments show job counts only.</div>
           <div>Consultant snags are snags whose cause is Consultant boo-boo; installation snags are those whose cause is Installation boo-boo. The cause allocated in Snag review is used where set, otherwise the category logged. Snags count on the date logged. Snag cost is the total of cost lines entered in Snag review. Test projects are excluded.</div>
           <div>Leaderboard: m² sold and ranges count on the order date, jobs invoiced on the invoice date, team m² on the completion date (Shutters and Calore count as one team). Fewest snags per m² divides a consultant's consultant boo-boos by their m² sold, shown per 100 m²; consultants with no m² sold go to the bottom. Ties keep list order. The star marks first place.</div>
         </div>
