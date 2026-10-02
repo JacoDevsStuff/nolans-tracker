@@ -17,13 +17,13 @@ const TABLE = "projects_v2"; // new table so old tracker data stays untouched
 // `was` lists retired PINs. They can NOT sign in; they only keep a person's existing notes, read-notification
 // marks and review flags linked to them after the PIN change.
 const USERS = {
-  "3847": { name: "Jaco", level: 1, was: ["0001"] },
+  "1712": { name: "Jaco", level: 1, was: ["0001"] },
   "2961": { name: "James", level: 1, was: ["0002"] },
   "7234": { name: "Trent", level: 1, was: ["0003"] },
   "4518": { name: "Theo", level: 1, was: ["0004"] },
   "0005": { name: "Franco", level: 2, depts: null, bookAny: true, perfReports: true, canSeeNotes: true, canSeeReviews: true }, // app partner — full access, all departments, sees everyone's feedback notes
   "8073": { name: "Marco", level: 2, depts: null, was: ["0006"] },   // owner — all departments (Performance Report locked: Beta card)
-  "6325": { name: "Luciano", level: 2, depts: null, was: ["0007"] }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
+  "1980": { name: "Luciano", level: 2, depts: null, was: ["0007"] }, // owner — all departments, manages Wood (Performance Report locked: Beta card)
   "1492": { name: "Alton", level: 2, depts: ["vinyl"], was: ["0008"] },
   "9057": { name: "Chanel", level: 2, depts: ["blinds"], was: ["0009"] },
   "2233": { name: "Developer", level: 3, was: ["2222"] },
