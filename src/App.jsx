@@ -1129,11 +1129,28 @@ export default function App() {
     catch (e) { setError(e.message); }
   };
   const customHolidays = settings.customHolidays || [];
+  /* Phase 22 — Page Visibility: only poll while the tab is actually visible.
+     Backgrounded/minimised tabs stop the 30s refresh() poll entirely; returning to the tab
+     fires one immediate fetch and restarts the interval. This is the main egress saver —
+     most sessions sit in a background tab, where they were previously still polling every 30s. */
   useEffect(() => {
     if (!user) return;
-    refresh();
-    const t = setInterval(refresh, 30000);
-    return () => clearInterval(t);
+    let t = null;
+    const start = () => { if (t === null) t = setInterval(refresh, 30000); };
+    const stop = () => { if (t !== null) { clearInterval(t); t = null; } };
+    const onVisibility = () => {
+      if (document.hidden) { stop(); }
+      else { refresh(); start(); }
+    };
+    // Initial run mirrors the visibility state at mount
+    if (document.hidden) {
+      // Tab mounted in the background — wait for it to become visible before polling
+    } else {
+      refresh();
+      start();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { document.removeEventListener("visibilitychange", onVisibility); stop(); };
   }, [user]);
 
   /* =========================================================
@@ -1338,18 +1355,20 @@ export default function App() {
 
   if (!user) return <Login onLogin={setUser} />;
 
+  // Phase 22 — `section` on the first item of a group renders a static labelled divider above it
+  // (purely visual; no expand/collapse). Home and App updates sit outside any group (no divider).
   const nav = [
     { id: "home", label: "Home", icon: Home },
-    { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length },
+    { id: "placed", label: "Placed orders", icon: ClipboardList, count: lists.placed.length, section: "Orders" },
     { id: "received", label: "Received orders", icon: Truck, count: lists.received.length },
     { id: "eta", label: "ETA alerts", icon: AlertTriangle, count: etaCount, alert: etaAlerts.overdue.length + etaAlerts.tbc.length, alertLabel: "overdue" },
     { id: "booked", label: "Booked orders", icon: CalendarDays, count: lists.booked.length },
-    ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0 }] : []),
     { id: "completed", label: "Completed orders", icon: CheckCircle2, count: lists.completed.length },
     { id: "history", label: "History", icon: History, count: lists.history.length },
-    { id: "inventory", label: "Inventory", icon: Boxes, count: inventory.filter((x) => x.status === "available").length },
+    ...(level >= 1 ? [{ id: "snags", label: "Snags", icon: Flag, count: lists.snags.length, alert: isCoord ? newSnagCount : 0, section: "Tracking" }] : [{ id: "inventory", label: "Inventory", icon: Boxes, count: inventory.filter((x) => x.status === "available").length, section: "Tracking" }]),
     ...(level >= 1 ? [{ id: "review", label: "Snag review", icon: ClipboardCheck, count: isCoord ? reviewCount : null }] : []),
-    { id: "performance", label: "Performance Report", icon: TrendingUp, beta: !canSeePerf },
+    ...(level >= 1 ? [{ id: "inventory", label: "Inventory", icon: Boxes, count: inventory.filter((x) => x.status === "available").length }] : []),
+    { id: "performance", label: "Performance Report", icon: TrendingUp, beta: !canSeePerf, section: "Reports" },
     ...(isCoord ? [
       { id: "availability", label: "Availability", icon: CalendarCheck },
       { id: "reports", label: "Reports", icon: FileText },
@@ -1390,16 +1409,20 @@ export default function App() {
         {nav.map((n) => {
           const activeNav = view === n.id;
           return (
-            <button
-              key={n.id} onClick={pick(() => setView(n.id))}
-              className={`${n.desktopOnly ? "hidden md:flex" : "flex"} w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
-            >
-              <n.icon size={18} className="shrink-0" />
-              <span className="flex-1 text-left">{n.label}</span>
-              {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
-              {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white whitespace-nowrap">{n.alert} {n.alertLabel || "new"}</span>}
-              {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
-            </button>
+            <React.Fragment key={n.id}>
+              {/* Phase 22 — static labelled section divider; purely visual, no expand/collapse */}
+              {n.section && <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 px-3 pt-4 pb-1">{n.section}</div>}
+              <button
+                onClick={pick(() => setView(n.id))}
+                className={`${n.desktopOnly ? "hidden md:flex" : "flex"} w-full items-center gap-3 px-3 py-2.5 rounded-xl text-sm ${activeNav ? "bg-[#1e3a6e] text-white" : "text-slate-300 hover:bg-[#161b22]"}`}
+              >
+                <n.icon size={18} className="shrink-0" />
+                <span className="flex-1 text-left">{n.label}</span>
+                {n.beta && <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded-full border border-amber-400/50 text-amber-300">BETA</span>}
+                {n.alert > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white whitespace-nowrap">{n.alert} {n.alertLabel || "new"}</span>}
+                {n.count != null && <span className="text-xs text-slate-400">{n.count}</span>}
+              </button>
+            </React.Fragment>
           );
         })}
       </nav>
@@ -2092,6 +2115,11 @@ const screenName = (v) => (v && v.startsWith("dept:") ? `${calOf(v.slice(5)).lab
    Hand-maintained: add a new entry at the TOP of CHANGELOG each phase.
    ========================================================= */
 const CHANGELOG = [
+  { phase: "22", date: "2026-10-08", items: [
+    "Database usage: the app now only refreshes while its tab is actually open and visible. Switch to another tab or minimise the window and the 30-second background refresh pauses; come back and it refreshes once immediately and resumes. No change to how anything looks or works.",
+    "Performance Report: the install team section now shows references and panels for Shutters instead of a permanent 0 m² — on screen and in the PDF — matching how shutter sales already show in the consultant section.",
+    "Navigation menu tidied into labelled sections (Orders, Tracking, Reports) so it's easier to scan.",
+  ] },
   { phase: "21", date: "2026-10-02", items: [
     "Performance Report: Shutters now show as references and panels instead of m² — shutter jobs never carried m² to begin with, so shutter sales were effectively invisible in the per-consultant breakdown.",
     "Applies to the department chips, the per-consultant range breakdown and the PDF export; whichever of references or panels was entered is shown.",
@@ -5216,7 +5244,7 @@ function periodOf({ mode, month, quarter, from, to }) {
   return { from: null, to: null, label: "All time" };
 }
 
-const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, panelsByDept: {}, ranges: {}, snags: 0, snagCost: 0 });
+const blankStats = () => ({ ordered: 0, repairs: 0, booked: 0, completed: 0, invoiced: 0, m2: 0, m2ByDept: {}, panelsByDept: {}, ranges: {}, snags: 0, snagCost: 0, refs: 0, panels: 0 });
 
 // The single loop every number in the report comes from.
 function computePerformance(projects, { from, to }, deptFilter) {
@@ -5263,7 +5291,16 @@ function computePerformance(projects, { from, to }, deptFilter) {
     // Booked = first install day falls in the period (still booked or already done)
     if ((p.status === "booked" || p.status === "installed") && inPeriod(bookDate, from, to)) { c.booked++; t.booked++; }
     // Completed = marked installed in the period. Team m² counts here (what was actually laid).
-    if (p.status === "installed" && inPeriod(dayOf(p.installedAt), from, to)) { c.completed++; t.completed++; t.m2 += area; }
+    // Phase 22 — Shutters carry no m² (area is always 0), so record refs/panels installed per team
+    // the same way the consultant section records them on the order date. Lets the install team
+    // section show refs/panels instead of a permanent 0 m² for panels-measured departments.
+    if (p.status === "installed" && inPeriod(dayOf(p.installedAt), from, to)) {
+      c.completed++; t.completed++; t.m2 += area;
+      if (measureOf(p.department) === "panels") {
+        const { refs: jr, panels: jp } = totalRefsPanels(p);
+        t.refs += jr; t.panels += jp;
+      }
+    }
     // Invoiced = moved to History in the period
     if (p.invoiced && inPeriod(dayOf(p.invoicedAt), from, to)) { c.invoiced++; t.invoiced++; }
 
@@ -5280,7 +5317,7 @@ function computePerformance(projects, { from, to }, deptFilter) {
   const deptOrder = DEPARTMENTS.map((d) => d.id);
   const teamRows = Object.values(teams)
     .sort((a, b) => deptOrder.indexOf(a.dept) - deptOrder.indexOf(b.dept) || a.team.localeCompare(b.team));
-  const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, repairs: acc.repairs + r.repairs, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost }), blankStats());
+  const sum = (rows) => rows.reduce((acc, r) => ({ ordered: acc.ordered + r.ordered, repairs: acc.repairs + r.repairs, booked: acc.booked + r.booked, completed: acc.completed + r.completed, invoiced: acc.invoiced + r.invoiced, m2: acc.m2 + r.m2, snags: acc.snags + r.snags, snagCost: acc.snagCost + r.snagCost, refs: acc.refs + (r.refs || 0), panels: acc.panels + (r.panels || 0) }), blankStats());
   return { consultantRows, teamRows, cTotal: sum(consultantRows), tTotal: sum(teamRows), allRanges };
 }
 
@@ -5524,7 +5561,7 @@ function PerformanceView({ projects, user, reviews }) {
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.booked}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.completed}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.invoiced}</td>
-      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.m2 ? m2(r.m2) : "—"}</td>
+      <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.m2 ? m2(r.m2) : (r.refs || r.panels) ? refPanelLabel(r.refs, r.panels) : "—"}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""}`}>{r.snags}</td>
       <td className={`${num} ${bold ? "font-semibold" : ""} ${r.snagCost > 0 ? "text-red-300" : ""}`}>{r.snagCost ? zar(r.snagCost) : "—"}</td>
     </>
@@ -5714,7 +5751,7 @@ function PerformanceView({ projects, user, reviews }) {
           <tbody>
             {[...data.teamRows, { dept: "", team: "TOTAL", ...data.tTotal, isTotal: true }].map((r) => (
               <tr key={`${r.dept}|${r.team}`} className={`border-b border-gray-300 ${r.isTotal ? "font-bold" : ""}`}>
-                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${teamLabel(r.dept, r.team)}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{m2(r.m2)}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
+                <td className="py-1 pr-2">{r.isTotal ? "TOTAL" : `${deptOf(r.dept).label} · ${teamLabel(r.dept, r.team)}`}</td><td className="py-1 px-2 text-right">{r.ordered}</td><td className="py-1 px-2 text-right">{r.repairs}</td><td className="py-1 px-2 text-right">{r.booked}</td><td className="py-1 px-2 text-right">{r.completed}</td><td className="py-1 px-2 text-right">{r.invoiced}</td><td className="py-1 px-2 text-right">{r.m2 ? m2(r.m2) : (r.refs || r.panels) ? refPanelLabel(r.refs, r.panels) : "—"}</td><td className="py-1 px-2 text-right">{r.snags}</td><td className="py-1 pl-2 text-right">{zar(r.snagCost)}</td>
               </tr>
             ))}
           </tbody>
